@@ -1,0 +1,13 @@
+{
+  "name": "multiplayer-game-studio",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25", "npm": ">=11 <12" },
+  "scripts": {
+    "setup": "node tools/setup.mjs",
+    "preview": "npm run dev --prefix starter -- --port 5174 --strictPort",
+    "verify": "npm run verify --prefix starter",
+    "build": "npm run build --prefix starter",
+    "browser:smoke": "npm run browser:smoke --prefix starter"
+  }
+}
