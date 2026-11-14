@@ -1,0 +1,41 @@
+{
+  "id": "local-preview-sample",
+  "name": "Local Preview Sample",
+  "version": "1.0.0",
+  "engineApiMajor": 1,
+  "module": {
+    "id": "sample-grid-runner",
+    "version": "1.0.0",
+    "stateSchemaVersion": 1
+  },
+  "skin": {
+    "rendererId": "sample-grid-runner-skin",
+    "version": "1.0.0",
+    "acceptedModuleId": "sample-grid-runner",
+    "acceptedStateSchemaVersions": [
+      1
+    ]
+  },
+  "assetsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "settingsSchemaVersion": 1,
+  "settingsSchema": {
+    "moveDistance": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 32
+    },
+    "facingMovementBlend": { "type": "number", "minimum": 0, "maximum": 1 },
+    "controlMode": { "type": "string", "enum": ["keyboard-only", "keyboard-mouse", "game-controller"] }
+  },
+  "settingsDefaults": {
+    "moveDistance": 4,
+    "facingMovementBlend": 0.4,
+    "controlMode": "keyboard-mouse"
+  },
+  "project": "Local Preview Sample",
+  "author": "Scott Zastrow",
+  "assets": {
+    "required": {},
+    "optional": {}
+  }
+}

@@ -30,8 +30,8 @@
       "file": "packages/fflate-0.8.3.tgz"
     }
   ],
-  "localDirectory": "var/developer-kit/0.2.0-2717a9bc86c2",
-  "dependencyDirectory": "var/developer-kit/dependencies-0.2.0-2717a9bc86c2",
+  "localDirectory": "engine/kits/0.2.0-2717a9bc86c2",
+  "dependencyDirectory": "engine/kits/dependencies-0.2.0-2717a9bc86c2",
   "companion": {
     "repository": "scottzastrow/multiplayer-game-themes",
     "revision": "778319f578b25081420e3334e1e68fa4de7540ec",

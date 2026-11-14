@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  access, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile
+  access, cp, lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,11 +30,11 @@ async function exists(path) {
     throw error;
   }
 }
-const local = join(root, "var", "developer-kit");
+const local = join(root, "engine", "kits");
 await mkdir(local, { recursive: true });
-assert.equal(execFileSync("git", ["check-ignore", "var/developer-kit/probe"], {
+assert.equal(execFileSync("git", ["check-ignore", "engine/kits/probe"], {
   cwd: root, encoding: "utf8"
-}).trim(), "var/developer-kit/probe", "Local dependency directory must be ignored.");
+}).trim(), "engine/kits/probe", "Local dependency directory must be ignored.");
 const temporary = await mkdtemp(join(local, ".setup-"));
 try {
   const quote = value => `'${value.replaceAll("'", "''")}'`;
@@ -49,7 +49,7 @@ try {
   const directory = `${kit.version}-${kit.engineRevision.slice(0, 12)}`;
   const installed = join(local, directory);
   const runtime = join(local, `dependencies-${directory}`);
-  const receiptPath = join(root, "developer-kit.lock.json");
+  const receiptPath = join(root, "engine", "developer-kit.lock.json");
   const receipt = {
     version: kit.version, archiveSha256: archiveHash, engineRevision: kit.engineRevision,
     engineSourceState: kit.engineSource.state, packages: kit.packages,
@@ -63,6 +63,32 @@ try {
   const selectionChanged = previousReceipt && JSON.stringify(previousReceipt) !== JSON.stringify(receipt);
   assert.ok(!selectionChanged || upgrade,
     "A different kit is selected. Review it and pass --upgrade to change dependencies.");
+  const starter = join(root, "games", "sample");
+  const modules = join(starter, "node_modules");
+  const targetModules = join(runtime, "node_modules");
+  let modulesPresent = false;
+  let switchFrom;
+  let modulesStat;
+  try {
+    modulesStat = await lstat(modules);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (modulesStat) {
+    modulesPresent = true;
+    assert.ok(modulesStat.isSymbolicLink(),
+      "Refusing to replace a non-junction sample node_modules directory.");
+    const currentModules = resolve(dirname(modules), await readlink(modules));
+    if (currentModules.toLowerCase() !== targetModules.toLowerCase()) {
+      const previousModules = previousReceipt
+        ? resolve(root, previousReceipt.dependencyDirectory, "node_modules")
+        : undefined;
+      assert.ok(upgrade && previousModules &&
+        currentModules.toLowerCase() === previousModules.toLowerCase(),
+      "Existing sample dependencies are not the selected kit's junction; preserve and review them.");
+      switchFrom = modules;
+    }
+  }
   if (await exists(installed)) {
     assert.equal(hash(await readFile(join(installed, "SHA256SUMS"))),
       hash(await readFile(join(temporary, "SHA256SUMS"))), "Installed kit differs.");
@@ -70,23 +96,22 @@ try {
   } else {
     await rename(temporary, installed);
   }
-  const starter = join(root, "starter");
   if (!(await exists(starter))) {
     await cp(join(installed, "sample"), starter, { recursive: true, errorOnExist: true, force: false });
   }
   const manifestPath = join(starter, "package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   assert.ok(manifest.dependencies && typeof manifest.dependencies === "object",
-    "Editable starter package.json must declare dependencies.");
+    "Editable sample package.json must declare dependencies.");
   for (const dependency of kit.packages) {
-    manifest.dependencies[dependency.name] = `file:../var/developer-kit/${directory}/${dependency.file}`;
+    manifest.dependencies[dependency.name] = `file:../../engine/kits/${directory}/${dependency.file}`;
   }
   const lockTemporary = await mkdtemp(join(starter, ".kit-lock-"));
   try {
     const lockManifest = structuredClone(manifest);
     for (const dependency of kit.packages) {
       lockManifest.dependencies[dependency.name] =
-        `file:../../var/developer-kit/${directory}/${dependency.file}`;
+        `file:../../../engine/kits/${directory}/${dependency.file}`;
     }
     await writeFile(join(lockTemporary, "package.json"), `${JSON.stringify(lockManifest, null, 2)}\n`);
     const lockPath = join(starter, "package-lock.json");
@@ -96,7 +121,7 @@ try {
     execFileSync(process.execPath, [npmCli, "install", "--package-lock-only", "--ignore-scripts",
       "--no-audit", "--no-fund"], { cwd: lockTemporary, stdio: "inherit" });
     const lock = (await readFile(join(lockTemporary, "package-lock.json"), "utf8"))
-      .replaceAll("file:../../var/developer-kit/", "file:../var/developer-kit/");
+      .replaceAll("file:../../../engine/kits/", "file:../../engine/kits/");
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await writeFile(lockPath, lock);
   } finally {
@@ -105,32 +130,15 @@ try {
   await mkdir(runtime, { recursive: true });
   for (const file of ["package.json", "package-lock.json"]) {
     const source = await readFile(join(starter, file), "utf8");
-    const rebased = source.replaceAll(`../var/developer-kit/${directory}/`, `../${directory}/`);
+    const rebased = source.replaceAll(`../../engine/kits/${directory}/`, `../${directory}/`);
     await writeFile(join(runtime, file), rebased);
-  }
-  const modules = join(starter, "node_modules");
-  const targetModules = join(runtime, "node_modules");
-  let switchFrom;
-  if (await exists(modules)) {
-    const currentModules = await realpath(modules);
-    if (currentModules.toLowerCase() !== targetModules.toLowerCase()) {
-      const previousModules = previousReceipt
-        ? resolve(root, previousReceipt.dependencyDirectory, "node_modules")
-        : undefined;
-      assert.ok(upgrade && previousModules &&
-        currentModules.toLowerCase() === previousModules.toLowerCase(),
-      "Existing starter dependencies are not the selected kit's junction; preserve and review them.");
-      assert.ok((await lstat(modules)).isSymbolicLink(),
-        "Refusing to replace a non-junction starter node_modules directory.");
-      switchFrom = modules;
-    }
   }
   execFileSync(process.execPath, [npmCli, "ci", "--no-audit", "--no-fund"],
     { cwd: runtime, stdio: "inherit" });
   if (switchFrom) await rm(switchFrom);
-  if (!(await exists(modules))) await symlink(targetModules, modules, "junction");
+  if (!modulesPresent || switchFrom) await symlink(targetModules, modules, "junction");
   await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
-  console.log(`Installed kit ${kit.version}; editable starter preserved at ${starter}.`);
+  console.log(`Installed kit ${kit.version}; editable sample preserved at ${starter}.`);
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
