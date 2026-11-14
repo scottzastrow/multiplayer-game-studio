@@ -13,8 +13,10 @@ New Game allocates a different stable project ID and map ID, writes its
 identity/author/model/adapter metadata and a runtime re-export under
 `games/<project-id>/`, and inserts the design in SQLite. The starter has a
 blank background and two distinct player starts because the installed public
-map contract requires two. Dimensions default to 640 x 480 pixels and must be
-multiples of 32 between 64 and 2048. Both 64 x 64 and 2048 x 2048 are supported.
+map contract requires two. New games and blank levels use a fixed 2048 x 2048
+world. Existing saved maps retain their own validated dimensions.
+Gameplay camera zoom is saved with each level, defaults to 1.0, and remains
+independent of the editor viewport.
 The map is not written into the generated directory: SQLite is authoritative.
 The `assets/` directory is reserved for the following asset-import milestone;
 only the built-in primitive catalog is currently available.

@@ -2,7 +2,11 @@ import { isProjectMapId } from "../../../studio/project-identity.js";
 
 export const MODEL = "generic-grid-v1";
 export const MAP_CELL_SIZE = 32;
-export const DEFAULT_DIMENSIONS = Object.freeze({ width: 640, height: 480 });
+export const DEFAULT_DIMENSIONS = Object.freeze({ width: 2048, height: 2048 });
+export const MAX_MAP_DIMENSION = 2048;
+export const DEFAULT_CAMERA_ZOOM = 1;
+export const MIN_CAMERA_ZOOM = 0.5;
+export const MAX_CAMERA_ZOOM = 2;
 export const DESIGN_LAYERS = Object.freeze([
   { id: "terrain", name: "Terrain", order: 0 },
   { id: "walls", name: "Blocks", order: 1 },
@@ -52,13 +56,16 @@ export function validateCreation(input) {
       throw new TypeError(`${key === "name" ? "Game name" : "Author/credits"} must be nonblank and at most ${max} characters, without control characters.`);
     }
   }
-  validateDimensions(input);
+  if (input.width !== DEFAULT_DIMENSIONS.width || input.height !== DEFAULT_DIMENSIONS.height) {
+    throw new TypeError(`New games use a fixed map size of ${DEFAULT_DIMENSIONS.width} × ${DEFAULT_DIMENSIONS.height} pixels.`);
+  }
   return { ...input, name: input.name.trim(), author: input.author.trim() };
 }
 export function validateDimensions({ width, height }) {
   for (const [key, value] of Object.entries({ width, height })) {
-    if (!Number.isInteger(value) || value < 64 || value > 2048 || value % 32 !== 0) {
-      throw new TypeError(`Map ${key} must be a multiple of 32 between 64 and 2048 pixels.`);
+    if (!Number.isInteger(value) || value < MAP_CELL_SIZE * 2 ||
+        value > MAX_MAP_DIMENSION || value % MAP_CELL_SIZE !== 0) {
+      throw new TypeError(`Map ${key} must be a multiple of ${MAP_CELL_SIZE} between ${MAP_CELL_SIZE * 2} and ${MAX_MAP_DIMENSION} pixels.`);
     }
   }
 }
@@ -68,12 +75,12 @@ export function createDesignObject(id, assetId, transform, order, assetCatalog =
   return { id, type: asset.type, assetId, layer: OBJECT_TYPES[asset.type].layer, order,
     transform: { ...transform }, collision: asset.collisionBox ? { ...asset.collisionBox } : null };
 }
-export function createDocument(id, name, bounds) {
+export function createDocument(id, name, bounds = DEFAULT_DIMENSIONS) {
   validateDimensions(bounds);
   const x = Math.floor(bounds.width / 64) * 32;
   const y = Math.floor(bounds.height / 64) * 32;
   return validateFloorDocument({
-    formatVersion: 1, id, name, cellSize: 32, bounds: { ...bounds },
+    formatVersion: 1, id, name, cellSize: 32, bounds: { ...bounds }, cameraZoom: DEFAULT_CAMERA_ZOOM,
     layers: DESIGN_LAYERS.map(layer => ({ ...layer })),
     objects: [
       createDesignObject("player-start", "generic-player", { x, y }, 0),
@@ -82,7 +89,19 @@ export function createDocument(id, name, bounds) {
   });
 }
 export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
-  exact(document, ["formatVersion", "id", "name", "cellSize", "bounds", "layers", "objects"], "Generic document");
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    throw new TypeError("Generic document must be an object.");
+  }
+  const keys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects"];
+  const unknown = Object.keys(document).filter(key => !keys.includes(key));
+  if (unknown.length || keys.some(key => key !== "cameraZoom" && !Object.hasOwn(document, key))) {
+    throw new TypeError("Generic document has missing or unknown fields.");
+  }
+  const cameraZoom = document.cameraZoom ?? DEFAULT_CAMERA_ZOOM;
+  if (!Number.isFinite(cameraZoom) || cameraZoom < MIN_CAMERA_ZOOM ||
+      cameraZoom > MAX_CAMERA_ZOOM || Math.round(cameraZoom * 10) !== cameraZoom * 10) {
+    throw new TypeError(`Gameplay camera zoom must be between ${MIN_CAMERA_ZOOM} and ${MAX_CAMERA_ZOOM} in 0.1 increments.`);
+  }
   if (document.formatVersion !== 1 || document.cellSize !== 32 || !isProjectMapId(document.id) ||
       typeof document.name !== "string" || !document.name.trim() || document.name.length > 64) {
     throw new TypeError("Invalid Generic Grid v1 document identity or version.");
@@ -122,9 +141,9 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
     }
   }
   for (const [id, asset] of Object.entries(ASSET_CATALOG)) {
-    if (asset.required && !unique.has(id)) throw new TypeError(`${asset.label} is required.`);
+    if (asset.required && asset.type !== "spawn" && !unique.has(id)) throw new TypeError(`${asset.label} is required.`);
   }
-  return document;
+  return { ...document, cameraZoom };
 }
 export const objectBounds = (object, assetCatalog = ASSET_CATALOG) => {
   const asset = assetCatalog[object.assetId];
@@ -175,7 +194,14 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
     const dy = Math.max(block.transform.y - (spawn.transform.y + 16), 0, spawn.transform.y + 16 - block.transform.y - 32);
     return dx * dx + dy * dy < 64;
   })).map(spawn => `${assetCatalog[spawn.assetId].label} is blocked; move the spawn or blocker.`);
-  if (spawns[0].transform.x === spawns[1].transform.x && spawns[0].transform.y === spawns[1].transform.y) {
+  for (const [assetId, asset] of Object.entries(assetCatalog)) {
+    if (asset.required && asset.type === "spawn" &&
+        !document.objects.some(object => object.assetId === assetId)) {
+      problems.push(`${asset.label} is missing; add it from the palette or undo clearing spawns before Play.`);
+    }
+  }
+  if (spawns.length >= 2 && spawns[0].transform.x === spawns[1].transform.x &&
+      spawns[0].transform.y === spawns[1].transform.y) {
     problems.push("Player starts must occupy distinct cells; move one start.");
   }
   return problems;

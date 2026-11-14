@@ -77,12 +77,13 @@ No preview runtime imports the engine checkout or starts its backend.
 ## Studio New Game and Open Game
 
 Run `npm run studio:dev`, then open `http://127.0.0.1:4173`.
-**New Game** beside **Open Game** collects the game name, author/credits and
-map dimensions (default 640 x 480 pixels; multiples of 32 from 64 to 2048).
-It creates a blank Generic Grid v1 game with two safe player starts, primitive
+**New Game** beside **Open Game** collects the game name and author/credits;
+every new game starts with a fixed 2048 x 2048 pixel world. It creates a blank
+Generic Grid v1 game with two safe player starts, primitive
 placement tools and a simple public-runtime movement preview, not a copy of
-Astraeum. Generic Play follows the player at 1:1 world-to-CSS-pixel scale;
-smaller worlds center without scaling. Duplicate names are rejected and
+Astraeum. Gameplay camera zoom is saved with each level and independent of the
+editor zoom; at its default 1.0, Generic Play follows the player at 1:1
+world-to-CSS-pixel scale. Duplicate names are rejected and
 unsaved edits are protected.
 Save/Ctrl+S writes the selected map to SQLite; Open Game reopens it after
 restart. The workbench **Levels** panel lists only the selected game's levels:

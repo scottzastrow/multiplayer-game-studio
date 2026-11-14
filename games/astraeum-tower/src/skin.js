@@ -51,13 +51,15 @@ function normalizedVector(x, y) {
   return magnitude ? { x: x / magnitude, y: y / magnitude } : null;
 }
 
-function cameraOffset(player, width, height, map) {
+function cameraOffset(player, width, height, map, zoom) {
+  const viewWidth = width / zoom;
+  const viewHeight = height / zoom;
   const axis = (position, viewSize, worldSize) => viewSize >= worldSize
     ? (worldSize - viewSize) / 2
     : Math.max(0, Math.min(worldSize - viewSize, position - viewSize / 2));
   return {
-    x: axis(player.x, width, map.bounds.width),
-    y: axis(player.y, height, map.bounds.height)
+    x: axis(player.x, viewWidth, map.bounds.width),
+    y: axis(player.y, viewHeight, map.bounds.height)
   };
 }
 
@@ -349,6 +351,7 @@ export function towerSkinFactory(
       canvas.dataset.cellSize = String(CELL);
       canvas.dataset.worldWidth = String(map.bounds.width);
       canvas.dataset.worldHeight = String(map.bounds.height);
+      canvas.dataset.cameraZoom = String(design.cameraZoom);
       canvas.dataset.collisionRectangles = String(map.collisions.length);
       canvas.dataset.importedAssetIds = JSON.stringify(design.objects
         .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
@@ -629,11 +632,12 @@ export function towerSkinFactory(
           const players = current.players ?? [player];
           const enemies = current.enemies ?? [];
           canvas.dataset.simulationTick = String(current.tick);
-          const camera = cameraOffset(player, viewportWidth, viewportHeight, map);
+          const camera = cameraOffset(player, viewportWidth, viewportHeight, map, design.cameraZoom);
           context.clearRect(0, 0, canvas.width, canvas.height);
           context.imageSmoothingEnabled = false;
           context.save();
-          context.translate(-camera.x, -camera.y);
+          context.setTransform(pixelRatio * design.cameraZoom, 0, 0, pixelRatio * design.cameraZoom,
+            -camera.x * pixelRatio * design.cameraZoom, -camera.y * pixelRatio * design.cameraZoom);
           context.drawImage(background, 0, 0);
           for (const slime of enemies) drawSlime(context, slime);
           for (const activePlayer of players) drawPlayer(context, artwork, activePlayer);
@@ -649,10 +653,11 @@ export function towerSkinFactory(
           canvas.dataset.lightingCenterY = String(playerLight.y);
           canvas.dataset.cameraX = String(camera.x);
           canvas.dataset.cameraY = String(camera.y);
-          canvas.dataset.playerScreenX = String(player.x - camera.x);
-          canvas.dataset.playerScreenY = String(player.y - camera.y);
-          canvas.dataset.lightingScreenX = String(playerLight.x - camera.x);
-          canvas.dataset.lightingScreenY = String(playerLight.y - camera.y);
+          canvas.dataset.worldScale = String(design.cameraZoom);
+          canvas.dataset.playerScreenX = String((player.x - camera.x) * design.cameraZoom);
+          canvas.dataset.playerScreenY = String((player.y - camera.y) * design.cameraZoom);
+          canvas.dataset.lightingScreenX = String((playerLight.x - camera.x) * design.cameraZoom);
+          canvas.dataset.lightingScreenY = String((playerLight.y - camera.y) * design.cameraZoom);
           const time = performance.now() / (1000 / 60);
           drawWorldLighting(
             context,
@@ -662,8 +667,8 @@ export function towerSkinFactory(
             {
               cameraX: camera.x,
               cameraY: camera.y,
-              scaleX: 1,
-              scaleY: 1,
+              scaleX: design.cameraZoom,
+              scaleY: design.cameraZoom,
               ambientColor: TOWER_AMBIENT_COLOR,
               pixelRatio
             }

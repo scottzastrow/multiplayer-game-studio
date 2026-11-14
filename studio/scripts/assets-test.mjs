@@ -147,7 +147,7 @@ try {
   let origin = await start();
   const create = async name => {
     const response = await postJson(`${origin}/api/projects`, {
-      name, author: "Test", width: 640, height: 480, model: "generic-grid-v1"
+      name, author: "Test", width: 2048, height: 2048, model: "generic-grid-v1"
     });
     assert.equal(response.status, 201);
     return response.body;

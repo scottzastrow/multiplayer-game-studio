@@ -6,7 +6,13 @@ import { resolve, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { createFloorDocument, FLOOR1_GRID, migrateFloorDocumentV1 } from "../../games/astraeum-tower/src/project.js";
+import {
+  createFloorDocument,
+  FLOOR1_GRID,
+  migrateFloorDocumentV1,
+  playStartProblems as towerPlayStartProblems,
+  validateFloorDocument as validateTowerDocument
+} from "../../games/astraeum-tower/src/project.js";
 import { ASTRAEUM_PROJECT_ID as projectId, ASTRAEUM_FLOOR_1_MAP_ID as mapId, ASTRAEUM_MODEL as model } from "../project-identity.js";
 import * as generic from "../../games/generic-grid-v1/src/project.js";
 
@@ -211,11 +217,13 @@ try {
 
   const creationPath = resolve(testDir, "creation.sqlite");
   origin = await start(creationPath);
-  const creation = { name: "Generic One", author: "Disposable credits", width: 640, height: 480, model: generic.MODEL };
+  const creation = { name: "Generic One", author: "Disposable credits", ...generic.DEFAULT_DIMENSIONS, model: generic.MODEL };
   for (const patch of [
     { name: "" }, { name: "   " }, { name: "a".repeat(65) }, { name: "bad\nname" },
-    { author: "" }, { author: "a".repeat(129) }, { width: 63 }, { width: 65 },
-    { height: 2080 }, { width: "640" }, { height: 64.5 }, { model: "astraeum-floor-v2" }, { extra: true }
+    { author: "" }, { author: "a".repeat(129) }, { width: 640 }, { height: 480 },
+    { width: 640, height: 480 },
+    { width: 64, height: 64 }, { width: "2048" }, { height: 2048.5 },
+    { model: "astraeum-floor-v2" }, { extra: true }
   ]) {
     assert.equal((await request(`${origin}/api/projects`, "POST", { ...creation, ...patch })).status, 400);
   }
@@ -223,8 +231,22 @@ try {
   assert.equal(created.status, 201);
   const one = created.body;
   assert.notEqual(one.projectId, one.model, "project identity is not its model");
+  assert.deepEqual(one.document.bounds, generic.DEFAULT_DIMENSIONS, "new projects use fixed world dimensions");
   assert.equal(one.document.objects.length, 2, "blank terrain and only two required player starts");
   assert.deepEqual(generic.playStartProblems(one.document), []);
+  const noGenericStarts = structuredClone(one.document);
+  noGenericStarts.objects = noGenericStarts.objects.filter(object => object.type !== "spawn");
+  assert.deepEqual(generic.validateFloorDocument(noGenericStarts).objects, []);
+  assert.match(generic.playStartProblems(noGenericStarts).join(" "), /missing; add it from the palette/i);
+  const savedNoSpawnDraft = await request(url(origin, one.projectId, one.mapId), "PUT",
+    { projectId: one.projectId, model: generic.MODEL, document: noGenericStarts });
+  assert.equal(savedNoSpawnDraft.status, 200, "a generic draft without player starts remains saveable");
+  assert.deepEqual((await request(url(origin, one.projectId, one.mapId))).body.document, noGenericStarts,
+    "SQLite reopens the spawn-free draft unchanged");
+  const towerWithoutStart = createFloorDocument();
+  towerWithoutStart.objects = towerWithoutStart.objects.filter(object => object.assetId !== "spawn-aries");
+  validateTowerDocument(towerWithoutStart);
+  assert.match(towerPlayStartProblems(towerWithoutStart).join(" "), /player start is missing.*add a player start/i);
   const gamesPath = resolve(testDir, "games");
   const projectPath = resolve(gamesPath, one.projectId);
   const metadata = JSON.parse(await readFile(resolve(projectPath, "project.json"), "utf8"));
@@ -235,10 +257,11 @@ try {
   const beforeDuplicate = await readdir(gamesPath);
   assert.equal((await request(`${origin}/api/projects`, "POST", { ...creation, name: " generic ONE " })).status, 409);
   assert.deepEqual(await readdir(gamesPath), beforeDuplicate);
-  const two = (await request(`${origin}/api/projects`, "POST", { ...creation, name: "Generic Two", width: 64, height: 64 })).body;
+  const two = (await request(`${origin}/api/projects`, "POST", { ...creation, name: "Generic Two" })).body;
   assert.notEqual(one.projectId, two.projectId);
   assert.notEqual(one.mapId, two.mapId);
-  assert.deepEqual(generic.playStartProblems(two.document), [], "minimum dimensions still have two safe starts");
+  assert.deepEqual(two.document.bounds, generic.DEFAULT_DIMENSIONS);
+  assert.deepEqual(generic.playStartProblems(two.document), [], "fixed dimensions include two safe starts");
   generic.createDocument("maximum-map", "Maximum map", { width: 2048, height: 2048 });
   const edited = structuredClone(one.document);
   edited.objects.push(generic.createDesignObject("block-1", "generic-block", { x: 64, y: 64 }, 0));
@@ -267,13 +290,15 @@ try {
   const mutate = body => request(levelsAddress, "POST", { mapId: one.mapId, ...body });
   assert.equal((await mutate({ action: "delete" })).status, 409, "last active level cannot be deleted");
   assert.equal((await mutate({ action: "add", name: " " })).status, 400);
+  assert.equal((await mutate({ action: "add", name: "Custom size", width: 640, height: 480 })).status, 400,
+    "blank levels reject custom dimensions");
   const blank = await mutate({ action: "add", name: "Blank" });
   assert.equal(blank.status, 200);
   const blankId = blank.body.mapId;
   assert.notEqual(blankId, one.mapId);
   const blankDocument = (await request(url(origin, one.projectId, blankId))).body.document;
   assert.equal(blankDocument.objects.length, 2);
-  assert.deepEqual(blankDocument.bounds, edited.bounds);
+  assert.deepEqual(blankDocument.bounds, { width: 2048, height: 2048 });
   const duplicate = await mutate({ action: "duplicate", name: "Independent copy" });
   assert.equal(duplicate.status, 200);
   const copyId = duplicate.body.mapId;
@@ -308,7 +333,7 @@ try {
   assert.equal(badDb.prepare("SELECT document_json FROM maps WHERE id = ?").get("unknown-map").document_json, v2Json);
   assert.equal(badDb.prepare("SELECT document_json FROM map_backups").get().document_json, "original backup bytes");
   badDb.close();
-  console.log("Persistence passed: legacy migration/backups, model isolation, New Game validation/defaults, duplicate rejection, metadata-only files, rollback cleanup and restart.");
+  console.log("Persistence passed: legacy migration/backups, model isolation, fixed New Game and blank-level dimensions, custom-size creation rejection, duplicate rejection, metadata-only files, rollback cleanup and restart.");
 } finally {
   await stop();
   await rm(testDir, { recursive: true, force: true });

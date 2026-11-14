@@ -68,6 +68,21 @@
 - [x] Verify level workflows through disposable direct-CDP UI controls, including
   service restart/reopen, both models, dirty edits, independent saved states,
   delete/recover, project isolation and selected-level Play/Stop.
+- [x] Default New Game and blank levels to 2048 x 2048; add explicit,
+  expansion-only map dimensions as one undoable edit without moving, scaling or
+  filling existing/new space.
+- [x] Persist gameplay camera zoom independently from editor zoom and derive
+  Tower and Generic Play camera bounds/scale from saved level settings.
+- [x] Verify map expansion, placement, save/reopen, Play movement/collision,
+  camera zoom and viewport resizing through disposable direct CDP.
+- [x] Add click/Shift/marquee/Ctrl+A multi-selection synchronized between map
+  and hierarchy, plus shared group movement, nudging, duplication, deletion,
+  mixed-value Inspector editing, and one-action undo/redo.
+- [x] Add locked-aware, count-confirmed Clear Level Contents categories; allow
+  spawn-free draft saves while blocking Play with actionable validation.
+- [x] Verify selection, bounds rejection, snapping, undo/redo, save/reopen,
+  clear counts/locks and spawn-free Play validation via disposable direct CDP;
+  retain actual-versus-expected evidence and stop on the first failure.
 - [ ] Level transitions, generation, area-fill tools, audio and shared libraries
   remain separate future work.
 - [ ] Game export and PixelLab API integration remain separate milestones.

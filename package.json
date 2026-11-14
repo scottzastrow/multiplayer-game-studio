@@ -13,6 +13,8 @@
     "studio:smoke": "node studio/scripts/browser-smoke.mjs",
     "studio:persistence:test": "node studio/scripts/persistence-test.mjs",
     "studio:levels:smoke": "node studio/scripts/levels-smoke.mjs",
+    "studio:wall-clear:smoke": "node studio/scripts/levels-smoke.mjs --wall-clear-only",
+    "studio:map-settings:smoke": "node studio/scripts/levels-smoke.mjs --map-settings-only",
     "studio:assets:test": "node studio/scripts/assets-test.mjs",
     "verify": "npm run verify --prefix games/sample",
     "build": "npm run build --prefix games/sample",

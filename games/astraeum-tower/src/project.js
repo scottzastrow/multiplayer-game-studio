@@ -9,6 +9,10 @@ import {
 export const MAP_CELL_SIZE = 32;
 export const DESIGN_FORMAT_VERSION = 2;
 export const MAX_DESIGN_OBJECTS = 4000;
+export const MAX_MAP_DIMENSION = 2048;
+export const DEFAULT_CAMERA_ZOOM = 1;
+export const MIN_CAMERA_ZOOM = 0.5;
+export const MAX_CAMERA_ZOOM = 2;
 export const FLOOR1_GRID = Object.freeze(floor1.f1);
 export const FLOOR1_COLUMNS = FLOOR1_GRID[0].length;
 export const FLOOR1_ROWS = FLOOR1_GRID.length;
@@ -157,7 +161,7 @@ function sameAbsoluteRect(left, right) {
  * exact transform and collision; other assets are centred on the box and use their
  * own collision, which the outcome states explicitly before anything changes.
  */
-export function planArtworkReplacement(object, assetId) {
+export function planArtworkReplacement(object, assetId, bounds = FLOOR1_BOUNDS) {
   const asset = ASSET_CATALOG[assetId];
   if (!isUnresolvedCollision(object)) fail(`${object.id} is not an unresolved collision box.`);
   if (!artworkReplacementAssets().includes(assetId)) fail(`${assetId} cannot replace a collision box.`);
@@ -166,7 +170,7 @@ export function planArtworkReplacement(object, assetId) {
     ? { ...object.transform }
     : clampTransform(assetId, transformAtPoint(assetId, {
       x: before.x + before.width / 2, y: before.y + before.height / 2
-    }));
+    }), bounds);
   const collision = asset.collisionBox && asset.collision !== "none" ? { ...asset.collisionBox } : null;
   const after = collision ? collisionRect({ transform, collision }) : null;
   const outcome = sameAbsoluteRect(before, after) ? "identical" : after ? "changed" : "removed";
@@ -187,7 +191,7 @@ function nextLayerOrder(document, layer) {
 export function assignArtworkToCollision(document, id, assetId) {
   const object = document.objects.find(item => item.id === id);
   if (!object) fail(`Object ${id} does not exist.`);
-  const plan = planArtworkReplacement(object, assetId);
+  const plan = planArtworkReplacement(object, assetId, document.bounds);
   const asset = ASSET_CATALOG[assetId];
   const layer = OBJECT_TYPES[asset.type].layer;
   const replacement = {
@@ -214,13 +218,14 @@ export function keepCollisionBox(document, id) {
   return { ...document, objects: document.objects.map(item => item.id === id ? { ...item, migration } : item) };
 }
 
-function emptyDesign() {
+function emptyDesign(bounds = FLOOR1_BOUNDS) {
   return {
     formatVersion: DESIGN_FORMAT_VERSION,
     id: DESIGN_ID,
     name: DESIGN_NAME,
     cellSize: MAP_CELL_SIZE,
-    bounds: { ...FLOOR1_BOUNDS },
+    bounds: { ...bounds },
+    cameraZoom: DEFAULT_CAMERA_ZOOM,
     layers: DESIGN_LAYERS.map(layer => ({ ...layer })),
     objects: []
   };
@@ -292,8 +297,8 @@ export function createFloorDocument(grid = FLOOR1_GRID) {
   return validateFloorDocument(design);
 }
 
-export function createBlankDocument(id, name) {
-  const design = emptyDesign();
+export function createBlankDocument(id, name, bounds = { width: MAX_MAP_DIMENSION, height: MAX_MAP_DIMENSION }) {
+  const design = emptyDesign(bounds);
   design.id = id;
   design.name = name;
   for (let y = 0; y < FLOOR1_ROWS; y++) {
@@ -385,7 +390,7 @@ export function migrateFloorDocumentV1(document) {
   };
 }
 
-function validateObject(input, index, assetCatalog = ASSET_CATALOG) {
+function validateObject(input, index, mapBounds, assetCatalog = ASSET_CATALOG) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail(`Object ${index} is invalid.`);
   const unknown = Object.keys(input).filter(key => !OBJECT_KEYS.has(key));
   if (unknown.length) fail(`Object ${String(input.id)} has unknown fields: ${unknown.join(", ")}.`);
@@ -400,9 +405,9 @@ function validateObject(input, index, assetCatalog = ASSET_CATALOG) {
   if (!Number.isInteger(transform.x) || !Number.isInteger(transform.y)) fail(`Object ${id} transform must use whole pixels.`);
   const object = { id, type, assetId, layer, order, transform: { x: transform.x, y: transform.y }, collision: null };
   const bounds = objectBounds(object, assetCatalog);
-  if (bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > FLOOR1_BOUNDS.width ||
-      bounds.y + bounds.height > FLOOR1_BOUNDS.height) {
-    fail(`Object ${id} is outside the Floor 1 bounds.`);
+  if (bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > mapBounds.width ||
+      bounds.y + bounds.height > mapBounds.height) {
+    fail(`Object ${id} is outside the map bounds.`);
   }
   if (asset.snap.forced && ((transform.x - asset.snap.x) % MAP_CELL_SIZE !== 0 ||
       (transform.y - asset.snap.y) % MAP_CELL_SIZE !== 0)) {
@@ -430,8 +435,27 @@ function validateObject(input, index, assetCatalog = ASSET_CATALOG) {
 
 /** Validates a format 2 design and returns a normalised copy. Unknown fields are rejected, never dropped. */
 export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
-  exactKeys(document, ["formatVersion", "id", "name", "cellSize", "bounds", "layers", "objects"],
-    "The Floor 1 design");
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    fail("The Floor 1 design must be an object.");
+  }
+  const allowedKeys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects"];
+  const unknownKeys = Object.keys(document).filter(key => !allowedKeys.includes(key));
+  const requiredKeys = allowedKeys.filter(key => key !== "cameraZoom");
+  if (unknownKeys.length || requiredKeys.some(key => !Object.hasOwn(document, key))) {
+    fail(`The Floor 1 design must contain ${requiredKeys.join(", ")} and no unknown fields.`);
+  }
+  exactKeys(document.bounds, ["width", "height"], "Design bounds");
+  const bounds = document.bounds;
+  if (![bounds.width, bounds.height].every(value =>
+    Number.isInteger(value) && value >= MAP_CELL_SIZE * 2 &&
+    value <= MAX_MAP_DIMENSION && value % MAP_CELL_SIZE === 0)) {
+    fail(`Map dimensions must be multiples of ${MAP_CELL_SIZE} between ${MAP_CELL_SIZE * 2} and ${MAX_MAP_DIMENSION} pixels.`);
+  }
+  const cameraZoom = document.cameraZoom ?? DEFAULT_CAMERA_ZOOM;
+  if (!Number.isFinite(cameraZoom) || cameraZoom < MIN_CAMERA_ZOOM ||
+      cameraZoom > MAX_CAMERA_ZOOM || Math.round(cameraZoom * 10) !== cameraZoom * 10) {
+    fail(`Gameplay camera zoom must be between ${MIN_CAMERA_ZOOM} and ${MAX_CAMERA_ZOOM} in 0.1 increments.`);
+  }
   if (document.formatVersion !== DESIGN_FORMAT_VERSION) {
     fail(`Unsupported Floor 1 design format ${String(document.formatVersion)}.`);
   }
@@ -439,10 +463,6 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
       typeof document.name !== "string" || !document.name.trim() || document.name.length > 64 ||
       /[\u0000-\u001f\u007f]/.test(document.name) || document.cellSize !== MAP_CELL_SIZE) {
     fail("The Floor 1 design identity is invalid.");
-  }
-  exactKeys(document.bounds, ["width", "height"], "Design bounds");
-  if (document.bounds.width !== FLOOR1_BOUNDS.width || document.bounds.height !== FLOOR1_BOUNDS.height) {
-    fail("The Floor 1 design bounds are invalid.");
   }
   if (!Array.isArray(document.layers) || document.layers.length !== DESIGN_LAYERS.length ||
       !document.layers.every((layer, index) => {
@@ -459,7 +479,7 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   const terrainCells = new Set();
   const uniqueAssets = new Map();
   const objects = document.objects.map((input, index) => {
-    const object = validateObject(input, index, assetCatalog);
+    const object = validateObject(input, index, bounds, assetCatalog);
     if (ids.has(object.id)) fail(`Object ID ${object.id} is not unique.`);
     ids.add(object.id);
     if (object.type === "terrain-tile") {
@@ -473,14 +493,15 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   for (const [assetId, asset] of Object.entries(ASSET_CATALOG)) {
     const count = uniqueAssets.get(assetId) ?? 0;
     if (asset.unique && count > 1) fail(`Only one ${asset.label} is allowed.`);
-    if (asset.required && count < 1) fail(`The design needs a ${asset.label}.`);
+    if (asset.required && asset.type !== "spawn" && count < 1) fail(`The design needs a ${asset.label}.`);
   }
   return {
     formatVersion: DESIGN_FORMAT_VERSION,
     id: document.id,
     name: document.name,
     cellSize: MAP_CELL_SIZE,
-    bounds: { ...FLOOR1_BOUNDS },
+    bounds: { ...bounds },
+    cameraZoom,
     layers: DESIGN_LAYERS.map(layer => ({ ...layer })),
     objects
   };
@@ -521,8 +542,10 @@ export function hitTest(design, point, isSelectable = () => true, assetCatalog =
 
 /** Floor and Wang-autotiled wall occupancy per cell. */
 export function cellOccupancy(design) {
-  const floor = Array.from({ length: FLOOR1_ROWS }, () => new Array(FLOOR1_COLUMNS).fill(false));
-  const wall = Array.from({ length: FLOOR1_ROWS }, () => new Array(FLOOR1_COLUMNS).fill(false));
+  const columns = design.bounds.width / MAP_CELL_SIZE;
+  const rows = design.bounds.height / MAP_CELL_SIZE;
+  const floor = Array.from({ length: rows }, () => new Array(columns).fill(false));
+  const wall = Array.from({ length: rows }, () => new Array(columns).fill(false));
   for (const object of design.objects) {
     const x = object.transform.x / MAP_CELL_SIZE;
     const y = object.transform.y / MAP_CELL_SIZE;
@@ -533,14 +556,14 @@ export function cellOccupancy(design) {
 }
 
 /**
- * Derived legacy grid used by collision and generated decorations: "#" for aligned
- * walls and cells without floor, otherwise the marker of an object anchored in the
- * cell ("*" for objects without a Floor 1 marker), otherwise ".".
+ * Derived grid for collision and generated decorations. The original Floor 1 area
+ * keeps its authored floor requirement; newly expanded cells start open and empty.
  */
 export function floorDocumentGrid(document, assetCatalog = ASSET_CATALOG) {
   const design = validateFloorDocument(document, assetCatalog);
   const { floor, wall } = cellOccupancy(design);
-  const rows = floor.map((row, y) => row.map((hasFloor, x) => hasFloor && !wall[y][x] ? "." : "#"));
+  const rows = floor.map((row, y) => row.map((hasFloor, x) =>
+    wall[y][x] ? "#" : hasFloor || x >= FLOOR1_COLUMNS || y >= FLOOR1_ROWS ? "." : "#"));
   for (const object of design.objects) {
     if (!["prop", "item", "spawn"].includes(object.type)) continue;
     const x = Math.floor(object.transform.x / MAP_CELL_SIZE);
@@ -581,6 +604,9 @@ export function objectLights(design, assetCatalog = ASSET_CATALOG) {
 export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
   const design = validateFloorDocument(document, assetCatalog);
   const start = design.objects.find(object => object.assetId === "spawn-aries");
+  if (!start) {
+    return ["The Aries player start is missing. Add a player start from the palette or undo clearing spawns before Play."];
+  }
   const grid = floorDocumentGrid(design, assetCatalog);
   const cell = {
     x: Math.floor(start.transform.x / MAP_CELL_SIZE),
@@ -588,8 +614,8 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
   };
   const problems = [];
   if (grid[cell.y][cell.x] === "#") {
-    problems.push(`Aries start is on a wall or empty (no floor) cell at column ${cell.x}, row ${cell.y}. ` +
-      "Move the Aries start onto open floor or remove the wall there.");
+    problems.push(`Aries start is on a wall or blocked cell at column ${cell.x}, row ${cell.y}. ` +
+      "Move the Aries start to an open cell or remove the wall there.");
   }
   const centre = { x: start.transform.x, y: start.transform.y + 4 };
   for (const object of design.objects) {
@@ -606,6 +632,8 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
 
 export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
   const design = validateFloorDocument(document, assetCatalog);
+  const problems = playStartProblems(design, assetCatalog);
+  if (problems.length) throw new Error(problems.join(" "));
   const start = design.objects.find(object => object.assetId === "spawn-aries");
   const reserve = FLOOR1_GRID.flatMap((row, y) => [...row].map((cell, x) =>
     cell === "." ? { x, y } : null)).find(Boolean);
@@ -628,7 +656,7 @@ export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
     formatVersion: 1,
     id: design.id,
     name: design.name,
-    bounds: FLOOR1_BOUNDS,
+    bounds: design.bounds,
     cellSize: MAP_CELL_SIZE,
     objects,
     collisions,

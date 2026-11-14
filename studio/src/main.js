@@ -33,12 +33,17 @@ import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
 let { drawAsset, drawDesign } = towerRender;
 import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
 import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
-import { readStandardGamepad } from "@multiplayer-game/theme-sdk";
+import {
+  MAX_MAP_DIMENSION as RUNTIME_MAX_MAP_DIMENSION,
+  MAP_CELL_SIZE as RUNTIME_MAP_CELL_SIZE,
+  readStandardGamepad
+} from "@multiplayer-game/theme-sdk";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
 import { importedAssetDefinition } from "../project-assets.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
+const MIN_MAP_DIMENSION = RUNTIME_MAP_CELL_SIZE * 2;
 const mapUrl = ({ projectId, mapId }) => `/api/projects/${encodeURIComponent(projectId)}/maps/${encodeURIComponent(mapId)}`;
 const projectAssetsUrl = projectId => `/api/projects/${encodeURIComponent(projectId)}/assets`;
 const LAYER_PREFS_KEY = "web-studio.astraeum.layers.v1";
@@ -64,6 +69,14 @@ const PLAY_BADGES = Object.freeze({
   partial: { text: "Partial in Play", className: "badge partial" },
   "editor-only": { text: "Editor only", className: "badge editor-only" }
 });
+const CLEAR_CATEGORIES = Object.freeze([
+  { id: "terrain", label: "Terrain", type: "terrain-tile" },
+  { id: "walls", label: "Walls", type: "wall" },
+  { id: "props", label: "Props", type: "prop" },
+  { id: "items", label: "Items", type: "item" },
+  { id: "collision", label: "Collision boxes", type: "collision" },
+  { id: "spawns", label: "Spawns", type: "spawn" }
+]);
 const $ = selector => document.querySelector(selector);
 const studio = $("#studio");
 const canvas = $("#map-canvas");
@@ -75,6 +88,8 @@ let playerControllerStatusTimer = null;
 
 const state = {
   document: null,
+  loadedPayload: null,
+  mapSizeDraft: null,
   identity: { projectId: ASTRAEUM_PROJECT_ID, mapId: ASTRAEUM_FLOOR_1_MAP_ID },
   saving: false,
   switching: false,
@@ -93,6 +108,7 @@ const state = {
   savedJson: "",
   artwork: null,
   selectedId: null,
+  selectedIds: new Set(),
   tool: "select",
   placeAssetId: null,
   preview: null,
@@ -113,7 +129,7 @@ const state = {
   layers: loadLayerPrefs(),
   paletteView: loadPaletteView(),
   playerControlMode: loadPlayerControlMode(),
-  openGroups: new Set(["walls", "props", "items", "spawns", "collision"]),
+  openGroups: new Set(),
   hierarchyKey: "",
   scene: { document: null, key: "", canvas: null },
   play: { phase: "idle", game: null, mount: null, timer: null, view: null, resizeObserver: null }
@@ -145,9 +161,15 @@ function updatePlayerSettings() {
   $("#player-mode-summary").textContent = selected.label;
   $("#player-control-mode").value = state.playerControlMode;
   $("#player-control-bindings").textContent = selected.bindings;
+  const cameraZoom = $("#camera-zoom");
+  if (cameraZoom && document.activeElement !== cameraZoom) {
+    cameraZoom.value = String(state.document?.cameraZoom ?? towerProject.DEFAULT_CAMERA_ZOOM);
+  }
+  $("#camera-zoom-value").textContent = `${Number(cameraZoom?.value ?? towerProject.DEFAULT_CAMERA_ZOOM).toFixed(1)}×`;
+  if (cameraZoom) cameraZoom.disabled = !state.document || isPlaying() || state.saving || state.switching;
   $("#player-settings-note").textContent = state.model === generic.MODEL
-    ? "Generic Grid currently supports its existing WASD and arrow-key movement controls; these mode-specific bindings apply to Astraeum Tower Play."
-    : "This preference is saved locally in this browser and is not part of the game design.";
+    ? "Generic Grid supports WASD and arrow-key movement. Camera zoom is saved with the current level."
+    : "Camera zoom is saved with the current level; control mode remains a local browser preference.";
 }
 
 function updatePlayerControllerStatus(status, id = "") {
@@ -241,8 +263,100 @@ async function loadProjectAssets(projectId, model) {
 
 const isPlaying = () => state.play.phase !== "idle";
 const selectedObject = () => state.document?.objects.find(object => object.id === state.selectedId) ?? null;
+const selectedObjects = () => state.document?.objects.filter(object => state.selectedIds.has(object.id)) ?? [];
 const isSelectable = object => state.layers[object.layer].visible && !state.layers[object.layer].locked;
 const layerName = id => DESIGN_LAYERS.find(layer => layer.id === id).name;
+const mapBounds = () => state.document?.bounds ?? FLOOR1_BOUNDS;
+
+function setSelection(ids, preferredId = null) {
+  const available = new Set(state.document?.objects.map(object => object.id) ?? []);
+  state.selectedIds = new Set([...ids].filter(id => available.has(id)));
+  state.selectedId = preferredId && state.selectedIds.has(preferredId)
+    ? preferredId : [...state.selectedIds].at(-1) ?? null;
+  for (const object of selectedObjects()) state.openGroups.add(object.layer);
+}
+
+function toggleSelection(id) {
+  const next = new Set(state.selectedIds);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  setSelection(next, next.has(id) ? id : [...next].at(-1) ?? null);
+}
+
+function currentMapSizeDraft() {
+  const bounds = mapBounds();
+  const identity = `${state.identity.projectId}/${state.identity.mapId}`;
+  const draft = state.mapSizeDraft;
+  if (!draft || draft.identity !== identity ||
+      draft.baseWidth !== bounds.width || draft.baseHeight !== bounds.height) {
+    state.mapSizeDraft = {
+      identity,
+      baseWidth: bounds.width,
+      baseHeight: bounds.height,
+      width: String(bounds.width),
+      height: String(bounds.height)
+    };
+  }
+  return state.mapSizeDraft;
+}
+
+function mapSizeDraftChanged(draft) {
+  const bounds = mapBounds();
+  return Number(draft.width) !== bounds.width || Number(draft.height) !== bounds.height;
+}
+
+function updateMapSettings() {
+  const bounds = mapBounds();
+  const draft = currentMapSizeDraft();
+  const width = $("#map-width");
+  const height = $("#map-height");
+  width.value = draft.width;
+  height.value = draft.height;
+  for (const [field, current] of [[width, bounds.width], [height, bounds.height]]) {
+    field.min = String(current);
+    field.max = String(RUNTIME_MAX_MAP_DIMENSION);
+    field.step = String(RUNTIME_MAP_CELL_SIZE);
+  }
+  const next = { width: Number(draft.width), height: Number(draft.height) };
+  const message = $("#map-size-error");
+  const valid = [next.width, next.height].every((value, index) =>
+    Number.isInteger(value) && value >= [bounds.width, bounds.height][index] &&
+    value <= RUNTIME_MAX_MAP_DIMENSION && value % RUNTIME_MAP_CELL_SIZE === 0);
+  message.textContent = valid ? "" : `Expand only, in ${RUNTIME_MAP_CELL_SIZE} px increments, up to ${RUNTIME_MAX_MAP_DIMENSION} px.`;
+  const unavailable = !state.document || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy;
+  width.disabled = unavailable;
+  height.disabled = unavailable;
+  $("#apply-map-size").disabled = unavailable || !valid || !mapSizeDraftChanged(draft);
+  $("#cancel-map-size").disabled = unavailable || !mapSizeDraftChanged(draft);
+}
+
+function expandMap() {
+  const current = mapBounds();
+  const draft = currentMapSizeDraft();
+  const bounds = { width: Number(draft.width), height: Number(draft.height) };
+  const valid = [bounds.width, bounds.height].every((value, index) =>
+    Number.isInteger(value) && value >= [current.width, current.height][index] &&
+    value >= MIN_MAP_DIMENSION && value <= RUNTIME_MAX_MAP_DIMENSION &&
+    value % RUNTIME_MAP_CELL_SIZE === 0);
+  if (!valid) {
+    $("#map-size-error").textContent = `Map dimensions can only expand in ${RUNTIME_MAP_CELL_SIZE} px increments up to ${RUNTIME_MAX_MAP_DIMENSION} px.`;
+    return;
+  }
+  if (bounds.width === current.width && bounds.height === current.height) return;
+  try {
+    const next = validateFloorDocument({ ...state.document, bounds });
+    state.mapSizeDraft = null;
+    commitDocument(next);
+    setStatus(`Map expanded to ${bounds.width} × ${bounds.height} px. Existing content was not moved or scaled; added space is empty. Undo with Ctrl+Z.`);
+  } catch (error) {
+    $("#map-size-error").textContent = `Could not apply map dimensions: ${error.message}`;
+  }
+}
+
+function cancelMapSizeDraft() {
+  state.mapSizeDraft = null;
+  updateMapSettings();
+}
 
 function dirty() {
   return JSON.stringify(state.document) !== state.savedJson;
@@ -257,7 +371,7 @@ function setStatus(message, isError = false) {
 // ---------------------------------------------------------------- history
 
 function pushUndo(before) {
-  state.undo.push(before);
+  state.undo.push({ document: before, selection: [...state.selectedIds] });
   if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
   state.redo.length = 0;
 }
@@ -275,18 +389,22 @@ function replaceObject(document, id, patch) {
 
 function undo() {
   if (!state.undo.length || isPlaying()) return;
-  state.redo.push(state.document);
-  state.document = state.undo.pop();
-  if (!selectedObject()) state.selectedId = null;
+  state.redo.push({ document: state.document, selection: [...state.selectedIds] });
+  const entry = state.undo.pop();
+  state.document = entry.document;
+  setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
+    isSelectable(state.document.objects.find(object => object.id === id))));
   refreshChrome();
   setStatus("Undone.");
 }
 
 function redo() {
   if (!state.redo.length || isPlaying()) return;
-  state.undo.push(state.document);
-  state.document = state.redo.pop();
-  if (!selectedObject()) state.selectedId = null;
+  state.undo.push({ document: state.document, selection: [...state.selectedIds] });
+  const entry = state.redo.pop();
+  state.document = entry.document;
+  setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
+    isSelectable(state.document.objects.find(object => object.id === id))));
   refreshChrome();
   setStatus("Redone.");
 }
@@ -297,6 +415,7 @@ function refreshChrome({ structure = true } = {}) {
   const loaded = Boolean(state.document);
   const isDirty = loaded && dirty();
   updatePlayerSettings();
+  updateMapSettings();
   $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
   $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
   $("#save").disabled = !loaded || !isDirty || isPlaying();
@@ -320,6 +439,10 @@ function refreshChrome({ structure = true } = {}) {
   $("#level-recovery").inert = levelDisabled;
   $("#undo").disabled = state.undo.length === 0 || isPlaying();
   $("#redo").disabled = state.redo.length === 0 || isPlaying();
+  $("#duplicate-selection").disabled = !loaded || !selectedObjects().length || isPlaying() ||
+    state.saving || state.switching || state.creating || state.levelBusy;
+  $("#clear-level-contents").disabled = !loaded || isPlaying() || state.saving ||
+    state.switching || state.creating || state.levelBusy;
   $("#zoom-label").textContent = `${Math.round(state.zoom * 100)}%`;
   $("#select-tool").classList.toggle("active", state.tool === "select");
   $("#place-tool").classList.toggle("active", state.tool === "place");
@@ -337,6 +460,14 @@ function refreshChrome({ structure = true } = {}) {
     }
   }
   render();
+}
+
+function refreshAfterOperation() {
+  try {
+    refreshChrome();
+  } catch (error) {
+    setStatus(`${$("#status").textContent} Editor refresh failed: ${error.message}`, true);
+  }
 }
 
 function updateLayers() {
@@ -383,8 +514,7 @@ function updateLayers() {
 
 function afterLayerChange() {
   saveLayerPrefs();
-  const selected = selectedObject();
-  if (selected && !isSelectable(selected)) state.selectedId = null;
+  setSelection(selectedObjects().filter(isSelectable).map(object => object.id));
   state.hierarchyKey = "";
   refreshChrome();
 }
@@ -398,7 +528,8 @@ function layerCounts() {
 function updateHierarchy() {
   const objects = state.document.objects;
   const unresolved = objects.filter(isUnresolvedCollision);
-  const key = `${objects.length}|${objects.map(object => object.id).join(",").length}|${state.selectedId}|` +
+  const selectionKey = [...state.selectedIds].sort().join(",");
+  const key = `${objects.length}|${objects.map(object => object.id).join(",").length}|${selectionKey}|` +
     `${unresolved.map(object => object.id).join(",")}|` +
     `${JSON.stringify(state.layers)}|${[...state.openGroups].join(",")}|${state.undo.length}|${state.redo.length}`;
   if (key === state.hierarchyKey) return;
@@ -433,7 +564,7 @@ function updateHierarchy() {
       for (const object of members) {
         const item = document.createElement("button");
         item.type = "button";
-        item.className = `tree-item${object.id === state.selectedId ? " selected" : ""}`;
+        item.className = `tree-item${state.selectedIds.has(object.id) ? " selected" : ""}`;
         item.dataset.objectId = object.id;
         item.setAttribute("role", "treeitem");
         item.disabled = !isSelectable(object);
@@ -459,7 +590,12 @@ function updateHierarchy() {
           flag.textContent = "migrated";
           item.append(flag);
         }
-        item.addEventListener("click", () => selectObject(object.id, { reveal: true }));
+        item.addEventListener("click", event => {
+          if (event.shiftKey) toggleSelection(object.id);
+          else setSelection([object.id], object.id);
+          revealSelection(object.id);
+          refreshChrome();
+        });
         fragment.append(item);
       }
       details.append(fragment);
@@ -474,8 +610,15 @@ function updateHierarchy() {
 function updateInspector() {
   updateUnresolvedSummary();
   const object = selectedObject();
-  $("#empty-inspector").hidden = Boolean(object);
-  $("#object-inspector").hidden = !object;
+  const selected = selectedObjects();
+  const multiple = selected.length > 1;
+  $("#empty-inspector").hidden = selected.length > 0;
+  $("#object-inspector").hidden = selected.length !== 1;
+  $("#selection-inspector").hidden = !multiple;
+  if (multiple) {
+    updateSelectionInspector(selected);
+    return;
+  }
   if (!object) return;
   const asset = ASSET_CATALOG[object.assetId];
   const bounds = objectBounds(object);
@@ -523,8 +666,49 @@ function updateInspector() {
     updateResolveOutcome();
   }
   $("#delete-object").hidden = unresolved;
-  $("#delete-object").disabled = Boolean(asset.required);
-  $("#delete-object").title = asset.required ? `${asset.label} is required; move it instead.` : "Delete (Del)";
+  const requiredNonSpawn = Boolean(asset.required && object.type !== "spawn");
+  $("#delete-object").disabled = requiredNonSpawn;
+  $("#delete-object").title = requiredNonSpawn ? `${asset.label} is required; move it instead.` : "Delete (Del)";
+}
+
+function updateSelectionInspector(objects) {
+  $("#selection-count").textContent = String(objects.length);
+  const fields = {
+    "selection-type": objects.map(object => OBJECT_TYPES[object.type].label),
+    "selection-asset": objects.map(object => ASSET_CATALOG[object.assetId].label),
+    "selection-layer": objects.map(object => layerName(object.layer)),
+    "selection-order": objects.map(object => String(object.order)),
+    "selection-size": objects.map(object => {
+      const bounds = objectBounds(object);
+      return `${bounds.width} × ${bounds.height} px`;
+    }),
+    "selection-position": objects.map(object => `${object.transform.x}, ${object.transform.y}`)
+  };
+  for (const [id, values] of Object.entries(fields)) {
+    const output = $(`#${id}`);
+    const common = values.every(value => value === values[0]);
+    output.textContent = common ? values[0] : "Mixed";
+    output.classList.toggle("mixed-value", !common);
+    output.dataset.mixed = String(!common);
+  }
+  const collision = $("#selection-collision");
+  const collisionLabel = $("#selection-collision-label");
+  const collisionEditable = objects.every(object => ASSET_CATALOG[object.assetId].collision === "optional");
+  const collisionValues = objects.map(object => Boolean(object.collision));
+  const mixedCollision = collisionValues.some(value => value !== collisionValues[0]);
+  collision.checked = collisionValues.every(Boolean);
+  collision.indeterminate = mixedCollision;
+  collision.disabled = !collisionEditable;
+  collisionLabel.textContent = collisionEditable
+    ? `Collision${mixedCollision ? " (Mixed)" : ""}`
+    : "Collision (not editable for every selected object)";
+  collision.title = mixedCollision ? "Mixed values — toggle to set collision for all selected objects." : "";
+  for (const [axis, field] of [["x", $("#selection-delta-x")], ["y", $("#selection-delta-y")]]) {
+    if (document.activeElement !== field) field.value = "0";
+    field.disabled = isPlaying() || !objects.every(isSelectable);
+    field.dataset.axis = axis;
+  }
+  $("#apply-selection-offset").disabled = isPlaying() || !objects.every(isSelectable);
 }
 
 function updateUnresolvedSummary() {
@@ -536,7 +720,7 @@ function updateUnresolvedSummary() {
 function updateResolveOutcome() {
   const object = selectedObject();
   if (!object || !isUnresolvedCollision(object)) return;
-  const plan = planArtworkReplacement(object, $("#resolve-asset").value);
+  const plan = planArtworkReplacement(object, $("#resolve-asset").value, mapBounds());
   $("#resolve-outcome").textContent = plan.text;
   $("#resolve-outcome").dataset.outcome = plan.outcome;
 }
@@ -556,7 +740,7 @@ function configureResolveActions() {
     const object = selectedObject();
     if (!object || !isUnresolvedCollision(object)) return;
     const assetId = select.value;
-    const plan = planArtworkReplacement(object, assetId);
+    const plan = planArtworkReplacement(object, assetId, mapBounds());
     commitDocument(assignArtworkToCollision(state.document, object.id, assetId));
     setStatus(`${object.id} now uses ${ASSET_CATALOG[assetId].label} artwork. ${plan.text} Undo with Ctrl+Z.`);
   });
@@ -590,10 +774,10 @@ function configureResolveActions() {
   });
 }
 
-function selectObject(id, { reveal = false } = {}) {
-  state.selectedId = id;
-  if (reveal && id) {
-    const object = selectedObject();
+function revealSelection(id = state.selectedId) {
+  if (id) {
+    const object = state.document.objects.find(item => item.id === id);
+    if (!object) return;
     const bounds = objectBounds(object);
     const visibleWidth = state.viewportWidth / state.zoom;
     const visibleHeight = state.viewportHeight / state.zoom;
@@ -604,6 +788,11 @@ function selectObject(id, { reveal = false } = {}) {
       state.cameraY = bounds.y + bounds.height / 2 - visibleHeight / 2;
     }
   }
+}
+
+function selectObject(id, { reveal = false } = {}) {
+  setSelection(id ? [id] : [], id);
+  if (reveal) revealSelection(id);
   canvas.focus();
   refreshChrome();
 }
@@ -628,13 +817,12 @@ function sceneCanvas() {
   if (!scene.canvas) {
     scene.canvas = document.createElement("canvas");
   }
-  scene.canvas.width = FLOOR1_BOUNDS.width;
-  scene.canvas.height = FLOOR1_BOUNDS.height;
+  scene.canvas.width = mapBounds().width;
+  scene.canvas.height = mapBounds().height;
   const sceneContext = scene.canvas.getContext("2d", { alpha: false });
   sceneContext.imageSmoothingEnabled = false;
   drawDesign(sceneContext, state.artwork, state.document, {
     grid: floorDocumentGrid(state.document),
-    map: createFloorMap(state.document),
     mode: "editor",
     visible
   });
@@ -658,19 +846,18 @@ function drawMap() {
     context.strokeStyle = "#d4e4f21b";
     context.lineWidth = line;
     context.beginPath();
-    for (let x = 0; x <= FLOOR1_BOUNDS.width; x += CELL) {
+    for (let x = 0; x <= mapBounds().width; x += CELL) {
       context.moveTo(x, 0);
-      context.lineTo(x, FLOOR1_BOUNDS.height);
+      context.lineTo(x, mapBounds().height);
     }
-    for (let y = 0; y <= FLOOR1_BOUNDS.height; y += CELL) {
+    for (let y = 0; y <= mapBounds().height; y += CELL) {
       context.moveTo(0, y);
-      context.lineTo(FLOOR1_BOUNDS.width, y);
+      context.lineTo(mapBounds().width, y);
     }
     context.stroke();
     context.restore();
   }
-  const selected = selectedObject();
-  if (selected) {
+  for (const selected of selectedObjects()) {
     const bounds = objectBounds(selected);
     context.save();
     context.strokeStyle = "#ffcc55";
@@ -686,6 +873,19 @@ function drawMap() {
     context.setLineDash([]);
     context.fillStyle = "#ffcc55";
     context.fillRect(selected.transform.x - 2 * line, selected.transform.y - 2 * line, 4 * line, 4 * line);
+    context.restore();
+  }
+  if (state.pointerMode === "marquee" && state.pointerStart) {
+    const { anchor, current } = state.pointerStart;
+    context.save();
+    context.strokeStyle = "#8fcfff";
+    context.fillStyle = "#55a7e833";
+    context.lineWidth = line;
+    context.setLineDash([4 * line, 3 * line]);
+    context.fillRect(Math.min(anchor.x, current.x), Math.min(anchor.y, current.y),
+      Math.abs(current.x - anchor.x), Math.abs(current.y - anchor.y));
+    context.strokeRect(Math.min(anchor.x, current.x), Math.min(anchor.y, current.y),
+      Math.abs(current.x - anchor.x), Math.abs(current.y - anchor.y));
     context.restore();
   }
   const preview = state.preview;
@@ -706,6 +906,8 @@ function drawMap() {
   canvas.dataset.wallCount = String(state.document.objects.filter(object => object.type === "wall").length);
   canvas.dataset.layerCounts = JSON.stringify(counts);
   canvas.dataset.selectedId = state.selectedId ?? "";
+  canvas.dataset.selectedIds = JSON.stringify([...state.selectedIds]);
+  canvas.dataset.selectionCount = String(state.selectedIds.size);
   canvas.dataset.tool = state.tool;
   canvas.dataset.preview = preview ? `${preview.assetId}@${preview.transform.x},${preview.transform.y}${preview.problem ? ":invalid" : ""}` : "";
 }
@@ -726,8 +928,8 @@ function resize() {
 }
 
 function centerCamera() {
-  state.cameraX = (FLOOR1_BOUNDS.width - state.viewportWidth / state.zoom) / 2;
-  state.cameraY = (FLOOR1_BOUNDS.height - state.viewportHeight / state.zoom) / 2;
+  state.cameraX = (mapBounds().width - state.viewportWidth / state.zoom) / 2;
+  state.cameraY = (mapBounds().height - state.viewportHeight / state.zoom) / 2;
 }
 
 function setZoom(nextZoom, anchorX = state.viewportWidth / 2, anchorY = state.viewportHeight / 2) {
@@ -758,14 +960,14 @@ function overCanvas(clientX, clientY) {
 function placementTransform(assetId, point) {
   let transform = transformAtPoint(assetId, point);
   if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
-  return clampTransform(assetId, transform, FLOOR1_BOUNDS);
+  return clampTransform(assetId, transform, mapBounds());
 }
 
 function placementProblem(assetId, transform) {
   const asset = ASSET_CATALOG[assetId];
-  if (asset.size.width > FLOOR1_BOUNDS.width || asset.size.height > FLOOR1_BOUNDS.height) {
+  if (asset.size.width > mapBounds().width || asset.size.height > mapBounds().height) {
     return `${asset.label} (${asset.size.width}×${asset.size.height} px) is larger than this ` +
-      `${FLOOR1_BOUNDS.width}×${FLOOR1_BOUNDS.height} px map and cannot be placed.`;
+      `${mapBounds().width}×${mapBounds().height} px map and cannot be placed.`;
   }
   const layer = OBJECT_TYPES[asset.type].layer;
   if (state.layers[layer].locked) return `The ${layerName(layer)} layer is locked. Unlock it in Layers to place ${asset.label}.`;
@@ -804,7 +1006,7 @@ function placeFromPreview(preview) {
     .map(object => object.order)) + 1;
   const object = createDesignObject(nextObjectId(preview.assetId), preview.assetId, preview.transform, order);
   commitDocument({ ...state.document, objects: [...state.document.objects, object] });
-  state.selectedId = object.id;
+  setSelection([object.id], object.id);
   refreshChrome();
   const note = asset.play === "editor-only" ? " Editor only — no gameplay yet." :
     asset.play === "partial" ? ` ${asset.playNote}` : "";
@@ -830,7 +1032,7 @@ function moveSelectedTo(transform, { snap = false } = {}) {
   const asset = ASSET_CATALOG[object.assetId];
   let next = { x: Math.round(transform.x), y: Math.round(transform.y) };
   if (snap || asset.snap.forced) next = snapTransform(object.assetId, next);
-  next = clampTransform(object.assetId, next, FLOOR1_BOUNDS);
+  next = clampTransform(object.assetId, next, mapBounds());
   if (next.x === object.transform.x && next.y === object.transform.y) {
     refreshChrome({ structure: false });
     return;
@@ -838,26 +1040,265 @@ function moveSelectedTo(transform, { snap = false } = {}) {
   commitDocument(replaceObject(state.document, object.id, { transform: next }));
 }
 
+function snappedDisplacement(objects, dx, dy, enabled) {
+  if (objects.length === 1 && (enabled || ASSET_CATALOG[objects[0].assetId].snap.forced)) {
+    const object = objects[0];
+    const snapped = snapTransform(object.assetId, {
+      x: object.transform.x + dx,
+      y: object.transform.y + dy
+    });
+    return { x: snapped.x - object.transform.x, y: snapped.y - object.transform.y };
+  }
+  if (!enabled && !objects.some(object => ASSET_CATALOG[object.assetId].snap.forced)) {
+    return { x: Math.round(dx), y: Math.round(dy) };
+  }
+  const anchor = objects.find(object => ASSET_CATALOG[object.assetId].snap.forced);
+  if (anchor) {
+    const snapped = snapTransform(anchor.assetId, {
+      x: anchor.transform.x + dx,
+      y: anchor.transform.y + dy
+    });
+    return { x: snapped.x - anchor.transform.x, y: snapped.y - anchor.transform.y };
+  }
+  return {
+    x: Math.round(dx / CELL) * CELL,
+    y: Math.round(dy / CELL) * CELL
+  };
+}
+
+function translatedDocument(before, ids, dx, dy, { snap = false } = {}) {
+  const objects = before.objects.filter(object => ids.includes(object.id));
+  if (!objects.length || objects.length !== ids.length || !objects.every(isSelectable)) {
+    return { error: "Group move rejected: the selection includes missing, hidden, or locked content." };
+  }
+  const displacement = snappedDisplacement(objects, dx, dy, snap);
+  if (displacement.x === 0 && displacement.y === 0) return { document: before };
+  const moved = new Map(objects.map(object => [object.id, {
+    ...object,
+    transform: {
+      x: Math.round(object.transform.x + displacement.x),
+      y: Math.round(object.transform.y + displacement.y)
+    }
+  }]));
+  if (objects.length === 1) {
+    const object = objects[0];
+    const nextObject = moved.get(object.id);
+    nextObject.transform = clampTransform(object.assetId, nextObject.transform, mapBounds());
+  }
+  const next = { ...before, objects: before.objects.map(object => moved.get(object.id) ?? object) };
+  const bounds = mapBounds();
+  for (const object of moved.values()) {
+    const rect = objectBounds(object);
+    if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > bounds.width || rect.y + rect.height > bounds.height) {
+      return { error: "Group move rejected: every selected object must remain inside the map. No objects were moved." };
+    }
+  }
+  try {
+    return { document: validateFloorDocument(next) };
+  } catch (error) {
+    return { error: `Group move rejected: ${error.message} No objects were moved.` };
+  }
+}
+
+function moveSelectionBy(dx, dy, { snap = false, commit = true } = {}) {
+  const ids = [...state.selectedIds];
+  const result = translatedDocument(state.document, ids, dx, dy, { snap });
+  if (result.error) {
+    if (commit) setStatus(result.error, true);
+    return false;
+  }
+  if (result.document !== state.document && JSON.stringify(result.document) !== JSON.stringify(state.document)) {
+    if (commit) commitDocument(result.document);
+    else state.document = result.document;
+    return true;
+  }
+  return false;
+}
+
 function nudgeSelected(dx, dy) {
-  const object = selectedObject();
-  if (!object) return;
-  const step = ASSET_CATALOG[object.assetId].snap.forced ? CELL : NUDGE_PX;
-  moveSelectedTo({ x: object.transform.x + dx * step, y: object.transform.y + dy * step });
-  const moved = selectedObject();
-  setStatus(`Nudged ${moved.id} to ${moved.transform.x}, ${moved.transform.y}.`);
+  const objects = selectedObjects();
+  if (!objects.length) return;
+  const step = objects.some(object => ASSET_CATALOG[object.assetId].snap.forced) ? CELL : NUDGE_PX;
+  if (moveSelectionBy(dx * step, dy * step)) {
+    setStatus(`Nudged ${objects.length} selected object${objects.length === 1 ? "" : "s"} by ${step} world pixels.`);
+  }
+}
+
+function applySelectionOffset() {
+  const dx = Number($("#selection-delta-x").value);
+  const dy = Number($("#selection-delta-y").value);
+  if (![dx, dy].every(Number.isFinite)) {
+    setStatus("Enter a finite shared X/Y offset.", true);
+    return;
+  }
+  if (moveSelectionBy(dx, dy, { snap: state.snap })) {
+    $("#selection-delta-x").value = "0";
+    $("#selection-delta-y").value = "0";
+    setStatus(`Moved ${state.selectedIds.size} selected objects by one shared offset. Undo with Ctrl+Z.`);
+  }
 }
 
 function deleteSelected() {
-  const object = selectedObject();
-  if (!object) return;
-  if (ASSET_CATALOG[object.assetId].required) {
-    setStatus(`${ASSET_CATALOG[object.assetId].label} is required and cannot be deleted; move it instead.`, true);
+  const objects = selectedObjects();
+  if (!objects.length) return;
+  const required = objects.find(object =>
+    ASSET_CATALOG[object.assetId].required && object.type !== "spawn");
+  if (required) {
+    setStatus(`${ASSET_CATALOG[required.assetId].label} is required and cannot be deleted; move it instead.`, true);
     return;
   }
-  commitDocument({ ...state.document, objects: state.document.objects.filter(item => item.id !== object.id) });
-  state.selectedId = null;
+  const ids = new Set(objects.map(object => object.id));
+  commitDocument({ ...state.document, objects: state.document.objects.filter(item => !ids.has(item.id)) });
+  setSelection([]);
   refreshChrome();
-  setStatus(`Deleted ${object.id}.`);
+  setStatus(`Deleted ${objects.length} selected object${objects.length === 1 ? "" : "s"}. Undo with Ctrl+Z.`);
+}
+
+function duplicateId(object, ids) {
+  const stem = object.id.slice(0, 110);
+  let suffix = 1;
+  while (ids.has(`${stem}-copy-${suffix}`)) suffix += 1;
+  const id = `${stem}-copy-${suffix}`;
+  ids.add(id);
+  return id;
+}
+
+function duplicateSelection() {
+  const layerOrder = new Map(DESIGN_LAYERS.map((layer, index) => [layer.id, index]));
+  const objects = selectedObjects().sort((left, right) =>
+    layerOrder.get(left.layer) - layerOrder.get(right.layer) || left.order - right.order);
+  if (!objects.length) return;
+  const unique = objects.find(object => ASSET_CATALOG[object.assetId].unique);
+  if (unique) {
+    setStatus(`${ASSET_CATALOG[unique.assetId].label} is unique and cannot be duplicated.`, true);
+    return;
+  }
+  const displacement = snappedDisplacement(objects, CELL, CELL, state.snap);
+  const ids = new Set(state.document.objects.map(object => object.id));
+  const layerOrders = new Map(DESIGN_LAYERS.map(layer => [
+    layer.id,
+    Math.max(-1, ...state.document.objects.filter(object => object.layer === layer.id).map(object => object.order))
+  ]));
+  const copies = objects.map(object => {
+    const rect = objectBounds({
+      ...object,
+      transform: {
+        x: object.transform.x + displacement.x,
+        y: object.transform.y + displacement.y
+      }
+    });
+    if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > mapBounds().width || rect.y + rect.height > mapBounds().height) {
+      return null;
+    }
+    layerOrders.set(object.layer, layerOrders.get(object.layer) + 1);
+    return {
+      ...object,
+      id: duplicateId(object, ids),
+      order: layerOrders.get(object.layer),
+      transform: { x: object.transform.x + displacement.x, y: object.transform.y + displacement.y }
+    };
+  });
+  if (copies.some(copy => !copy)) {
+    setStatus("Duplicate rejected: every copy must remain inside the map. No objects were duplicated.", true);
+    return;
+  }
+  try {
+    const next = validateFloorDocument({ ...state.document, objects: [...state.document.objects, ...copies] });
+    commitDocument(next);
+    setSelection(copies.map(object => object.id));
+    refreshChrome();
+    setStatus(`Duplicated ${copies.length} object${copies.length === 1 ? "" : "s"} with new IDs. Undo with Ctrl+Z.`);
+  } catch (error) {
+    setStatus(`Duplicate rejected: ${error.message} No objects were duplicated.`, true);
+  }
+}
+
+function clearCategoryCounts(category) {
+  const objects = state.document?.objects.filter(object => object.type === category.type) ?? [];
+  return {
+    affected: objects.filter(object => !state.layers[object.layer].locked).length,
+    skipped: objects.filter(object => state.layers[object.layer].locked).length
+  };
+}
+
+function refreshClearContentsDialog() {
+  const selected = [...$("#clear-category-list").querySelectorAll("[data-clear-category]:checked")]
+    .map(input => CLEAR_CATEGORIES.find(category => category.id === input.dataset.clearCategory));
+  let affected = 0;
+  let skipped = 0;
+  for (const category of CLEAR_CATEGORIES) {
+    const counts = clearCategoryCounts(category);
+    const output = $(`#clear-count-${category.id}`);
+    output.replaceChildren();
+    const affectedText = document.createTextNode(`${counts.affected} affected`);
+    output.append(affectedText);
+    if (counts.skipped) {
+      const skippedText = document.createElement("span");
+      skippedText.className = "skipped";
+      skippedText.textContent = ` · ${counts.skipped} locked skipped`;
+      output.append(skippedText);
+    }
+    if (selected.some(item => item.id === category.id)) {
+      affected += counts.affected;
+      skipped += counts.skipped;
+    }
+  }
+  $("#clear-contents-summary").textContent = selected.length
+    ? `${affected} object${affected === 1 ? "" : "s"} will be removed; ${skipped} locked object${skipped === 1 ? "" : "s"} will be skipped.`
+    : "Select one or more categories to preview the affected counts.";
+  $("#clear-contents-confirm").disabled = affected === 0;
+}
+
+function showClearContentsDialog() {
+  const list = $("#clear-category-list");
+  list.replaceChildren(...CLEAR_CATEGORIES.map(category => {
+    const row = document.createElement("div");
+    row.className = "clear-category";
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.clearCategory = category.id;
+    checkbox.addEventListener("change", refreshClearContentsDialog);
+    label.append(checkbox, document.createTextNode(category.label));
+    const count = document.createElement("output");
+    count.id = `clear-count-${category.id}`;
+    row.append(label, count);
+    return row;
+  }));
+  refreshClearContentsDialog();
+  $("#clear-contents-dialog").showModal();
+}
+
+function clearLevelContents() {
+  if (!state.document || isPlaying()) return;
+  const categories = new Set([...$("#clear-category-list").querySelectorAll("[data-clear-category]:checked")]
+    .map(input => input.dataset.clearCategory));
+  const types = new Set(CLEAR_CATEGORIES.filter(category => categories.has(category.id)).map(category => category.type));
+  if (!types.size) return;
+  const removed = state.document.objects.filter(object =>
+    types.has(object.type) && !state.layers[object.layer].locked);
+  const skipped = state.document.objects.filter(object =>
+    types.has(object.type) && state.layers[object.layer].locked).length;
+  if (!removed.length) {
+    $("#clear-contents-dialog").close();
+    setStatus(`Nothing was removed; ${skipped} selected-category object${skipped === 1 ? " is" : "s are"} on locked layers.`);
+    return;
+  }
+  const removedIds = new Set(removed.map(object => object.id));
+  try {
+    const next = validateFloorDocument({
+      ...state.document,
+      objects: state.document.objects.filter(object => !removedIds.has(object.id))
+    });
+    commitDocument(next);
+    setSelection([...state.selectedIds].filter(id => !removedIds.has(id)));
+    $("#clear-contents-dialog").close();
+    refreshChrome();
+    setStatus(`Cleared ${removed.length} object${removed.length === 1 ? "" : "s"} in one undoable edit; ` +
+      `${skipped} locked object${skipped === 1 ? " was" : "s were"} skipped. Undo with Ctrl+Z.`);
+  } catch (error) {
+    setStatus(`Clear rejected: ${error.message}. No objects were removed.`, true);
+  }
 }
 
 function pointerDown(event) {
@@ -881,13 +1322,31 @@ function pointerDown(event) {
   }
   const object = hitTest(state.document, point, isSelectable);
   if (!object) {
-    state.selectedId = null;
+    state.pointerMode = "marquee";
+    state.pointerStart = {
+      anchor: point,
+      current: point,
+      baseSelection: event.shiftKey ? [...state.selectedIds] : [],
+      moved: false
+    };
+    canvas.setPointerCapture(event.pointerId);
     refreshChrome();
     return;
   }
-  state.selectedId = object.id;
+  if (event.shiftKey && state.selectedIds.has(object.id)) {
+    toggleSelection(object.id);
+    refreshChrome();
+    return;
+  }
+  if (event.shiftKey) {
+    setSelection([...state.selectedIds, object.id], object.id);
+  } else if (!state.selectedIds.has(object.id) || state.selectedIds.size === 1) {
+    setSelection([object.id], object.id);
+  } else {
+    setSelection(state.selectedIds, object.id);
+  }
   state.pointerMode = "move";
-  state.pointerStart = { point, transform: object.transform, before: state.document, id: object.id };
+  state.pointerStart = { point, before: state.document, id: object.id, ids: [...state.selectedIds], error: null };
   canvas.setPointerCapture(event.pointerId);
   refreshChrome();
 }
@@ -902,15 +1361,33 @@ function pointerMove(event) {
   const point = worldPointFromClient(event.clientX, event.clientY);
   if (state.pointerMode === "move") {
     const start = state.pointerStart;
-    const assetId = start.before.objects.find(item => item.id === start.id).assetId;
-    let transform = {
-      x: Math.round(start.transform.x + point.x - start.point.x),
-      y: Math.round(start.transform.y + point.y - start.point.y)
-    };
-    if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
-    transform = clampTransform(assetId, transform, FLOOR1_BOUNDS);
-    state.document = replaceObject(start.before, start.id, { transform });
+    const result = translatedDocument(start.before, start.ids,
+      point.x - start.point.x, point.y - start.point.y, { snap: state.snap });
+    start.error = result.error ?? null;
+    state.document = result.document ?? start.before;
     refreshChrome({ structure: false });
+    return;
+  }
+  if (state.pointerMode === "marquee") {
+    const start = state.pointerStart;
+    start.current = point;
+    start.moved ||= Math.hypot(point.x - start.anchor.x, point.y - start.anchor.y) > 2 / state.zoom;
+    if (start.moved) {
+      const rect = {
+        left: Math.min(start.anchor.x, point.x),
+        top: Math.min(start.anchor.y, point.y),
+        right: Math.max(start.anchor.x, point.x),
+        bottom: Math.max(start.anchor.y, point.y)
+      };
+      const hits = state.document.objects.filter(object => {
+        if (!isSelectable(object)) return false;
+        const bounds = objectBounds(object);
+        return bounds.x <= rect.right && bounds.x + bounds.width >= rect.left &&
+          bounds.y <= rect.bottom && bounds.y + bounds.height >= rect.top;
+      }).map(object => object.id);
+      setSelection([...new Set([...start.baseSelection, ...hits])]);
+    }
+    refreshChrome();
     return;
   }
   if (state.tool === "place" && state.placeAssetId && !state.paletteDrag) {
@@ -922,18 +1399,15 @@ function pointerMove(event) {
 function pointerUp() {
   if (state.pointerMode === "pan") canvas.classList.remove("panning");
   if (state.pointerMode === "move") {
-    const { before, id } = state.pointerStart;
+    const { before, id, error } = state.pointerStart;
     if (state.document !== before) {
-      try {
-        state.document = validateFloorDocument(state.document);
-        pushUndo(before);
-        const object = selectedObject();
-        setStatus(`Moved ${id} to ${object.transform.x}, ${object.transform.y}.`);
-      } catch (error) {
-        state.document = before;
-        setStatus(`Move rejected: ${error.message}`, true);
-      }
+      pushUndo(before);
+      setStatus(`Moved ${state.selectedIds.size} selected object${state.selectedIds.size === 1 ? "" : "s"} with one shared displacement.`);
+    } else if (error) {
+      setStatus(error, true);
     }
+  } else if (state.pointerMode === "marquee" && !state.pointerStart.moved && !state.pointerStart.baseSelection.length) {
+    setSelection([]);
   }
   state.pointerMode = null;
   state.pointerStart = null;
@@ -1102,11 +1576,11 @@ function paletteCancel() {
 
 async function save() {
   if (!state.document || isPlaying() || state.saving) return false;
-  const identity = { ...state.identity };
-  const document = structuredClone(state.document);
-  state.saving = true;
-  refreshChrome({ structure: false });
   try {
+    state.saving = true;
+    const identity = { ...state.identity };
+    const document = validateFloorDocument(structuredClone(state.document));
+    refreshChrome({ structure: false });
     const response = await fetch(mapUrl(identity), {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -1128,7 +1602,7 @@ async function save() {
     return false;
   } finally {
     state.saving = false;
-    refreshChrome();
+    refreshAfterOperation();
   }
 }
 
@@ -1314,12 +1788,28 @@ function configureEvents() {
     if (ignoredShortcutTarget(event.target)) return;
     if (isPlaying()) {
       if (event.code === "Escape" && state.play.phase === "playing") stop();
-      else if (playInputCodes.has(event.code)) event.preventDefault();
+      else if (playInputCodes.has(event.code) ||
+          ((event.ctrlKey || event.metaKey) && ["KeyA", "KeyD", "KeyS", "KeyY", "KeyZ"].includes(event.code)) ||
+          event.code === "Delete" || event.code === "Backspace") event.preventDefault();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
       event.preventDefault();
       save();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyA" &&
+        event.target === canvas && document.activeElement === canvas) {
+      event.preventDefault();
+      setSelection(state.document.objects.filter(isSelectable).map(object => object.id));
+      refreshChrome();
+      setStatus(`Selected ${state.selectedIds.size} objects on visible, unlocked layers.`);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyD" &&
+        event.target === canvas && document.activeElement === canvas && state.selectedIds.size) {
+      event.preventDefault();
+      duplicateSelection();
       return;
     }
     if (event.code === "Space" && event.target === canvas) {
@@ -1344,12 +1834,13 @@ function configureEvents() {
       return;
     }
     const nudges = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    if (nudges[event.code] && state.selectedId && event.target === canvas) {
+    if (nudges[event.code] && state.selectedIds.size && event.target === canvas && document.activeElement === canvas) {
       event.preventDefault();
       nudgeSelected(...nudges[event.code]);
       return;
     }
-    if ((event.code === "Delete" || event.code === "Backspace") && state.selectedId && event.target === canvas) {
+    if ((event.code === "Delete" || event.code === "Backspace") && state.selectedIds.size &&
+        event.target === canvas && document.activeElement === canvas) {
       event.preventDefault();
       deleteSelected();
     }
@@ -1365,6 +1856,7 @@ function configureEvents() {
   $("#place-tool").addEventListener("click", () => setTool("place"));
   $("#undo").addEventListener("click", undo);
   $("#redo").addEventListener("click", redo);
+  $("#duplicate-selection").addEventListener("click", duplicateSelection);
   $("#show-grid").addEventListener("change", event => {
     state.showGrid = event.target.checked;
     render();
@@ -1377,6 +1869,29 @@ function configureEvents() {
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.2));
   $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.2));
   $("#save").addEventListener("click", save);
+  for (const field of [$("#map-width"), $("#map-height")]) {
+    field.addEventListener("input", () => {
+      const draft = currentMapSizeDraft();
+      draft.width = $("#map-width").value;
+      draft.height = $("#map-height").value;
+      updateMapSettings();
+    });
+  }
+  $("#apply-map-size").addEventListener("click", expandMap);
+  $("#cancel-map-size").addEventListener("click", cancelMapSizeDraft);
+  $("#clear-level-contents").addEventListener("click", showClearContentsDialog);
+  $("#clear-contents-confirm").addEventListener("click", clearLevelContents);
+  $("#clear-contents-cancel").addEventListener("click", () => $("#clear-contents-dialog").close());
+  $("#camera-zoom").addEventListener("input", event => {
+    $("#camera-zoom-value").textContent = `${Number(event.target.value).toFixed(1)}×`;
+  });
+  $("#camera-zoom").addEventListener("change", event => {
+    if (!state.document || isPlaying()) return;
+    const cameraZoom = Number(event.target.value);
+    if (cameraZoom === state.document.cameraZoom) return;
+    commitDocument(validateFloorDocument({ ...state.document, cameraZoom }));
+    setStatus(`Gameplay camera zoom set to ${cameraZoom.toFixed(1)}×. Save the level to keep this setting.`);
+  });
   $("#open-game").addEventListener("click", showOpenDialog);
   configureNewGame();
   configureLevels();
@@ -1415,6 +1930,27 @@ function configureEvents() {
     canvas.focus();
   });
   $("#delete-object").addEventListener("click", deleteSelected);
+  $("#delete-selection").addEventListener("click", deleteSelected);
+  $("#apply-selection-offset").addEventListener("click", applySelectionOffset);
+  $("#selection-inspector").addEventListener("submit", event => event.preventDefault());
+  $("#selection-collision").addEventListener("change", event => {
+    const objects = selectedObjects();
+    if (!objects.length || !objects.every(object => ASSET_CATALOG[object.assetId].collision === "optional")) return;
+    const replacements = new Map(objects.map(object => [object.id, {
+      ...object,
+      collision: event.target.checked ? { ...ASSET_CATALOG[object.assetId].collisionBox } : null
+    }]));
+    try {
+      commitDocument({
+        ...state.document,
+        objects: state.document.objects.map(object => replacements.get(object.id) ?? object)
+      });
+      setStatus(`Updated collision for ${objects.length} selected objects. Undo with Ctrl+Z.`);
+    } catch (error) {
+      setStatus(`Bulk collision edit rejected: ${error.message}`, true);
+      refreshChrome({ structure: false });
+    }
+  });
   $("#object-inspector").addEventListener("submit", event => event.preventDefault());
   for (const [axis, field] of [["x", $("#object-x")], ["y", $("#object-y")]]) {
     field.addEventListener("change", () => {
@@ -1626,10 +2162,10 @@ function submitLevelAction(saveFirst) {
 
 async function runLevelAction(action, values = {}, saveFirst = false) {
   if (state.levelBusy || state.saving || state.switching || isPlaying()) return;
-  state.levelBusy = true;
-  $("#level-form").inert = true;
-  refreshChrome({ structure: false });
   try {
+    state.levelBusy = true;
+    $("#level-form").inert = true;
+    refreshChrome({ structure: false });
     if ((!state.persisted || (saveFirst && dirty())) && !(await save())) {
       throw new Error("Could not save the current design; it remains open.");
     }
@@ -1656,7 +2192,7 @@ async function runLevelAction(action, values = {}, saveFirst = false) {
   } finally {
     state.levelBusy = false;
     $("#level-form").inert = false;
-    refreshChrome({ structure: false });
+    refreshAfterOperation();
   }
 }
 
@@ -1664,7 +2200,7 @@ function newGameValues() {
   return generic.validateCreation({
     name: $("#new-name").value, author: $("#new-author").value,
     model: $("#new-model").value,
-    width: Number($("#new-width").value), height: Number($("#new-height").value)
+    ...generic.DEFAULT_DIMENSIONS
   });
 }
 
@@ -1709,10 +2245,10 @@ async function createNewGame(saveFirst = false) {
     $("#new-message").textContent = error.message;
     return;
   }
-  state.creating = true;
-  $("#new-fields").disabled = true;
-  refreshChrome({ structure: false });
   try {
+    state.creating = true;
+    $("#new-fields").disabled = true;
+    refreshChrome({ structure: false });
     if (saveFirst && !(await save())) throw new Error("Could not save the current map; it remains open.");
     const response = await fetch("/api/projects", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(values)
@@ -1732,7 +2268,7 @@ async function createNewGame(saveFirst = false) {
   } finally {
     state.creating = false;
     $("#new-fields").disabled = false;
-    refreshChrome({ structure: false });
+    refreshAfterOperation();
   }
 }
 
@@ -1877,7 +2413,7 @@ function activateAssetCatalog(modelId, assets) {
   ASSET_CATALOG = assetCatalog;
   DESIGN_LAYERS = model.DESIGN_LAYERS;
   OBJECT_TYPES = model.OBJECT_TYPES;
-  clampTransform = (assetId, point, bounds = FLOOR1_BOUNDS) =>
+  clampTransform = (assetId, point, bounds = mapBounds()) =>
     model.clampTransform(assetId, point, bounds, assetCatalog);
   collisionRect = model.collisionRect;
   createDesignObject = generic.MODEL === modelId
@@ -1903,17 +2439,33 @@ function activateAssetCatalog(modelId, assets) {
 }
 
 function applyDesign(identity, payload, design, assets) {
-  state.model = payload.model ?? ASTRAEUM_MODEL;
-  activateAssetCatalog(state.model, assets);
-  FLOOR1_BOUNDS = design.bounds;
-  state.layers = loadLayerPrefs(state.model);
-  state.placeAssetId = null;
-  state.paletteDrag = null;
-  state.pointerMode = null;
-  state.pointerStart = null;
-  state.spaceDown = false;
-  document.body.classList.remove("dragging-asset");
-  state.scene.document = null;
+  const previous = { ...state, scene: { ...state.scene } };
+  try {
+    installDesign(identity, payload, design, assets);
+  } catch (error) {
+    Object.assign(state, previous);
+    state.scene.document = null;
+    state.hierarchyKey = "";
+    if (previous.document) {
+      activateAssetCatalog(previous.model, {
+        catalog: previous.assetCatalog,
+        records: previous.importedAssets,
+        images: previous.artwork.imported ?? {}
+      });
+      try {
+        updateDesignChrome(previous.loadedPayload);
+        configurePalette();
+        refreshChrome();
+      } catch (recoveryError) {
+        throw new Error(`${error.message} Restoring the editor view also failed: ${recoveryError.message}`);
+      }
+    }
+    throw error;
+  }
+}
+
+function updateDesignChrome(payload) {
+  const { identity, document: design } = state;
   const migration = describeMigrations(payload.migrations);
   $("#migration-notice").hidden = !migration;
   $("#migration-history").open = Boolean(migration?.error);
@@ -1921,20 +2473,6 @@ function applyDesign(identity, payload, design, assets) {
     $("#migration-text").textContent = migration.text;
     $("#migration-notice").classList.toggle("error", migration.error);
   }
-  state.identity = identity;
-  state.persisted = Boolean(payload.document);
-  state.levels = [];
-  state.startingMapId = null;
-  state.document = design;
-  state.savedJson = JSON.stringify(state.document);
-  state.selectedId = null;
-  state.undo = [];
-  state.redo = [];
-  state.tool = "select";
-  state.preview = null;
-  state.hierarchyKey = "";
-  $("#play-error").hidden = true;
-  studio.dataset.playState = "idle";
   $("#project-name").textContent = payload.project
     ? payload.project.name === design.name ? payload.project.name : `${payload.project.name} · ${design.name}`
     : identity.projectId === ASTRAEUM_PROJECT_ID && identity.mapId === ASTRAEUM_FLOOR_1_MAP_ID && design.name === "Damp Corridors"
@@ -1945,6 +2483,36 @@ function applyDesign(identity, payload, design, assets) {
   $("#palette-credit").textContent = state.model === generic.MODEL
     ? `Built-in generic shapes${state.importedAssets.length ? ` · ${state.importedAssets.length} imported images` : ""}`
     : `Floor 1 artwork by Anh Nguyen (PixelLab)${state.importedAssets.length ? ` · ${state.importedAssets.length} imported images` : ""}`;
+}
+
+function installDesign(identity, payload, design, assets) {
+  state.model = payload.model ?? ASTRAEUM_MODEL;
+  activateAssetCatalog(state.model, assets);
+  state.layers = loadLayerPrefs(state.model);
+  state.placeAssetId = null;
+  state.paletteDrag = null;
+  state.pointerMode = null;
+  state.pointerStart = null;
+  state.spaceDown = false;
+  document.body.classList.remove("dragging-asset");
+  state.scene.document = null;
+  const migration = describeMigrations(payload.migrations);
+  state.identity = identity;
+  state.loadedPayload = payload;
+  state.persisted = Boolean(payload.document);
+  state.levels = [];
+  state.startingMapId = null;
+  state.document = design;
+  state.savedJson = JSON.stringify(state.document);
+  setSelection([]);
+  state.undo = [];
+  state.redo = [];
+  state.tool = "select";
+  state.preview = null;
+  state.hierarchyKey = "";
+  $("#play-error").hidden = true;
+  studio.dataset.playState = "idle";
+  updateDesignChrome(payload);
   configurePalette();
   centerCamera();
   refreshChrome();
@@ -1962,10 +2530,10 @@ async function switchToSelected(saveFirst = false) {
   if (state.switching || !state.openSelection) return;
   const { projectId, mapId, canAdopt } = state.openSelection;
   const identity = { projectId, mapId };
-  state.switching = true;
-  $("#open-dialog").querySelectorAll("button, input").forEach(element => { element.disabled = true; });
-  refreshChrome({ structure: false });
   try {
+    state.switching = true;
+    $("#open-dialog").querySelectorAll("button, input").forEach(element => { element.disabled = true; });
+    refreshChrome({ structure: false });
     if (saveFirst && !(await save())) throw new Error("Could not save the current map; it remains open.");
     if (canAdopt) {
       const response = await fetch(`${mapUrl(identity)}/model/${ASTRAEUM_MODEL}`, { method: "POST" });
@@ -1987,7 +2555,7 @@ async function switchToSelected(saveFirst = false) {
       element.disabled = element.closest(".unsupported") !== null;
     });
     $("#open-selected").disabled = !state.openSelection;
-    refreshChrome({ structure: false });
+    refreshAfterOperation();
   }
 }
 
@@ -2003,6 +2571,7 @@ async function openFloor() {
   if (import.meta.env?.DEV) {
     window.__studioTest = Object.freeze({
       document: () => structuredClone(state.document),
+      identity: () => ({ ...state.identity }),
       worldToClient(x, y) {
         const rect = canvas.getBoundingClientRect();
         return { x: rect.left + (x - state.cameraX) * state.zoom, y: rect.top + (y - state.cameraY) * state.zoom };

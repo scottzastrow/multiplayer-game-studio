@@ -33,10 +33,31 @@ action buttons target the open, selected level; switching and actions are
 disabled during Play or an operation. Recovery stays in the separate
 **Deleted levels (recover)** collapsible section.
 **Add blank** uses the selected game's existing model and defaults: Generic
-Grid keeps the game's dimensions and two safe starts; Astraeum keeps its
-supported fixed bounds with uniform floor and an Aries start, without
-Floor 1's walls, props, enemies or layout. Project assets remain available,
-and Play uses the existing model-specific settings and adapter.
+Grid and Astraeum default to 2048 x 2048 with safe starts; Astraeum keeps
+uniform Floor 1-sized terrain and an Aries start, without Floor 1's walls,
+props, enemies or layout. Project assets remain available, and Play uses the
+existing model-specific settings and adapter.
+
+## Map dimensions and gameplay camera
+
+The Inspector's **Map Width** and **Map Height** controls explicitly expand
+the current level in 32-pixel increments, from its current dimensions up to
+2048 x 2048, matching the installed public runtime's map contract. Applying an
+expansion is one undoable edit; existing objects, spawn positions, artwork and
+collision shapes keep their exact values. Newly added space has no authored
+objects or terrain. Existing maps are not resized on open; saving an explicit
+edit persists the new bounds in the authoritative SQLite document. Contraction
+is deferred; author smaller playable areas with walls or borders inside the map.
+
+Player Settings exposes **Gameplay camera zoom**, from 0.5x through 2.0x in
+0.1x steps, defaulting to 1.0x. It is saved in the current level document with
+Save/Ctrl+S and is independent of the editor's pan and zoom. Larger values show
+less world with larger artwork; smaller values show more. Play follows the
+player, clamps to map edges, and centers a world smaller than the visible
+world-area without automatically scaling it to fit. Viewport size and device
+pixel ratio do not change authored artwork size, and pixel smoothing remains
+disabled. The saved dimensions drive editor bounds and placement, runtime bounds,
+collision grids and camera clamping for both models.
 
 **Duplicate** copies the saved design into a new stable map ID; subsequent
 edits are independent. **Rename** preserves identity. Add, duplicate, rename
@@ -68,10 +89,19 @@ confirmed delete/recover, project isolation and selected-level Play/Stop.
 Generic spawn transforms are the tile's top-left corner; Play reports the
 radius-8 player's center, offset by half the 32-pixel cell on both axes.
 The smoke asserts that exact centered position, not the authored tile origin.
+`npm run studio:map-settings:smoke` uses the same disposable direct-CDP setup
+to verify existing-map dimensions remain unchanged until explicit expansion,
+undo/redo, empty added space, extended placement and collision, save/reopen,
+2048 x 2048 defaults, saved camera zoom, multiple Play viewport sizes, lighting
+alignment and independent editor zoom.
 For focused dropdown coverage without the broad restart/isolation workflow,
 run `npm run studio:levels:smoke -- --dropdown-only`. It checks keyboard
 selection, unsaved cancellation, selected-level action targeting, separate
 recovery and Play/Stop disabled states using disposable direct CDP.
+The draft-recovery and wall-clear smoke modes also compare wall artwork against
+`reference/astraeum-tower-original/dungeon/index.html`. That original reference
+is not tracked or supplied by a fresh checkout; those modes require an
+authorized local copy and do not modify it.
 `npm run studio:persistence:test` also covers API invariants and migration
 backup preservation. These commands do not use the user's database or games.
 Level transitions, generation, area-fill tools, audio and shared libraries
@@ -80,9 +110,10 @@ remain separate future work. T042 remains open.
 ## New Game
 
 **New Game** sits beside Open Game. Enter the game name and author/credits,
-choose the explicit **Generic Grid v1** model and accept or change the
-640 x 480 pixel defaults. Each dimension must be a multiple of 32 between
-64 and 2048 pixels, inclusive, as required by the installed public runtime.
+choose the explicit **Generic Grid v1** model, and use its fixed 2048 x 2048
+pixel world. New Game has no editable dimensions; the service rejects attempts
+to create a different size. Existing saved maps keep their own dimensions and
+remain editable through the explicit, undoable expansion workflow.
 Names and credits must be nonblank, without control characters (64 and 128
 characters maximum, respectively). Case/Unicode-normalized duplicate names
 are rejected, not treated as an overwrite.
@@ -113,10 +144,10 @@ and project/map pair. Play uses the current design (including unsaved edits)
 and the generic adapter: Arrows/WASD move a radius-8 player at 4 pixels per
 fixed tick, bounded by the map and explicit 32-pixel blockers. Blocked or
 overlapping starts produce an actionable Play error. Stop disposes the
-preview without saving movement. The generic Play camera follows the active
-player at a fixed 1:1 world-to-CSS-pixel scale, clamped to world bounds; worlds
-smaller than the viewport stay centered without scaling. Pixel-art smoothing
-is disabled, and Stop restores the editor's independent pan and zoom.
+preview without saving movement. At the default 1.0x zoom, the generic Play
+camera follows the active player at 1:1 world-to-CSS-pixel scale, clamped to
+world bounds; smaller worlds stay centered without scaling. Pixel-art
+smoothing is disabled, and Stop restores the editor's independent pan and zoom.
 
 ## Project-scoped asset importing
 
@@ -137,9 +168,10 @@ Image pixels map one-to-one to world pixels; placement does not scale or
 rewrite image data. The supplied south-facing gopher PNG has a 48 x 48 source
 canvas but transparent margins leave 34 x 37 opaque pixels (at x=7, y=5),
 which can make the visible character look smaller than its placed bounds.
-Palette thumbnails are scaled independently. Generic Grid v1 Play follows the
-active player at a 1:1 world-to-CSS-pixel scale; smaller worlds are centered
-without scaling. Its camera is independent of editor pan and zoom. Astraeum
+Palette thumbnails are scaled independently. At default zoom, Generic Grid v1
+Play follows the active player at a 1:1 world-to-CSS-pixel scale; smaller worlds
+are centered without scaling. Its camera zoom is saved with the level and is
+independent of editor pan and zoom. Astraeum
 Tower Play offers **Keyboard Only: WASD: Move · Arrow keys: Dodge · Space: Attack**,
 Keyboard + Mouse (arrows, pointer aim, left-click attack, right-mouse-plus-
 arrow dodge), and Game Controller (left/right sticks, right-trigger attack,
@@ -200,9 +232,10 @@ service records the choice. This only changes model metadata, not design JSON.
 Untyped incompatible records and records explicitly marked as another model
 cannot be assigned.
 
-`POST /api/projects` accepts `{ name, author, width, height, model }` and returns
-the new project/map identity, metadata and document (HTTP 201). Validation
-errors are HTTP 400; duplicate names are HTTP 409. Generic saves must reference
+`POST /api/projects` accepts `{ name, author, width, height, model }`, requires
+2048 x 2048 dimensions, and returns the new project/map identity, metadata and
+document (HTTP 201). Validation errors are HTTP 400; duplicate names are HTTP
+409. Generic saves must reference
 an existing generic map, not create projects through PUT. Generated metadata
 is a filesystem companion, not another editable design authority.
 
@@ -223,9 +256,10 @@ the service never guesses the owner of unknown legacy records.
 </details>
 
 `npm run studio:persistence:test` exercises migrations, legacy backups, failed
-migration protection, ID validation, model isolation, New Game validation,
-minimum/maximum dimensions, duplicate rejection, metadata-only files, rollback
-cleanup after an injected database failure and restart/reopen with disposable
+migration protection, ID validation, model isolation, fixed New Game and blank
+level dimensions, rejection of custom-size creation requests, duplicate
+rejection, metadata-only files, rollback cleanup after an injected database
+failure and restart/reopen with disposable
 databases/directories; it does not use the default database.
 
 ## Saved design (format 2)
@@ -285,15 +319,20 @@ blocker), or **Delete** (removes the collision). The ID is kept in every case.
 ## Editing
 
 The left panel lists layers with visibility and lock toggles (terrain starts
-locked: visible but not selectable) and a hierarchy grouped by layer. The
+locked: visible but not selectable) and a hierarchy grouped by layer. Hierarchy
+groups start collapsed; their headings expand and collapse normally. The
 bottom palette groups assets by type; drag a card onto the map to place it
 with a live preview (green when valid, red with a reason when not), or click a
 card to arm **Place** and click the map. Each card shows its artwork region,
 credit, and Play status ? **In Play**, **Partial in Play**, or **Editor only**
-for items and enemy spawns that are saved but have no gameplay yet. Drag
-objects to move them, Delete to remove (required objects such as the Aries
-start cannot be deleted), and use the Inspector for exact coordinates and
-optional collision. Grid visibility and snapping are independent; terrain
+for items and enemy spawns that are saved but have no gameplay yet. Click,
+Shift-click, marquee drag or Ctrl+A select visible, unlocked objects. Move,
+nudge, duplicate or delete a selection as one undoable edit; the Inspector
+also offers shared offsets and compatible collision settings. Clear Level
+Contents previews removal and locked/skipped counts by category. Missing
+player starts can be saved as a draft, but Play requires restoring them.
+Use the Inspector for exact coordinates and optional collision. Grid visibility
+and snapping are independent; terrain
 tiles always snap. Arrow keys nudge the selection five world pixels without
 snapping. Middle-drag or Space-drag pans; the wheel and zoom buttons control
 the view. Ctrl+Z / Ctrl+Y undo and redo; Ctrl+S saves to local SQLite.

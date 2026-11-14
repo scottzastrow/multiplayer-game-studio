@@ -15,6 +15,7 @@
           <button id="place-tool" class="tool-button" title="Click the map to place the armed palette asset">Place: <span id="place-asset-label">—</span></button>
           <button id="undo" class="icon-button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
           <button id="redo" class="icon-button" title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
+          <button id="duplicate-selection" class="tool-button" type="button" disabled title="Duplicate selection (Ctrl+D)">Duplicate</button>
           <label class="toggle"><input id="show-grid" type="checkbox" checked> Grid</label>
           <label class="toggle" title="Snap transforms to the 32 px grid. Terrain, spawns and the stairs portal always snap."><input id="snap-grid" type="checkbox" checked> Snap</label>
           <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>
@@ -41,6 +42,9 @@
             <option value="game-controller">Game Controller</option>
           </select>
           <p id="player-control-bindings" data-testid="player-control-bindings"></p>
+          <label for="camera-zoom">Gameplay camera zoom <output id="camera-zoom-value">1.0×</output></label>
+          <input id="camera-zoom" data-testid="camera-zoom" type="range" min="0.5" max="2" step="0.1" value="1">
+          <p>Saved with this level. Larger values zoom in; smaller values show more of the world.</p>
           <p id="player-controller-status" data-testid="player-controller-status" role="status"></p>
           <p id="player-settings-note"></p>
           <div class="dialog-actions">
@@ -79,11 +83,8 @@
               <label>Game name<input id="new-name" name="name" required maxlength="64" autocomplete="off"></label>
               <label>Author / credits<input id="new-author" name="author" required maxlength="128" autocomplete="off"></label>
               <label>Template / model<select id="new-model" name="model"><option value="generic-grid-v1">Blank movement - Generic Grid v1</option></select></label>
-              <p>Blank terrain, two safe player starts, simple movement and built-in shapes. No Tower artwork or gameplay. Asset importing is the next milestone.</p>
-              <label>Map width (pixels)<input id="new-width" name="width" type="number" min="64" max="2048" step="32" value="640" required></label>
-              <label>Map height (pixels)<input id="new-height" name="height" type="number" min="64" max="2048" step="32" value="480" required></label>
-              <p>These dimensions define the whole world, not the camera viewport.</p>
-              <p>Dimensions must be multiples of 32, from 64 to 2048 pixels.</p>
+              <p>Blank terrain, two safe player starts, simple movement and built-in shapes. No Tower artwork or gameplay. Project assets can be imported as visual-only artwork.</p>
+              <p id="new-world-size">World size is fixed at 2048 × 2048 pixels. The camera viewport is separate.</p>
               <div id="new-confirm" hidden>
                 <p>There are unsaved changes. Save them before creating, discard them only after creation succeeds, or cancel.</p>
                 <div class="dialog-actions">
@@ -126,7 +127,7 @@
         <section class="viewport" aria-label="Map viewport">
           <div id="editor-view" class="editor-view">
             <canvas id="map-canvas" class="selecting" tabindex="0" aria-label="Floor 1 map editor" data-testid="map-canvas"></canvas>
-            <div class="viewport-hint">Drag objects to move · Drag assets from the palette to place · Middle-drag or Space-drag to pan · Wheel to zoom · Arrows nudge 5 px</div>
+            <div class="viewport-hint">Click selects · Shift-click toggles · Empty drag marquee · Drag palette assets to place · Ctrl+A visible/unlocked · Middle/Space-drag pans · Arrows nudge 5 px</div>
           </div>
           <div id="play-host" class="play-host" hidden></div>
           <div id="play-loading" class="play-overlay" role="status" data-testid="play-loading" hidden><div class="spinner" aria-hidden="true"></div><span>Starting Play…</span></div>
@@ -139,6 +140,20 @@
         </section>
         <aside class="panel inspector">
           <div class="panel-title">Inspector</div>
+          <section class="map-settings" aria-label="Current map dimensions">
+            <strong>Map dimensions</strong>
+            <p>Expand only; new space starts empty.</p>
+            <div class="map-size-fields">
+              <label for="map-width">Map Width<input id="map-width" data-testid="map-width" type="number" min="64" max="2048" step="32"></label>
+              <label for="map-height">Map Height<input id="map-height" data-testid="map-height" type="number" min="64" max="2048" step="32"></label>
+            </div>
+            <div class="map-size-actions">
+              <button id="apply-map-size" class="button secondary" type="button" disabled>Apply expansion</button>
+              <button id="cancel-map-size" class="button secondary" type="button" disabled>Cancel</button>
+            </div>
+            <p id="map-size-error" role="alert"></p>
+            <button id="clear-level-contents" class="button danger" type="button" disabled>Clear Level Contents…</button>
+          </section>
           <div id="migration-notice" class="migration-notice" data-testid="migration-notice" hidden><details id="migration-history"><summary>Migration history</summary><p id="migration-text"></p></details></div>
           <div id="unresolved-summary" class="unresolved-summary" data-testid="unresolved-summary" hidden>
             <span id="unresolved-count"></span>
@@ -174,6 +189,25 @@
             <p id="object-migration" class="migration-note" hidden></p>
             <button id="delete-object" class="button danger wide" type="button">Delete object</button>
           </form>
+          <section id="selection-inspector" class="selection-inspector" hidden>
+            <strong><output id="selection-count">0</output> objects selected</strong>
+            <div class="facts">
+              <span>Type</span><output id="selection-type"></output>
+              <span>Asset</span><output id="selection-asset"></output>
+              <span>Layer</span><output id="selection-layer"></output>
+              <span>Order</span><output id="selection-order"></output>
+              <span>Size</span><output id="selection-size"></output>
+              <span>Position</span><output id="selection-position"></output>
+            </div>
+            <fieldset class="position-fields">
+              <legend>Shared movement · world pixels</legend>
+              <label>ΔX<input id="selection-delta-x" type="number" step="1" value="0"></label>
+              <label>ΔY<input id="selection-delta-y" type="number" step="1" value="0"></label>
+              <button id="apply-selection-offset" class="button secondary wide" type="button">Apply shared offset</button>
+            </fieldset>
+            <label class="check"><input id="selection-collision" type="checkbox"> <span id="selection-collision-label">Collision</span></label>
+            <button id="delete-selection" class="button danger wide" type="button">Delete selection</button>
+          </section>
         </aside>
       </main>
       <dialog id="level-dialog" aria-labelledby="level-title">
@@ -192,6 +226,16 @@
             <button id="level-cancel" class="button secondary" type="button">Cancel</button>
           </div>
         </form>
+      </dialog>
+      <dialog id="clear-contents-dialog" aria-labelledby="clear-contents-title">
+        <h2 id="clear-contents-title">Clear Level Contents</h2>
+        <p>Choose categories to remove. Locked layers are protected; hidden layers are included. This is one undoable edit.</p>
+        <div id="clear-category-list" class="clear-category-list"></div>
+        <p id="clear-contents-summary" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="clear-contents-confirm" class="button danger" type="button" disabled>Clear selected categories</button>
+          <button id="clear-contents-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
       </dialog>
       <footer class="asset-dock">
         <div class="palette-heading"><strong>Asset palette</strong><span id="palette-credit">Floor 1 artwork by Anh Nguyen (PixelLab)</span>

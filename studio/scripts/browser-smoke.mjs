@@ -42,6 +42,7 @@ let targetId;
 let sessionId;
 const playCameraMeasurements = [];
 let smallWorldCameraMeasurements = null;
+let multiSelectionEvidence = null;
 
 function startService(databasePath = database) {
   const child = spawn(process.execPath, ["--no-warnings", serviceFile], {
@@ -189,7 +190,7 @@ async function waitFor(expression, timeoutMs = 10000) {
   throw new Error(`Timed out waiting for ${expression}`);
 }
 
-async function clickSelector(selector) {
+async function clickSelector(selector, modifiers = 0) {
   const point = await evaluate(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!element) throw new Error(${JSON.stringify(`Missing UI control: ${selector}`)});
@@ -198,14 +199,14 @@ async function clickSelector(selector) {
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
   await cdp("Input.dispatchMouseEvent", {
-    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1
+    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1, modifiers
   }, sessionId);
   await cdp("Input.dispatchMouseEvent", {
-    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1
+    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1, modifiers
   }, sessionId);
 }
 
-async function clickWorld(x, y) {
+async function clickWorld(x, y, modifiers = 0) {
   const point = await evaluate(`(() => {
     const canvas = document.querySelector("#map-canvas");
     const rect = canvas.getBoundingClientRect();
@@ -216,10 +217,10 @@ async function clickWorld(x, y) {
     };
   })()`);
   await cdp("Input.dispatchMouseEvent", {
-    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1
+    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1, modifiers
   }, sessionId);
   await cdp("Input.dispatchMouseEvent", {
-    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1
+    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1, modifiers
   }, sessionId);
 }
 
@@ -368,22 +369,22 @@ async function worldPoint(x, y) {
   return evaluate(`window.__studioTest.worldToClient(${x}, ${y})`);
 }
 
-async function mouse(type, point, buttons = type === "mouseReleased" ? 0 : 1) {
+async function mouse(type, point, buttons = type === "mouseReleased" ? 0 : 1, modifiers = 0) {
   await cdp("Input.dispatchMouseEvent", {
-    type, x: point.x, y: point.y, button: "left", buttons, clickCount: 1
+    type, x: point.x, y: point.y, button: "left", buttons, clickCount: 1, modifiers
   }, sessionId);
 }
 
-async function dragPath(from, to, check) {
-  await mouse("mousePressed", from);
+async function dragPath(from, to, check, modifiers = 0) {
+  await mouse("mousePressed", from, 1, modifiers);
   for (let step = 1; step <= 6; step += 1) {
     await mouse("mouseMoved", {
       x: from.x + (to.x - from.x) * step / 6,
       y: from.y + (to.y - from.y) * step / 6
-    });
+    }, 1, modifiers);
   }
   if (check) await check();
-  await mouse("mouseReleased", to);
+  await mouse("mouseReleased", to, 0, modifiers);
 }
 
 async function dragFromPalette(assetId, worldX, worldY) {
@@ -400,8 +401,8 @@ async function dragFromPalette(assetId, worldX, worldY) {
   return preview;
 }
 
-async function dragWorld(from, to, check) {
-  await dragPath(await worldPoint(from.x, from.y), await worldPoint(to.x, to.y), check);
+async function dragWorld(from, to, check, modifiers = 0) {
+  await dragPath(await worldPoint(from.x, from.y), await worldPoint(to.x, to.y), check, modifiers);
 }
 
 async function samplePixel(x, y) {
@@ -1307,33 +1308,32 @@ try {
   await clickButton("#new-game");
   await clickButton("#new-create");
   assert.equal(await evaluate(`document.querySelector("#new-name").validity.valueMissing`), true);
+  assert.equal(await evaluate(`document.querySelector("#new-width") === null &&
+    document.querySelector("#new-height") === null`), true, "New Game has no editable world dimensions.");
+  assert.equal(await evaluate(`document.querySelector("#new-world-size").textContent.includes("2048 × 2048")`),
+    true, "New Game states the fixed world size.");
   await fillInput("#new-name", "   ");
   await fillInput("#new-author", "Disposable credits");
   await clickButton("#new-create");
   assert.match(await evaluate(`document.querySelector("#new-message").textContent`), /nonblank/);
   await fillInput("#new-name", "Browser Generic One");
-  for (const width of [63, 65, 2080]) {
-    await fillInput("#new-width", width);
-    await clickButton("#new-create");
-    assert.equal(await evaluate(`document.querySelector("#new-width").checkValidity()`), false);
-    assert.equal((await (await fetch(`${apiOrigin}/api/projects`)).json()).maps.length, countBefore);
-  }
-  await fillInput("#new-width", 640);
-  assert.equal(await evaluate(`document.querySelector("#new-height").value`), "480");
   await clickButton("#new-create");
   await waitFor(`!document.querySelector("#new-dialog").open && document.querySelector("#project-name").textContent === "Browser Generic One"`);
   const firstGeneric = await studioDocument();
   assert.equal(firstGeneric.objects.length, 2, "generic starter contains only safe player spawns");
-  assert.deepEqual(firstGeneric.bounds, { width: 640, height: 480 });
+  assert.deepEqual(firstGeneric.bounds, { width: 2048, height: 2048 });
   await assertStableHierarchy();
+  const wallsInitiallyOpen = await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`);
   await clickButton('.tree-group[data-layer="walls"] > summary');
-  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), false);
+  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), !wallsInitiallyOpen);
   await clickButton('.tree-group[data-layer="walls"] > summary');
-  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), true);
+  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), wallsInitiallyOpen);
   await assertStableHierarchy();
   const listing = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps;
   const firstEntry = listing.find(entry => entry.mapId === firstGeneric.id);
   assert.equal(firstEntry.model, "generic-grid-v1");
+  assert.deepEqual((await (await fetch(`${apiOrigin}/api/projects/${firstEntry.projectId}/maps/${firstEntry.mapId}`)).json())
+    .document.bounds, { width: 2048, height: 2048 }, "the created map is saved at the fixed world size.");
   assert.deepEqual(firstEntry.project, { name: "Browser Generic One", author: "Disposable credits" });
   assert.equal(await evaluate(`[...document.querySelectorAll(".asset-card")].every(card => card.dataset.assetId.startsWith("generic-"))`), true);
   assert.equal(await evaluate(`document.querySelector("#unresolved-summary").hidden`), true);
@@ -1369,12 +1369,280 @@ try {
 
   // Save-and-create protects the current project, without using it as a template.
   await dragFromPalette("generic-marker", 144, 80);
-  const savedOnCreate = await studioDocument();
+  await dragFromPalette("generic-marker", 240, 80);
+  let savedOnCreate = await studioDocument();
+  let markerObjects = savedOnCreate.objects.filter(object => object.assetId === "generic-marker")
+    .sort((left, right) => left.transform.x - right.transform.x);
+  assert.equal(markerObjects.length, 2);
+  const markerIds = markerObjects.map(object => object.id);
+  const markerCenters = markerObjects.map(object => ({
+    x: object.transform.x + 16,
+    y: object.transform.y + 16
+  }));
+  await clickWorld(markerCenters[0].x, markerCenters[0].y);
+  await clickWorld(markerCenters[1].x, markerCenters[1].y, 8);
+  const shiftedSelection = JSON.parse(await canvasData("selectedIds")).sort();
+  assert.deepEqual(shiftedSelection, [...markerIds].sort(), "Shift-click adds the second object.");
+  assert.equal(await evaluate(`document.querySelectorAll(".tree-item.selected").length`), 2,
+    "map selection is reflected in the hierarchy.");
+  assert.equal(await evaluate(`!document.querySelector("#selection-inspector").hidden &&
+    document.querySelector("#selection-count").textContent === "2" &&
+    document.querySelector("#selection-layer").textContent === "Markers" &&
+    document.querySelector("#selection-position").textContent === "Mixed" &&
+    document.querySelector("#selection-position").dataset.mixed === "true"`), true,
+  "the Inspector shows common properties and clearly marks mixed values.");
+  const beforeTypingShortcut = await studioDocument();
+  await evaluate(`document.querySelector("#selection-delta-x").focus()`);
+  await key("keyDown", "KeyA", "a", 2);
+  await key("keyUp", "KeyA", "a", 2);
+  assert.deepEqual(await studioDocument(), beforeTypingShortcut,
+    "Ctrl+A while typing does not edit the document.");
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  await clickWorld(markerCenters[1].x, markerCenters[1].y, 8);
+  assert.deepEqual(JSON.parse(await canvasData("selectedIds")), [markerIds[0]],
+    "Shift-click toggles an already selected object out.");
+  await clickWorld(markerCenters[1].x, markerCenters[1].y, 8);
+
+  await clickSelector('.layer-row[data-layer="walls"] [data-action="lock"]');
+  await clickSelector('.layer-row[data-layer="props"] [data-action="visible"]');
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  await key("keyDown", "KeyA", "a", 2);
+  await key("keyUp", "KeyA", "a", 2);
+  const visibleUnlocked = await evaluate(`(() => {
+    const prefs = Object.fromEntries([...document.querySelectorAll(".layer-row")].map(row => [
+      row.dataset.layer,
+      { hidden: row.classList.contains("hidden-layer"), locked: row.classList.contains("locked") }
+    ]));
+    return window.__studioTest.document().objects
+      .filter(object => !prefs[object.layer].hidden && !prefs[object.layer].locked)
+      .map(object => object.id).sort();
+  })()`);
+  assert.deepEqual(JSON.parse(await canvasData("selectedIds")).sort(), visibleUnlocked,
+    "Ctrl+A selects visible, unlocked objects only.");
+  const marqueeObjects = (await studioDocument()).objects.map(object => genericProject.objectBounds(object));
+  const marqueeBounds = {
+    left: Math.min(...marqueeObjects.map(bounds => bounds.x)) - 4,
+    top: Math.min(...marqueeObjects.map(bounds => bounds.y)) - 4,
+    right: Math.max(...marqueeObjects.map(bounds => bounds.x + bounds.width)) + 4,
+    bottom: Math.max(...marqueeObjects.map(bounds => bounds.y + bounds.height)) + 4
+  };
+  const viewBeforeMarquee = await studioView();
+  await evaluate(`(() => {
+    const rect = document.querySelector("#map-canvas").getBoundingClientRect();
+    window.__studioTest.setView({
+      zoom: Math.min(1, (rect.width - 8) / ${marqueeBounds.right - marqueeBounds.left},
+        (rect.height - 8) / ${marqueeBounds.bottom - marqueeBounds.top}),
+      cameraX: ${marqueeBounds.left - 4}, cameraY: ${marqueeBounds.top - 4}
+    });
+  })()`);
+  await dragWorld({ x: marqueeBounds.left, y: marqueeBounds.top },
+    { x: marqueeBounds.right, y: marqueeBounds.bottom });
+  assert.deepEqual(JSON.parse(await canvasData("selectedIds")).sort(), visibleUnlocked,
+    "the marquee excludes hidden and locked objects.");
+  await evaluate(`window.__studioTest.setView(${JSON.stringify(viewBeforeMarquee)})`);
+  await clickSelector('.layer-row[data-layer="props"] [data-action="visible"]');
+  await clickSelector('.layer-row[data-layer="walls"] [data-action="lock"]');
+
+  await clickSelector(`.tree-item[data-object-id="${markerIds[0]}"]`);
+  await clickSelector(`.tree-item[data-object-id="${markerIds[1]}"]`, 8);
+  assert.deepEqual(JSON.parse(await canvasData("selectedIds")).sort(), [...markerIds].sort(),
+    "hierarchy selection remains synchronized with the map.");
+  const beforeGroupMove = Object.fromEntries(markerObjects.map(object =>
+    [object.id, structuredClone(object.transform)]));
+  await dragWorld(markerCenters[0], { x: markerCenters[0].x + 40, y: markerCenters[0].y });
+  markerObjects = (await studioDocument()).objects.filter(object => markerIds.includes(object.id));
+  const groupDisplacements = markerObjects.map(object => ({
+    x: object.transform.x - beforeGroupMove[object.id].x,
+    y: object.transform.y - beforeGroupMove[object.id].y
+  }));
+  assert.deepEqual(groupDisplacements, [{ x: 32, y: 0 }, { x: 32, y: 0 }],
+    "group snapping applies one shared displacement without distorting spacing.");
+  assert.ok(markerObjects.every(object => object.layer === "props" && object.order >= 0),
+    "group movement preserves layers and draw order.");
+  const movedMarkers = structuredClone(markerObjects);
+  await evaluate(`(() => {
+    document.querySelector("#selection-delta-x").value = String(window.__studioTest.document().bounds.width);
+    document.querySelector("#selection-delta-y").value = "0";
+  })()`);
+  await clickButton("#apply-selection-offset");
+  assert.deepEqual((await studioDocument()).objects.filter(object => markerIds.includes(object.id)), movedMarkers,
+    "an out-of-bounds group operation is rejected atomically.");
+  await evaluate(`(() => {
+    document.querySelector("#selection-delta-x").value = "0";
+    document.querySelector("#selection-delta-y").value = "0";
+    document.querySelector("#map-canvas").focus();
+  })()`);
+  await clickButton("#undo");
+  assert.deepEqual((await studioDocument()).objects.filter(object => markerIds.includes(object.id))
+    .map(object => object.transform), markerObjects.map(object => beforeGroupMove[object.id]),
+  "one undo restores the entire group drag.");
+  await clickButton("#redo");
+  assert.deepEqual((await studioDocument()).objects.filter(object => markerIds.includes(object.id))
+    .map(object => object.transform), movedMarkers.map(object => object.transform));
+  await clickButton("#undo");
+
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  const nudgedMarkers = (await studioDocument()).objects.filter(object => markerIds.includes(object.id));
+  const nudgeDisplacements = nudgedMarkers.map(object => ({
+    x: object.transform.x - beforeGroupMove[object.id].x,
+    y: object.transform.y - beforeGroupMove[object.id].y
+  }));
+  assert.deepEqual(nudgeDisplacements, [{ x: 5, y: 0 }, { x: 5, y: 0 }],
+    "one arrow nudge moves the group by 5 world pixels.");
+  await clickButton("#undo");
+  await clickButton("#redo");
+  await clickButton("#undo");
+
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  await key("keyDown", "KeyD", "d", 2);
+  await key("keyUp", "KeyD", "d", 2);
+  const duplicatedMarkers = (await studioDocument()).objects.filter(object =>
+    !markerIds.includes(object.id) && object.assetId === "generic-marker");
+  assert.equal(duplicatedMarkers.length, 2);
+  assert.equal(new Set(duplicatedMarkers.map(object => object.id)).size, 2, "duplicate IDs are unique.");
+  assert.deepEqual(duplicatedMarkers.map(object => object.transform.x).sort((a, b) => a - b),
+    Object.values(beforeGroupMove).map(transform => transform.x + 32).sort((a, b) => a - b),
+    "duplicates use one shared snapped offset.");
+  const duplicateIds = duplicatedMarkers.map(object => object.id);
+  await clickButton("#undo");
+  assert.equal((await studioDocument()).objects.filter(object => duplicateIds.includes(object.id)).length, 0,
+    "undo removes the full duplicate group.");
+  await clickButton("#redo");
+  assert.equal((await studioDocument()).objects.filter(object => duplicateIds.includes(object.id)).length, 2);
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  await key("keyDown", "Delete", "Delete");
+  await key("keyUp", "Delete", "Delete");
+  assert.equal((await studioDocument()).objects.filter(object => duplicateIds.includes(object.id)).length, 0,
+    "Delete removes the full selected group.");
+  await clickButton("#undo");
+  assert.equal((await studioDocument()).objects.filter(object => duplicateIds.includes(object.id)).length, 2);
+  await clickButton("#redo");
+  assert.equal((await studioDocument()).objects.filter(object => duplicateIds.includes(object.id)).length, 0,
+    "delete redo removes the group.");
+
+  await evaluate(`document.querySelector("#map-canvas").focus()`);
+  const viewBeforePan = await studioView();
+  await key("keyDown", "Space", " ");
+  await dragWorld({ x: 500, y: 400 }, { x: 520, y: 410 });
+  await key("keyUp", "Space", " ");
+  const viewAfterPan = await studioView();
+  assert.deepEqual(
+    { x: viewAfterPan.cameraX - viewBeforePan.cameraX, y: viewAfterPan.cameraY - viewBeforePan.cameraY },
+    { x: -20, y: -10 }, "Space-drag pan remains available."
+  );
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  const beforeBulkSave = await studioDocument();
+  await clickButton("#save");
+  await waitFor(`document.querySelector("#save-state").textContent === "✓ Saved"`);
+  await stopChild(service);
+  service = startService();
+  await waitForHttp(mapUrl, service, "SQLite service (bulk edit reopen)");
+  await reloadPage();
+  await waitFor(`window.__studioTest !== undefined && document.querySelector("#map-canvas").dataset.layerCounts !== undefined`);
+  await clickButton("#open-game");
+  const firstEntrySelector = `.open-entry[data-project-id="${firstEntry.projectId}"][data-map-id="${firstEntry.mapId}"] input`;
+  await waitFor(`document.querySelector(${JSON.stringify(firstEntrySelector)}) !== null`);
+  await clickSelector(firstEntrySelector);
+  await clickButton("#open-selected");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(firstGeneric.id)}`);
+  const reopenedBulk = await studioDocument();
+  assert.deepEqual(reopenedBulk, beforeBulkSave, "group edits save and reopen from SQLite exactly.");
+
+  await clickSelector('.layer-row[data-layer="walls"] [data-action="lock"]');
+  await clickButton("#clear-level-contents");
+  for (const category of ["terrain", "walls", "props", "items", "collision", "spawns"]) {
+    await clickSelector(`[data-clear-category="${category}"]`);
+  }
+  const clearSummary = await evaluate(`({
+    summary: document.querySelector("#clear-contents-summary").textContent,
+    walls: document.querySelector("#clear-count-walls").textContent,
+    props: document.querySelector("#clear-count-props").textContent,
+    items: document.querySelector("#clear-count-items").textContent,
+    spawns: document.querySelector("#clear-count-spawns").textContent
+  })`);
+  assert.match(clearSummary.summary, /4 objects will be removed; 1 locked object will be skipped/);
+  assert.match(clearSummary.walls, /0 affected · 1 locked skipped/);
+  assert.match(clearSummary.props, /2 affected/);
+  assert.match(clearSummary.items, /0 affected/);
+  assert.match(clearSummary.spawns, /2 affected/);
+  const beforeClear = await studioDocument();
+  await clickButton("#clear-contents-confirm");
+  assert.equal((await studioDocument()).objects.length, 1, "clear removes selected unlocked categories only.");
+  assert.equal((await studioDocument()).objects[0].type, "wall", "locked wall content remains.");
+  await clickButton("#undo");
+  assert.deepEqual(await studioDocument(), beforeClear, "one undo restores all cleared categories.");
+  await clickButton("#redo");
+  assert.equal((await studioDocument()).objects.length, 1, "one redo reapplies the clear.");
+  await clickButton("#undo");
+  await clickSelector('.layer-row[data-layer="walls"] [data-action="lock"]');
+
+  await clickButton("#clear-level-contents");
+  await clickSelector('[data-clear-category="spawns"]');
+  assert.match(await evaluate(`document.querySelector("#clear-contents-summary").textContent`),
+    /2 objects will be removed; 0 locked objects will be skipped/);
+  await clickButton("#clear-contents-confirm");
+  const noSpawnDocument = await studioDocument();
+  assert.equal(noSpawnDocument.objects.some(object => object.type === "spawn"), false,
+    "clearing spawns does not create replacement objects.");
+  const noSpawnProblems = genericProject.playStartProblems(noSpawnDocument);
+  assert.ok(noSpawnProblems.length && noSpawnProblems.every(problem =>
+    /add it from the palette|undo clearing spawns/i.test(problem)),
+  `missing starts produce actionable validation: ${JSON.stringify(noSpawnProblems)}`);
+  await clickButton("#save");
+  await waitFor(`document.querySelector("#save-state").classList.contains("saved")`);
+  await clickButton("#play");
+  assert.equal(await evaluate(`document.querySelector("#studio").dataset.playState`), "error");
+  const noSpawnPlayMessage = await evaluate(`document.querySelector("#play-error-message").textContent`);
+  assert.match(noSpawnPlayMessage, /player start is missing/i);
+  assert.match(noSpawnPlayMessage, /add a player start from the palette|undo clearing spawns/i);
+  await clickButton("#play-error-close");
+  await stopChild(service);
+  service = startService();
+  await waitForHttp(mapUrl, service, "SQLite service (saved draft without starts)");
+  await reloadPage();
+  await waitFor(`window.__studioTest !== undefined && document.querySelector("#map-canvas").dataset.layerCounts !== undefined`);
+  await clickButton("#open-game");
+  await waitFor(`document.querySelector(${JSON.stringify(firstEntrySelector)}) !== null`);
+  await clickSelector(firstEntrySelector);
+  await clickButton("#open-selected");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(firstGeneric.id)}`);
+  assert.deepEqual(await studioDocument(), noSpawnDocument, "the spawn-free draft saves and reopens unchanged.");
+  await clickButton("#play");
+  assert.equal(await evaluate(`document.querySelector("#studio").dataset.playState`), "error");
+  const reopenedNoSpawnPlayMessage = await evaluate(`document.querySelector("#play-error-message").textContent`);
+  assert.match(reopenedNoSpawnPlayMessage, /player start is missing/i,
+    "Play stays blocked after reopening a spawn-free draft.");
+  await clickButton("#play-error-close");
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("generic-player", 320, 224);
+  await dragFromPalette("generic-player-2", 288, 224);
+  savedOnCreate = await studioDocument();
+  assert.deepEqual(genericProject.playStartProblems(savedOnCreate), [],
+    "restoring authored player starts returns the disposable draft to Play-valid state.");
+  await clickButton("#save");
+  await waitFor(`document.querySelector("#save-state").textContent === "✓ Saved"`);
+  multiSelectionEvidence = {
+    shiftSelection: { actual: shiftedSelection, expected: [...markerIds].sort() },
+    selectAllExclusions: { actual: visibleUnlocked, expected: [...visibleUnlocked] },
+    groupMove: { actualDisplacements: groupDisplacements, expectedDisplacements: [{ x: 32, y: 0 }, { x: 32, y: 0 }] },
+    groupNudge: { actualDisplacements: nudgeDisplacements, expectedDisplacements: [{ x: 5, y: 0 }, { x: 5, y: 0 }] },
+    duplicateIds: { actual: duplicateIds, expectedCount: 2 },
+    clear: { actual: clearSummary, expectedRemoved: 4, expectedLockedSkipped: 1 },
+    spawnFreeDraft: {
+      actualProblems: noSpawnProblems,
+      actualPlayMessage: reopenedNoSpawnPlayMessage,
+      expectedSaved: true,
+      expectedPlayBlocked: true
+    },
+    saveReopen: { actualObjects: reopenedBulk.objects.length, expectedObjects: beforeBulkSave.objects.length }
+  };
+  savedOnCreate = await studioDocument();
+
   await clickButton("#new-game");
   await fillInput("#new-name", "Browser Generic Two");
   await fillInput("#new-author", "Second author");
-  await fillInput("#new-width", 2048);
-  await fillInput("#new-height", 2048);
   await clickButton("#new-create");
   assert.equal(await evaluate(`document.querySelector("#new-confirm").hidden`), false);
   await clickButton("#new-save");
@@ -1391,6 +1659,9 @@ try {
   await clickButton("#save");
   await waitFor(`document.querySelector("#save-state").textContent.includes("Saved")`);
   let expectedSecond = editedSecond;
+  assert.deepEqual(expectedSecond.bounds, { width: 2048, height: 2048 });
+  assert.deepEqual((await (await fetch(`${apiOrigin}/api/projects/${secondEntry.projectId}/maps/${secondEntry.mapId}`)).json())
+    .document.bounds, { width: 2048, height: 2048 }, "the saved map keeps the fixed world size.");
   let importedAssets = [];
   let oversizedAsset = null;
   let gopherMeasurements = null;
@@ -1578,6 +1849,19 @@ try {
     if (editorViewBeforePlay) await evaluate(`window.__studioTest.setView(${JSON.stringify(editorViewBeforePlay)})`);
     await clickButton("#play");
     await waitFor(`document.querySelector("#studio").dataset.playState === "playing" && document.querySelector('[data-testid="generic-preview"]')?.dataset.position !== undefined`);
+    assert.deepEqual(await evaluate(`(() => {
+      const canvas = document.querySelector('[data-testid="generic-preview"]');
+      return { width: Number(canvas.dataset.worldWidth), height: Number(canvas.dataset.worldHeight) };
+    })()`), { width: 2048, height: 2048 }, "the public runtime receives the fixed world size.");
+    const beforePlayShortcuts = await studioDocument();
+    await key("keyDown", "KeyA", "a", 2);
+    await key("keyUp", "KeyA", "a", 2);
+    await key("keyDown", "KeyD", "d", 2);
+    await key("keyUp", "KeyD", "d", 2);
+    await key("keyDown", "Delete", "Delete");
+    await key("keyUp", "Delete", "Delete");
+    assert.deepEqual(await studioDocument(), beforePlayShortcuts,
+      "editor selection and deletion shortcuts are ignored during Play.");
     if (entry.projectId === secondEntry.projectId && gopherZipPath) {
       const expectedAssets = importedAssets.map(asset => asset.assetId);
       assert.deepEqual(JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.importedAssetIds`)),
@@ -1687,11 +1971,26 @@ try {
   await clickButton("#new-game");
   await fillInput("#new-name", "Browser Small World");
   await fillInput("#new-author", "Disposable camera test");
-  await fillInput("#new-width", 64);
-  await fillInput("#new-height", 64);
   await clickButton("#new-create");
   await waitFor(`!document.querySelector("#new-dialog").open && document.querySelector("#project-name").textContent === "Browser Small World"`);
+  const smallWorldEntry = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps
+    .find(entry => entry.project.name === "Browser Small World");
+  assert.ok(smallWorldEntry);
+  const legacySmallWorld = structuredClone((await (await fetch(
+    `${apiOrigin}/api/projects/${smallWorldEntry.projectId}/maps/${smallWorldEntry.mapId}`)).json()).document);
+  assert.deepEqual(legacySmallWorld.bounds, { width: 2048, height: 2048 });
+  legacySmallWorld.bounds = { width: 64, height: 64 };
+  legacySmallWorld.objects.find(object => object.assetId === "generic-player").transform = { x: 32, y: 32 };
+  legacySmallWorld.objects.find(object => object.assetId === "generic-player-2").transform = { x: 0, y: 32 };
+  const legacySmallWorldSave = await fetch(`${apiOrigin}/api/projects/${smallWorldEntry.projectId}/maps/${smallWorldEntry.mapId}`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: smallWorldEntry.projectId, model: "generic-grid-v1", document: legacySmallWorld })
+  });
+  assert.equal(legacySmallWorldSave.status, 200, "an existing custom-size saved map remains valid.");
+  await selectSaved(smallWorldEntry.projectId, smallWorldEntry.mapId);
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(smallWorldEntry.mapId)}`);
   const smallWorld = await studioDocument();
+  assert.deepEqual(smallWorld, legacySmallWorld, "opening a saved custom-size map preserves its data.");
   assert.deepEqual(smallWorld.bounds, { width: 64, height: 64 });
   const smallEntry = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps
     .find(entry => entry.mapId === smallWorld.id);
@@ -1714,6 +2013,10 @@ try {
       smoothing: canvas.getContext("2d").imageSmoothingEnabled };
   })()`);
   const smallInitial = await readSmallCamera();
+  assert.deepEqual(await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="generic-preview"]');
+    return { width: Number(canvas.dataset.worldWidth), height: Number(canvas.dataset.worldHeight) };
+  })()`), { width: 64, height: 64 }, "the runtime preserves the saved custom-size world.");
   assert.equal(smallInitial.worldScale, 1, "small worlds stay at 1:1 scale");
   assert.ok(smallInitial.width > 64 && smallInitial.height > 64, "small map fits inside the Play viewport");
   assert.ok(Math.abs(smallInitial.cameraX - (64 - smallInitial.width) / 2) < 0.01 &&
@@ -1752,6 +2055,7 @@ try {
   if (gopherMeasurements) console.log(`Imported gopher dimensions: ${JSON.stringify(gopherMeasurements)}`);
   if (playCameraMeasurements.length) console.log(`Generic Play camera: ${JSON.stringify(playCameraMeasurements)}`);
   if (smallWorldCameraMeasurements) console.log(`Small-world Play camera: ${JSON.stringify(smallWorldCameraMeasurements)}`);
+  if (multiSelectionEvidence) console.log(`Multi-selection actual-vs-expected evidence: ${JSON.stringify(multiSelectionEvidence)}`);
   console.log(`Directional Halberd visual captures (separate from combat assertions): ${JSON.stringify(directionalAttackEvidence)}`);
   console.log(`Studio workflow passed: migrated format 1 (${legacy.walls} walls, 1 collision box, backup kept); ` +
     `New Game created two generic projects via browser controls, validated inputs, rejected duplicates, cancelled safely, ` +
@@ -1763,6 +2067,8 @@ try {
     `unresolved collision labelled, assigned wall artwork / kept / deleted with undo; ` +
     `dragged a wall and a barrel from the palette; moved the wall off-grid without moving the floor; ` +
     `barrel stayed above the wall; snap, 5 px nudge, undo/redo, floor lock; saved and reopened; ` +
+    `Shift/marquee/Ctrl+A selection, group movement/nudging, duplicate/delete IDs, undo/redo, locked-aware category clear, ` +
+    `save/reopen and spawn-free Play validation passed; ` +
     `Play button ran the edited map and Aries stopped at x=${beforeRelease} against the wall at ` +
     `x=${nudged.transform.x}; Stop restored the view; the Floor 1 slime chased, dealt contact damage, and died to the Halberd; ` +
     `Space, left-click, and right-trigger attacks plus directional dodge were exercised in all control modes; ` +

@@ -90,15 +90,16 @@ function findDeadEnds(grid) {
 }
 
 /** Procedural door, cobwebs and candles derived from the design grid (not editable objects). */
-export function fixedDecorations(artwork, grid, map) {
-  const start = map.spawns.find(spawn => spawn.kind === "player").position;
-  const startTile = { x: Math.floor(start.x / CELL), y: Math.floor(start.y / CELL) };
-  let y = startTile.y;
-  while (y > 0 && !isWall(grid, startTile.x, y - 1)) y -= 1;
-  const door = y > 0 && isWall(grid, startTile.x - 1, y - 1) &&
-    isWall(grid, startTile.x + 1, y - 1)
-    ? { x: startTile.x * CELL + 16, y: y * CELL + WALL_FACE_PX }
-    : undefined;
+export function fixedDecorations(artwork, grid, start) {
+  let door;
+  if (start) {
+    const startTile = { x: Math.floor(start.x / CELL), y: Math.floor(start.y / CELL) };
+    let y = startTile.y;
+    while (y > 0 && !isWall(grid, startTile.x, y - 1)) y -= 1;
+    if (y > 0 && isWall(grid, startTile.x - 1, y - 1) && isWall(grid, startTile.x + 1, y - 1)) {
+      door = { x: startTile.x * CELL + 16, y: y * CELL + WALL_FACE_PX };
+    }
+  }
   let seed = 99 + 131;
   const random = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -180,11 +181,14 @@ function drawTerrainAndAlignedWalls(context, artwork, design, visible) {
   const { floor, wall } = cellOccupancy(design);
   const rows = floor.length;
   const columns = floor[0].length;
+  const occupied = (x, y) => x >= 0 && y >= 0 && x < columns && y < rows &&
+    (floor[y][x] || (visible.walls && wall[y][x]));
   if (visible.terrain) {
-    const corner = (x, y) => x >= 0 && y >= 0 && x < columns && y < rows &&
+    const corner = (x, y) => occupied(x, y) &&
       floor[y][x] && !(visible.walls && wall[y][x]) ? "1" : "0";
     for (let y = -1; y < rows; y += 1) {
       for (let x = -1; x < columns; x += 1) {
+        if (![[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]].some(([cx, cy]) => occupied(cx, cy))) continue;
         const tile = TILE_INDEX[corner(x, y) + corner(x + 1, y) + corner(x, y + 1) + corner(x + 1, y + 1)];
         drawWangTile(context, artwork, tile, x * CELL + CELL / 2, y * CELL + CELL / 2);
       }
@@ -299,7 +303,7 @@ const ALL_VISIBLE = Object.freeze({
  * collision boxes). Derived decorations draw after props, as in the original.
  * Returns the derived candle lights.
  */
-export function drawDesign(context, artwork, design, { grid, map, mode = "play",
+export function drawDesign(context, artwork, design, { grid, mode = "play",
   visible = ALL_VISIBLE, decorations = true, assetCatalog = ASSET_CATALOG } = {}) {
   context.fillStyle = "#0b0910";
   context.fillRect(0, 0, design.bounds.width, design.bounds.height);
@@ -319,7 +323,7 @@ export function drawDesign(context, artwork, design, { grid, map, mode = "play",
     draw(object);
   }
   const decor = decorations && visible.terrain && visible.walls
-    ? fixedDecorations(artwork, grid, map)
+    ? fixedDecorations(artwork, grid, design.objects.find(object => object.assetId === "spawn-aries")?.transform)
     : { webs: [], candles: [] };
   drawDecorations(context, artwork, decor);
   if (mode === "editor") {

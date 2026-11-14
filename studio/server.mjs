@@ -563,6 +563,10 @@ function levelError(message, status = 409) {
 
 function changeLevels(projectId, input) {
   if (!input || !isProjectMapId(input.mapId)) levelError("A valid level ID is required.", 400);
+  if (input.action === "add" && (Object.hasOwn(input, "width") || Object.hasOwn(input, "height")) &&
+      (input.width !== generic.DEFAULT_DIMENSIONS.width || input.height !== generic.DEFAULT_DIMENSIONS.height)) {
+    levelError(`New levels use a fixed map size of ${generic.DEFAULT_DIMENSIONS.width} × ${generic.DEFAULT_DIMENSIONS.height} pixels.`, 400);
+  }
   database.exec("BEGIN IMMEDIATE");
   try {
     const source = getMap.get(projectId, input.mapId);
@@ -584,7 +588,7 @@ function changeLevels(projectId, input) {
       } else {
         mapId = `map-${randomUUID()}`;
         const document = input.action === "duplicate" ? { ...original, id: mapId, name }
-          : source.model === generic.MODEL ? generic.createDocument(mapId, name, original.bounds)
+          : source.model === generic.MODEL ? generic.createDocument(mapId, name)
           : createBlankDocument(mapId, name);
         saveMap.run(projectId, mapId, JSON.stringify(document), now, source.model);
       }

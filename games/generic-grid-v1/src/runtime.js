@@ -48,6 +48,7 @@ export function genericPreview(design, assetCatalog = ASSET_CATALOG) {
   };
 }
 export function genericSkin(design, assetCatalog = ASSET_CATALOG, artwork = null) {
+  const cameraZoom = design.cameraZoom ?? 1;
   return {
     metadata: { id: `${MODEL}-skin`, version: "1.0.0", acceptedModuleId: MODEL, acceptedStateSchemaVersions: [1] },
     mount(host) {
@@ -89,16 +90,19 @@ export function genericSkin(design, assetCatalog = ASSET_CATALOG, artwork = null
           canvas.width = Math.max(1, Math.round(viewportWidth * pixelRatio));
           canvas.height = Math.max(1, Math.round(viewportHeight * pixelRatio));
           const player = snapshot.players[0]?.position;
+          const worldViewportWidth = viewportWidth / cameraZoom;
+          const worldViewportHeight = viewportHeight / cameraZoom;
           const cameraAxis = (position, worldSize, viewportSize) => worldSize <= viewportSize
             ? (worldSize - viewportSize) / 2
             : Math.max(0, Math.min(worldSize - viewportSize, position - viewportSize / 2));
-          const cameraX = cameraAxis(player?.x ?? design.bounds.width / 2, design.bounds.width, viewportWidth);
-          const cameraY = cameraAxis(player?.y ?? design.bounds.height / 2, design.bounds.height, viewportHeight);
+          const cameraX = cameraAxis(player?.x ?? design.bounds.width / 2, design.bounds.width, worldViewportWidth);
+          const cameraY = cameraAxis(player?.y ?? design.bounds.height / 2, design.bounds.height, worldViewportHeight);
           context.fillStyle = "#22252b";
           context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
           context.fillRect(0, 0, viewportWidth, viewportHeight);
           context.imageSmoothingEnabled = false;
-          context.setTransform(pixelRatio, 0, 0, pixelRatio, -cameraX * pixelRatio, -cameraY * pixelRatio);
+          context.setTransform(pixelRatio * cameraZoom, 0, 0, pixelRatio * cameraZoom,
+            -cameraX * pixelRatio * cameraZoom, -cameraY * pixelRatio * cameraZoom);
           drawDesign(context, artwork, design, { mode: "play", assetCatalog });
           canvas.dataset.importedAssetIds = JSON.stringify(design.objects
             .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
@@ -109,8 +113,11 @@ export function genericSkin(design, assetCatalog = ASSET_CATALOG, artwork = null
             context.fill();
           }
           canvas.dataset.position = JSON.stringify(player);
+          canvas.dataset.worldWidth = String(design.bounds.width);
+          canvas.dataset.worldHeight = String(design.bounds.height);
           canvas.dataset.cameraX = String(cameraX);
           canvas.dataset.cameraY = String(cameraY);
+          canvas.dataset.cameraZoom = String(cameraZoom);
           canvas.dataset.worldScale = String(context.getTransform().a * canvas.getBoundingClientRect().width / canvas.width);
           canvas.dataset.pixelRatio = String(pixelRatio);
           canvas.dataset.tick = String(snapshot.tick);

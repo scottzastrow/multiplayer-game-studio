@@ -26,9 +26,9 @@ game remains in `games/astraeum-tower/`.
   unsaved changes, and use the selected document for Play/Stop. Require
   explicit consent before identifying an untyped compatible map as Astraeum.
 - New Game beside Open Game: collect a nonblank game name (up to 64 characters),
-  author/credits (up to 128), explicit Generic Grid v1 model and dimensions.
-  Defaults are 640 x 480 pixels; each axis must be a multiple of 32 from
-  64 through 2048, matching the installed public map contract.
+  author/credits (up to 128), and explicit Generic Grid v1 model. New games
+  have a fixed 2048 x 2048 pixel world; there are no editable dimension fields,
+  and the service rejects requests to create another size.
 - Allocate stable, independent project/map IDs and collision-safe directories.
   Reject case/Unicode-normalized duplicate names without overwriting existing
   projects. Commit project metadata and the map in one SQLite transaction;
@@ -50,6 +50,18 @@ game remains in `games/astraeum-tower/`.
   create two generic games, edit/save different maps, restart/reopen, confirm
   isolation, move in Play/Stop for both and return to unchanged Astraeum.
   Cover invalid inputs, duplicate names and cancellation.
+- Blank levels use a fixed 2048 x 2048 world. Existing levels keep their saved
+  dimensions until the user explicitly applies an undoable expansion; resizing never moves
+  or scales objects and leaves new space empty. This increment exposes expansion
+  only; contraction is deferred.
+- Derive editor bounds, placement limits, runtime bounds, collision grid and
+  gameplay camera limits from the saved level dimensions. Keep editor zoom
+  independent. Save a gameplay camera zoom setting (default 1.0) with the level;
+  larger values zoom in, smaller values show more world, and the camera follows
+  the player, clamps at map edges, and centers smaller worlds without fit scaling.
+- Verify default dimensions, explicit expansion, placement in expanded space,
+  save/reopen, gameplay movement/collision and camera behavior at multiple
+  viewport sizes through disposable data and direct CDP.
 - Astraeum Play presents Keyboard Only, Keyboard + Mouse, and Game Controller
   modes with mode-specific instructions. Translate device input to generic
   movement, aim, attack, and dodge actions; preserve analog stick magnitude,
@@ -93,11 +105,15 @@ game remains in `games/astraeum-tower/`.
 
 ## Explicitly out of scope
 
+Level transitions, generation, tile painting, area fill, boundaries,
+procedural scattering, audio and shared libraries remain separate future work.
+
 Multiplayer editing, collaboration, dynamic-object motion, generators,
 PixelLab integration, engine-kit changes or rebuilds, publishing, deployment,
 changes to `reference/`, arbitrary custom model loading or gameplay scripting.
-Asset importing is the following milestone; no asset borrowing or import UI
-is part of this milestone.
+Project-scoped PNG and PixelLab ZIP importing was delivered as a separate
+subsequent milestone; this original milestone does not include its import UI
+or implementation.
 
 ## Constraints
 
@@ -106,6 +122,7 @@ is part of this milestone.
 - Use only installed public runtime APIs; report a blocker instead of importing
   private engine modules.
 - Keep all changes local and uncommitted; leave T042 open.
+- Do not rewrite existing saved levels unless the user explicitly saves an edit.
 
 ## Scoped level-management increment
 
@@ -113,9 +130,9 @@ is part of this milestone.
   project/game. List/open active levels, add blank, duplicate with a new stable
   map ID and independent saved state, rename, and select the starting level.
 - Blank levels use that game's existing supported model, project asset catalog
-  and settings defaults. Generic Grid uses the game's dimensions and safe
-  starts; Astraeum uses uniform floor and a safe Aries start, not Floor 1's
-  authored layout. Play/Stop uses the selected level's existing adapter.
+  and settings defaults, with 2048 x 2048 bounds and safe starts. Astraeum uses
+  uniform floor and a safe Aries start, not Floor 1's authored layout. Play/Stop
+  uses the selected level's existing adapter.
 - Protect dirty edits on switch and before operations that replace the open
   document: save/discard/cancel, with no discard on a failed operation.
 - Require one or more active levels and an active starting-level reference.
@@ -133,3 +150,40 @@ is part of this milestone.
   isolation and Play/Stop on the selected level. Run affected checks once and
   stop on failure. Preserve user edits/databases; no push, deployment, commit
   or kit rebuild. T042 stays open.
+
+## Scoped multi-selection and bulk-edit increment
+
+- Selecting with a normal click replaces the current selection; Shift-click
+  toggles an object. Dragging from empty canvas creates a marquee, while
+  middle-drag and Space-drag continue to pan.
+- Ctrl+A works only while the editor canvas has focus and selects objects on
+  visible, unlocked layers. Map and hierarchy selection stay synchronized;
+  shortcuts do not edit the document while typing or during Play.
+- Group drag, shared-offset edits, and 5-world-pixel arrow nudges preserve
+  relative transforms, layer membership, and draw order. Grid snapping derives
+  one shared displacement for the whole selection. Operations that would move
+  any selected object outside the map are rejected atomically.
+- Duplicate assigns fresh object IDs and preserves arrangement, layers, and
+  draw order. Delete removes the complete selection. Group movement, nudging,
+  duplication, deletion, bulk property edits, and content clearing each form
+  one undo/redo action.
+- The Inspector reports selection count and common properties; differing
+  values are explicitly marked Mixed. It offers shared positional offsets and
+  edits compatible common collision properties.
+- Clear Level Contents offers terrain, walls, props, items, collision boxes,
+  and spawns as separate categories. Before confirmation it reports affected
+  and locked/skipped counts. Locked-layer content is never removed; hidden,
+  unlocked content is eligible. Clearing is one undoable edit and preserves
+  the level and its dimensions, settings, asset catalog, credits, and other
+  levels.
+- A level with cleared required player spawns remains a valid saveable draft.
+  Play is blocked with an actionable message to restore a start or undo;
+  Studio never creates replacement spawns silently.
+- Verify actual controls through direct CDP against disposable data:
+  marquee/Shift/Ctrl+A selection, locked and hidden exclusions, snapped group
+  movement, 5-pixel nudging, invalid atomic movement, duplicate IDs, delete,
+  undo/redo, save/reopen, clear-category counts and locks, and save/reopen plus
+  Play rejection for a spawn-free draft. Retain actual-versus-expected
+  evidence, run affected checks once and stop on failure; no debugger is
+  required. Keep all work local and uncommitted, leave T042 open, and preserve
+  pending map/camera and onboarding work.
