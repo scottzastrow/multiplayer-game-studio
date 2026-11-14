@@ -50,5 +50,14 @@
   disposable browser data; measure source alpha bounds, placed world size,
   editor CSS size at 100% zoom, Play's viewport-fit rendering, and explicit
   rejection of placement when an image exceeds the current map.
+- [x] Add Astraeum Keyboard Only, Keyboard + Mouse, and Game Controller
+  bindings through the generic input-action layer, including original directional
+  dodge tuning, stamina/cooldown checks, release/re-arm, input clearing, and
+  mode-specific Play instructions.
+- [x] Extend combat and disposable Studio/CDP coverage for dodge tuning,
+  invulnerability, held and short presses, all three control modes, simulated
+  standard-gamepad movement/aim/attack/dodge, UI focus, blur and disconnect;
+  document that physical-controller testing remains pending.
+- [ ] Verify controls with a physical controller.
 - [ ] Game export and PixelLab API integration remain separate milestones.
 - [ ] T042 remains open (no publication/deployment or kit rebuild).

@@ -27,8 +27,26 @@
           <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
           <button id="save" class="button secondary" disabled>Save</button>
           <button id="play" class="button primary" disabled>▶ Play</button>
+          <button id="player-settings" class="button secondary" type="button" aria-haspopup="dialog">
+            Player Settings <span id="player-mode-summary" data-testid="player-mode-summary"></span>
+          </button>
           <button id="stop" class="button danger" hidden>■ Stop</button>
         </div>
+        <dialog id="player-settings-dialog" aria-labelledby="player-settings-title">
+          <h2 id="player-settings-title">Player Settings</h2>
+          <label for="player-control-mode">Control mode</label>
+          <select id="player-control-mode" data-testid="player-control-mode">
+            <option value="keyboard-only">Keyboard Only</option>
+            <option value="keyboard-mouse">Keyboard + Mouse</option>
+            <option value="game-controller">Game Controller</option>
+          </select>
+          <p id="player-control-bindings" data-testid="player-control-bindings"></p>
+          <p id="player-controller-status" data-testid="player-controller-status" role="status"></p>
+          <p id="player-settings-note"></p>
+          <div class="dialog-actions">
+            <button id="player-settings-close" class="button primary" type="button">Done</button>
+          </div>
+        </dialog>
         <dialog id="open-dialog" aria-labelledby="open-dialog-title">
           <h2 id="open-dialog-title">Open Game</h2>
           <p>Saved projects and maps with an explicit supported model (Astraeum Floor or Generic Grid v1).</p>

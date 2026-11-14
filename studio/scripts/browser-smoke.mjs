@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -31,12 +31,17 @@ const webOrigin = `http://127.0.0.1:${webPort}`;
 const mapUrl = `${apiOrigin}/api/projects/astraeum-tower/maps/astraeum-tower-floor-1`;
 const gopherZipPath = process.env.STUDIO_GOPHER_ZIP ? resolve(root, process.env.STUDIO_GOPHER_ZIP) : null;
 if (gopherZipPath && !existsSync(gopherZipPath)) throw new Error(`Mutant-gopher ZIP not found: ${gopherZipPath}`);
+const attackEvidenceDir = process.env.STUDIO_ATTACK_EVIDENCE_DIR
+  ? resolve(process.env.STUDIO_ATTACK_EVIDENCE_DIR)
+  : null;
 let service;
 let web;
 let chrome;
 let socket;
 let targetId;
 let sessionId;
+const playCameraMeasurements = [];
+let smallWorldCameraMeasurements = null;
 
 function startService(databasePath = database) {
   const child = spawn(process.execPath, ["--no-warnings", serviceFile], {
@@ -226,6 +231,131 @@ async function key(type, code, keyValue, modifiers = 0) {
     modifiers,
     windowsVirtualKeyCode: keyValue.length === 1 ? keyValue.toUpperCase().charCodeAt(0) : undefined
   }, sessionId);
+}
+
+async function tapKey(code, keyValue) {
+  await key("keyDown", code, keyValue);
+  await key("keyUp", code, keyValue);
+}
+
+async function openPlayerSettings() {
+  await clickButton("#player-settings");
+  await waitFor(`document.querySelector("#player-settings-dialog").open`);
+}
+
+async function setControlModeInOpenSettings(value) {
+  if (value === "game-controller") {
+    await waitFor(`document.querySelector('[data-testid="player-controller-status"]').textContent.includes("Connected · Standard mapping")`);
+  }
+  await evaluate(`(() => {
+    const select = document.querySelector('[data-testid="player-control-mode"]');
+    select.value = ${JSON.stringify(value)};
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await waitFor(`document.querySelector('[data-testid="player-control-mode"]').value === ${JSON.stringify(value)} &&
+    document.querySelector("#player-mode-summary").textContent ===
+      document.querySelector('[data-testid="player-control-mode"] option:checked').textContent`);
+  const bindings = await evaluate(`document.querySelector('[data-testid="player-control-bindings"]').textContent`);
+  const bindingPatterns = {
+    "keyboard-only": /^WASD: Move · Arrow keys: Dodge · Space: Attack\.$/,
+    "keyboard-mouse": /Arrow keys move.*Pointer aims.*Left click attacks.*right mouse \+ arrow/,
+    "game-controller": /Left stick moves.*Right stick aims.*RT attacks.*B\/Circle/
+  };
+  assert.match(bindings, bindingPatterns[value], `${value} bindings are shown in Player Settings.`);
+  if (value === "game-controller") {
+    assert.match(await evaluate(`document.querySelector('[data-testid="player-controller-status"]').textContent`),
+      /Connected · Standard mapping · Studio standard test pad/,
+      "Player Settings reports the simulated controller connection and standard mapping.");
+  }
+  assert.equal(await evaluate(`localStorage.getItem("web-studio.player-control-mode.v1")`), value,
+    `${value} is persisted as a local user preference.`);
+}
+
+async function closePlayerSettings() {
+  await clickButton("#player-settings-close");
+  await waitFor(`!document.querySelector("#player-settings-dialog").open &&
+    document.activeElement === (document.querySelector("#studio").dataset.playState === "playing"
+      ? document.querySelector('[data-testid="astraeum-world"], [data-testid="generic-preview"]')
+      : document.querySelector("#player-settings"))`);
+}
+
+async function selectControlMode(value) {
+  await openPlayerSettings();
+  await setControlModeInOpenSettings(value);
+  await closePlayerSettings();
+}
+
+async function mouseEvent(type, x, y, button = "none", buttons = 0) {
+  await cdp("Input.dispatchMouseEvent", { type, x, y, button, buttons }, sessionId);
+}
+
+async function canvasPoint() {
+  return evaluate(`(() => {
+    const rect = document.querySelector('[data-testid="astraeum-world"]').getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.75, y: rect.top + rect.height * 0.5 };
+  })()`);
+}
+
+async function setFakeGamepad({ connected = true, axes = [0, 0, 0, 0], dodge = false, trigger = false } = {}) {
+  await evaluate(`(() => {
+    const pad = window.__studioFakeGamepad ?? {
+      id: "Studio standard test pad", index: 0, connected: true, mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }))
+    };
+    pad.connected = ${connected};
+    pad.axes = ${JSON.stringify(axes)};
+    pad.buttons[1] = { pressed: ${dodge}, value: ${dodge ? 1 : 0} };
+    pad.buttons[7] = { pressed: ${trigger}, value: ${trigger ? 1 : 0} };
+    window.__studioFakeGamepad = pad;
+    Object.defineProperty(navigator, "getGamepads", {
+      configurable: true, value: () => pad.connected ? [pad] : [null]
+    });
+  })()`);
+}
+
+async function controllerSnapshot() {
+  return evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    const pad = window.__studioFakeGamepad;
+    return {
+      input: {
+        axes: [...pad.axes],
+        dodge: { pressed: pad.buttons[1].pressed, value: pad.buttons[1].value },
+        trigger: { pressed: pad.buttons[7].pressed, value: pad.buttons[7].value }
+      },
+      position: { x: Number(canvas.dataset.x), y: Number(canvas.dataset.y) },
+      stick: { x: Number(canvas.dataset.controllerMoveX), y: Number(canvas.dataset.controllerMoveY) },
+      dodgeDirection: { x: Number(canvas.dataset.dodgeDirectionX), y: Number(canvas.dataset.dodgeDirectionY) },
+      facing: canvas.dataset.facing,
+      remainingDuration: Number(canvas.dataset.dodgeFrames),
+      stamina: Number(canvas.dataset.stamina),
+      cooldown: Number(canvas.dataset.dodgeCooldownFrames),
+      simulationTick: Number(canvas.dataset.simulationTick),
+      dodgesStarted: Number(canvas.dataset.dodgesStarted)
+    };
+  })()`);
+}
+
+async function captureAttackEvidence(direction, phase) {
+  const dataUrl = await evaluate(`document.querySelector('[data-testid="astraeum-world"]').toDataURL("image/png")`);
+  assert.match(dataUrl, /^data:image\/png;base64,/);
+  const image = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
+  assert.equal(image.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.ok(image.readUInt32BE(16) > 400 && image.readUInt32BE(20) > 300,
+    "the attack evidence captures the rendered Play canvas.");
+  if (!attackEvidenceDir) return null;
+  await mkdir(attackEvidenceDir, { recursive: true });
+  const path = join(attackEvidenceDir, `astraeum-attack-${phase}-${direction}.png`);
+  await writeFile(path, image);
+  return path;
+}
+
+async function setViewport(width, height) {
+  await cdp("Emulation.setDeviceMetricsOverride", {
+    width, height, deviceScaleFactor: 1, mobile: false
+  }, sessionId);
+  await waitFor(`window.innerWidth === ${width} && window.innerHeight === ${height}`);
 }
 
 const canvasData = name => evaluate(`document.querySelector("#map-canvas").dataset.${name}`);
@@ -484,9 +614,11 @@ try {
   assert.equal(initial.grid, true);
   assert.equal(initial.snap, true);
   assert.equal(initial.terrainLocked, true, "the floor starts visible but locked.");
-  for (const id of ["item-chest", "item-herb", "item-mushroom", "item-amethyst", "item-sapphire", "spawn-slime"]) {
+  for (const id of ["item-chest", "item-herb", "item-mushroom", "item-amethyst", "item-sapphire"]) {
     assert.equal(initial.badges[id], "editor-only:Editor only", `${id} is marked as having no gameplay.`);
   }
+  assert.equal(initial.badges["spawn-slime"], "implemented:In Play",
+    "Floor 1 slime markers are represented in Play.");
   assert.equal(initial.badges["wall-damp-stone"], "implemented:In Play");
   assert.equal(initial.badges["prop-barrel"], "implemented:In Play");
   assert.equal(initial.badges["prop-stairs-rune"], "partial:Partial in Play");
@@ -607,6 +739,13 @@ try {
   await clickWorld(barrelCenter.x, barrelCenter.y);
   await evaluate(`window.__studioTest.setView({ zoom: 1.5, cameraX: 40, cameraY: 20 })`);
   const editorView = await studioView();
+  assert.equal(await evaluate(`document.querySelector("#player-settings").hidden`), false,
+    "Player Settings is available before Play.");
+  assert.equal(await evaluate(`document.querySelector("#player-mode-summary").textContent`), "Keyboard + Mouse",
+    "the toolbar shows the current player mode.");
+  await selectControlMode("keyboard-only");
+  assert.equal(await evaluate(`localStorage.getItem("web-studio.player-control-mode.v1")`), "keyboard-only",
+    "the control preference persists locally before Play.");
   await evaluate(`(() => {
     window.__playStates = [];
     new MutationObserver(() => window.__playStates.push(document.querySelector("#studio").dataset.playState +
@@ -630,6 +769,9 @@ try {
   assert.ok(runtime.width > 400 && runtime.height > 300, `the Play canvas is visible (${runtime.width}x${runtime.height}).`);
   assert.equal(runtime.focused, true, "the Play canvas has keyboard focus.");
   assert.equal(runtime.editorHidden, true, "Play replaces the editor view.");
+  await selectControlMode("keyboard-only");
+  assert.match(await evaluate(`document.querySelector('[data-testid="astraeum-controls"]').textContent`),
+    /WASD: Move · Arrow keys: Dodge · Space: Attack\./, "Play controls show Keyboard Only bindings.");
   assert.equal(runtime.collisions, initial.counts.walls + 1, "runtime collision is derived from the saved walls.");
   assert.equal(runtime.x, 144);
   await key("keyDown", "KeyD", "d");
@@ -648,6 +790,353 @@ try {
   assert.equal(JSON.stringify(await studioDocument()), savedDocument, "Play does not alter the authored design.");
   assert.equal(await saveState(), "✓ Saved");
   assert.equal(await canvasData("selectedId"), barrelId, "the selection survives Play.");
+
+  // Run the authored Floor 1 slime encounter through Studio's actual Play button.
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await clickWorld(180, 144);
+  assert.equal(await canvasData("selectedId"), wallId, "the nearby test wall is selected for temporary repositioning.");
+  await dragWorld({ x: 180, y: 144 }, { x: 320, y: 144 });
+  const encounterWall = await objectById(wallId);
+  assert.ok(encounterWall.transform.x > 240, "the disposable encounter route no longer has the test wall in front of Aries.");
+  await clickButton("#play");
+  await waitFor(`document.querySelector("#studio").dataset.playState === "playing" &&
+    Number(document.querySelector('[data-testid="astraeum-world"]')?.dataset.slimeCount) > 0`);
+  await selectControlMode("keyboard-only");
+  const encounterStart = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return {
+      x: Number(canvas.dataset.x), y: Number(canvas.dataset.y),
+      hp: Number(canvas.dataset.playerHp),
+      slimes: JSON.parse(canvas.dataset.slimes)
+    };
+  })()`);
+  assert.equal(encounterStart.x, 144);
+  assert.ok(encounterStart.slimes.some(slime => slime.hp === 36 && slime.state === "idle"),
+    "Floor 1 slime markers spawn full-health enemies.");
+  await key("keyDown", "KeyS", "s");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.y) >= 172`);
+  await key("keyUp", "KeyS", "s");
+  await key("keyDown", "KeyD", "d");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.x) >= 360`);
+  await key("keyUp", "KeyD", "d");
+  const nearestSlime = encounterStart.slimes.filter(slime => slime.x > encounterStart.x).reduce((nearest, slime) =>
+    Math.hypot(slime.x - encounterStart.x, slime.y - encounterStart.y) <
+      Math.hypot(nearest.x - encounterStart.x, nearest.y - encounterStart.y) ? slime : nearest);
+  await waitFor(`JSON.parse(document.querySelector('[data-testid="astraeum-world"]').dataset.slimes)
+    .some(slime => slime.id === ${JSON.stringify(nearestSlime.id)} && slime.state === "chase" &&
+      slime.x !== ${nearestSlime.x})`, 5000);
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.damageTaken) >= 12`, 10000);
+  const slimeAttack = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return {
+      hp: Number(canvas.dataset.playerHp),
+      damageTaken: Number(canvas.dataset.damageTaken),
+      slimes: JSON.parse(canvas.dataset.slimes)
+    };
+  })()`);
+  assert.ok(slimeAttack.hp < encounterStart.hp && slimeAttack.damageTaken >= 12,
+    "slime contact attacks apply damage to Aries.");
+  await tapKey("Space", " ");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.damageDealt) >= 30`, 5000);
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackCooldownFrames) === 0`, 5000);
+  await tapKey("Space", " ");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.slimesDefeated) >= 1`, 5000);
+  const encounterResult = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return {
+      defeated: Number(canvas.dataset.slimesDefeated),
+      damageDealt: Number(canvas.dataset.damageDealt),
+      remaining: Number(canvas.dataset.slimeCount),
+      lastEvent: canvas.dataset.lastEvent,
+      hud: document.querySelector('[data-testid="astraeum-hud"]').textContent
+    };
+  })()`);
+  assert.equal(encounterResult.defeated, 1, "the Halberd defeats a slime.");
+  assert.ok(encounterResult.damageDealt >= 36, "Halberd damage is capped at the slime's remaining HP.");
+  assert.equal(encounterResult.lastEvent, "slime-defeated");
+  assert.match(encounterResult.hud, /HP.*Stamina.*Slimes/i);
+  await clickButton("#stop");
+  await waitFor(`document.querySelector("#studio").dataset.playState === "idle"`);
+  await clickButton("#undo");
+  assert.equal(JSON.stringify(await studioDocument()), savedDocument,
+    "the encounter and its temporary route change do not alter the saved project.");
+
+  const slimeMarkers = (await studioDocument()).objects
+    .filter(object => object.assetId === "spawn-slime");
+  assert.ok(slimeMarkers.length > 0, "directional attack visuals use the authored Floor 1 map.");
+  for (const marker of slimeMarkers) {
+    await clickWorld(marker.transform.x, marker.transform.y);
+    assert.equal(await canvasData("selectedId"), marker.id, `slime marker ${marker.id} is selected for the visual-only run.`);
+    await clickButton("#delete-object");
+    await waitFor(`!window.__studioTest.document().objects.some(object => object.id === ${JSON.stringify(marker.id)})`);
+  }
+  await clickButton("#play");
+  await waitFor(`document.querySelector("#studio").dataset.playState === "playing" &&
+    document.querySelector('[data-testid="astraeum-world"]') !== null`);
+  assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-testid="astraeum-world"]')`),
+    true, "Studio focuses the Play canvas automatically.");
+  await selectControlMode("keyboard-only");
+  assert.match(await evaluate(`document.querySelector('[data-testid="astraeum-controls"]').textContent`),
+    /Space: Attack/, "Keyboard Only instructions show Space as attack.");
+  const keyboardMoveStart = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { x: Number(canvas.dataset.x), dodges: Number(canvas.dataset.dodgesStarted) };
+  })()`);
+  await key("keyDown", "KeyD", "d");
+  await delay(180);
+  await key("keyUp", "KeyD", "d");
+  const keyboardMoveEnd = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { x: Number(canvas.dataset.x), y: Number(canvas.dataset.y), dodges: Number(canvas.dataset.dodgesStarted) };
+  })()`);
+  assert.ok(keyboardMoveEnd.x > keyboardMoveStart.x, "Keyboard Only WASD moves the player.");
+  assert.equal(keyboardMoveEnd.dodges, keyboardMoveStart.dodges, "WASD movement does not dodge.");
+  await key("keyDown", "KeyS", "s");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.y) > ${keyboardMoveEnd.y + 2}`);
+  await openPlayerSettings();
+  const settingsPausePosition = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`));
+  await delay(200);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`)),
+    settingsPausePosition, "opening Player Settings neutralizes held gameplay movement.");
+  await setControlModeInOpenSettings("keyboard-mouse");
+  await closePlayerSettings();
+  const modeSwitchPosition = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`));
+  await delay(200);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`)),
+    modeSwitchPosition, "closing Player Settings does not restore stale held keyboard movement.");
+  await key("keyUp", "KeyS", "s");
+  await selectControlMode("keyboard-only");
+  const shortcutPosition = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`));
+  await key("keyDown", "KeyS", "s", 2);
+  await key("keyUp", "KeyS", "s", 2);
+  await delay(50);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`)),
+    shortcutPosition, "Ctrl+S does not become gameplay movement.");
+  assert.deepEqual((await (await fetch(mapUrl)).json()).document, JSON.parse(savedDocument),
+    "the editor save shortcut does not intercept keyboard input while Play is active.");
+  const directionalAttackEvidence = [];
+  for (const { facing, code, keyValue } of [
+    { facing: "north", code: "KeyW", keyValue: "w" },
+    { facing: "east", code: "KeyD", keyValue: "d" },
+    { facing: "south", code: "KeyS", keyValue: "s" },
+    { facing: "west", code: "KeyA", keyValue: "a" }
+  ]) {
+    await key("keyDown", code, keyValue);
+    await waitFor(`document.querySelector('[data-testid="astraeum-world"]').dataset.facing === ${JSON.stringify(facing)}`);
+    await key("keyUp", code, keyValue);
+    await tapKey("Space", " ");
+    await waitFor(`(() => {
+      const frame = Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame);
+      return frame >= 4 && frame <= 6;
+    })()`, 3000);
+    const thrustFrame = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame`));
+    const thrustPath = await captureAttackEvidence(facing, "thrust");
+    await waitFor(`(() => {
+      const frame = Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame);
+      return frame >= 10 && frame <= 20;
+    })()`, 3000);
+    const sweepFrame = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame`));
+    const sweepPath = await captureAttackEvidence(facing, "sweep");
+    directionalAttackEvidence.push({ facing, thrustFrame, thrustPath, sweepFrame, sweepPath });
+    await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) === 0 &&
+      Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackCooldownFrames) === 0`, 3000);
+  }
+
+  const uiFocusPosition = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`));
+  await evaluate(`document.querySelector('[data-setting="ambientBrightness"]').focus()`);
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`)),
+    uiFocusPosition, "Play input is inactive while a UI control has focus.");
+
+  await selectControlMode("keyboard-mouse");
+  assert.match(await evaluate(`document.querySelector('[data-testid="astraeum-controls"]').textContent`),
+    /arrows move.*pointer aims.*left click attacks.*right mouse \+ arrow to dodge/,
+    "Keyboard + Mouse instructions show its movement, aim, attack, and dodge bindings.");
+  assert.equal(await evaluate(`(() => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    document.querySelector('[data-testid="astraeum-world"]').dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`), true, "context menus are suppressed over gameplay.");
+  const keyboardMouseStart = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { x: Number(canvas.dataset.x), y: Number(canvas.dataset.y),
+      dodges: Number(canvas.dataset.dodgesStarted) };
+  })()`);
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await delay(250);
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  await delay(80);
+  const arrowMove = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { x: Number(canvas.dataset.x), dodges: Number(canvas.dataset.dodgesStarted) };
+  })()`);
+  assert.ok(arrowMove.x > keyboardMouseStart.x, "Keyboard + Mouse arrows move the player.");
+  assert.equal(arrowMove.dodges, keyboardMouseStart.dodges, "arrows alone do not dodge.");
+  const mouseDodgeStartY = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.y`));
+  const mousePoint = await canvasPoint();
+  await mouseEvent("mouseMoved", mousePoint.x, mousePoint.y);
+  await mouseEvent("mousePressed", mousePoint.x, mousePoint.y, "right", 2);
+  await key("keyDown", "ArrowUp", "ArrowUp");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted) === ${arrowMove.dodges + 1}`);
+  const mouseDodge = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { y: Number(canvas.dataset.y), frames: Number(canvas.dataset.dodgeFrames) };
+  })()`);
+  assert.ok(mouseDodge.frames > 0 && mouseDodge.y < mouseDodgeStartY - 1,
+    "right mouse plus an arrow begins a directional dash.");
+  await key("keyUp", "ArrowUp", "ArrowUp");
+  await mouseEvent("mouseReleased", mousePoint.x, mousePoint.y, "right", 0);
+  await delay(500);
+  const noRepeatMouse = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`));
+  assert.equal(noRepeatMouse, arrowMove.dodges + 1, "holding right mouse does not repeat a dodge.");
+  await mouseEvent("mousePressed", mousePoint.x, mousePoint.y, "left", 1);
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) > 0`);
+  await mouseEvent("mouseReleased", mousePoint.x, mousePoint.y, "left", 0);
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackCooldownFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) === 0`);
+  await selectControlMode("keyboard-only");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.stamina) >= 100`, 5000);
+  const keyDodgeCount = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`));
+  await key("keyDown", "ArrowLeft", "ArrowLeft");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted) === ${keyDodgeCount + 1}`);
+  await key("keyUp", "ArrowLeft", "ArrowLeft");
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  await delay(80);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`)),
+    keyDodgeCount + 1, "dodge cooldown blocks an immediate second keyboard press.");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeCooldownFrames) === 0`);
+  await key("keyDown", "ArrowDown", "ArrowDown");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted) === ${keyDodgeCount + 2}`);
+  await delay(400);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`)),
+    keyDodgeCount + 2, "a held Keyboard Only dodge key does not repeat.");
+  await key("keyUp", "ArrowDown", "ArrowDown");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeCooldownFrames) === 0`);
+  const insufficientKeyboardDodgeCount = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`));
+  assert.ok(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.stamina`)) < 34,
+    "two quick dodges leave insufficient stamina for another.");
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  await delay(100);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`)),
+    insufficientKeyboardDodgeCount, "insufficient stamina rejects a real keyboard dodge.");
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.stamina) >= 100`, 5000);
+  await setFakeGamepad({ axes: [0, 0, 0, 0] });
+  await selectControlMode("game-controller");
+  assert.match(await evaluate(`document.querySelector('[data-testid="astraeum-controls"]').textContent`),
+    /left stick moves.*right stick aims.*RT attacks.*B\/Circle.*dodge/,
+    "controller instructions show the standard bindings.");
+  await waitFor(`document.querySelector('[data-testid="astraeum-controller-status"]').textContent.includes("connected")`);
+  const controllerMoveStart = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`));
+  const controllerDodgeBeforeMovement = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`));
+  await setFakeGamepad({ axes: [0.55, 0, 0.8, 0] });
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.x) > ${controllerMoveStart + 3}`);
+  const analogMove = await evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="astraeum-world"]');
+    return { x: Number(canvas.dataset.controllerMoveX), facing: canvas.dataset.facing,
+      dodges: Number(canvas.dataset.dodgesStarted) };
+  })()`);
+  assert.ok(analogMove.x > 0.45 && analogMove.x < 0.49, `left-stick analog magnitude is preserved (${analogMove.x}).`);
+  assert.equal(analogMove.facing, "east", "right stick supplies independent aim.");
+  assert.equal(analogMove.dodges, controllerDodgeBeforeMovement, "controller stick movement alone does not dodge.");
+  const neutralStickDodges = analogMove.dodges;
+  await setFakeGamepad({ axes: [0, 0, 0, 0] });
+  await delay(80);
+  await setFakeGamepad({ axes: [0, 0, 0, 0], dodge: true });
+  await delay(150);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`)),
+    neutralStickDodges, "controller dodge at neutral stick does nothing.");
+  await setFakeGamepad({ axes: [0, 0, 0, 0] });
+  await delay(80);
+  const controllerDodgeStart = await controllerSnapshot();
+  const controllerMap = await evaluate(`window.__studioTest.document()`);
+  await setFakeGamepad({ axes: [0.75, 0, 0.8, 0], dodge: true });
+  const controllerDodgeInput = await controllerSnapshot();
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted) === ${neutralStickDodges + 1}`);
+  const controllerDodge = await controllerSnapshot();
+  const controllerDodgeEvidence = {
+    start: controllerDodgeStart,
+    input: controllerDodgeInput,
+    after: controllerDodge,
+    sampledAfterDodgeFinished: controllerDodge.remainingDuration === 0 && controllerDodge.cooldown > 0
+  };
+  assert.ok(controllerDodge.remainingDuration > 0,
+    `the standard gamepad starts a dodge before it finishes; evidence=${JSON.stringify(controllerDodgeEvidence)}`);
+  assert.ok(controllerDodge.position.x > controllerDodgeStart.position.x + 3,
+    `the standard left stick moves the player east during the dodge; evidence=${JSON.stringify(controllerDodgeEvidence)}`);
+  await delay(400);
+  const controllerDodgeEnd = await controllerSnapshot();
+  const left = Math.min(controllerDodgeStart.position.x, controllerDodgeEnd.position.x) - 9;
+  const right = Math.max(controllerDodgeStart.position.x, controllerDodgeEnd.position.x) + 9;
+  const top = Math.min(controllerDodgeStart.position.y, controllerDodgeEnd.position.y) - 8;
+  const bottom = Math.max(controllerDodgeStart.position.y, controllerDodgeEnd.position.y) + 8;
+  const nearbyCollisions = controllerMap.objects
+    .filter(object => object.collision)
+    .map(object => ({ id: object.id, ...project.collisionRect(object) }))
+    .map(collision => {
+      const dx = Math.max(collision.x - right, left - collision.x - collision.width, 0);
+      const dy = Math.max(collision.y - bottom, top - collision.y - collision.height, 0);
+      return { ...collision, distance: Math.hypot(dx, dy) };
+    })
+    .filter(collision => collision.distance <= 96)
+    .sort((nearer, farther) => nearer.distance - farther.distance)
+    .slice(0, 6);
+  Object.assign(controllerDodgeEvidence, { end: controllerDodgeEnd, nearbyCollisions });
+  console.log("Standard gamepad directional-dodge evidence:", JSON.stringify(controllerDodgeEvidence));
+  assert.ok(controllerDodgeEnd.remainingDuration === 0 &&
+    controllerDodgeEnd.dodgeDirection.x > 0 &&
+    controllerDodgeEnd.position.x > controllerDodgeStart.position.x + 30,
+  `the standard left stick completes a meaningful eastward dodge; evidence=${JSON.stringify(controllerDodgeEvidence)}`);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted`)),
+    neutralStickDodges + 1, "holding B/Circle does not repeat a controller dodge.");
+  const controllerReleaseTick = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.simulationTick`));
+  await setFakeGamepad({ axes: [0, 0, 0, 0], dodge: false });
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackCooldownFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeCooldownFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.simulationTick) > ${controllerReleaseTick}`);
+  const controllerRearmStart = await controllerSnapshot();
+  await setFakeGamepad({ axes: [-0.75, 0, 0.8, 0], dodge: true });
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgesStarted) === ${neutralStickDodges + 2}`);
+  const controllerRearm = await controllerSnapshot();
+  assert.ok(controllerRearm.remainingDuration > 0 &&
+    controllerRearm.position.x < controllerRearmStart.position.x - 3,
+  `releasing and pressing B/Circle re-arms a leftward dodge; before=${JSON.stringify(controllerRearmStart)} after=${JSON.stringify(controllerRearm)}`);
+  await setFakeGamepad({ axes: [0, 0, 0, 0], dodge: false });
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeFrames) === 0 &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.dodgeCooldownFrames) === 0`);
+  await setFakeGamepad({ axes: [0, 0, 0, 0], dodge: false, trigger: true });
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.attackFrame) > 0`);
+  await setFakeGamepad({ axes: [0, 0, 0, 0], dodge: false, trigger: false });
+  await setFakeGamepad({ axes: [0.8, 0, 0, 0], dodge: false });
+  const movingControllerX = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`));
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.x) > ${movingControllerX + 3}`);
+  await setFakeGamepad({ connected: false });
+  await waitFor(`document.querySelector('[data-testid="astraeum-controller-status"]').textContent.includes("disconnected")`);
+  const disconnectTick = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.simulationTick`));
+  await waitFor(`Number(document.querySelector('[data-testid="astraeum-world"]').dataset.simulationTick) > ${disconnectTick} &&
+    Number(document.querySelector('[data-testid="astraeum-world"]').dataset.controllerMoveX) === 0`);
+  const disconnectX = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`));
+  await delay(200);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`)),
+    disconnectX, "gamepad disconnect clears movement.");
+  await evaluate(`window.dispatchEvent(new Event("blur"))`);
+  await setFakeGamepad({ axes: [0.8, 0, 0, 0] });
+  await delay(150);
+  const blurX = Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.x`));
+  assert.equal(blurX, disconnectX, "window blur prevents stale controller movement.");
+  await evaluate(`window.dispatchEvent(new Event("focus"))`);
+  await setFakeGamepad({ connected: false });
+  await clickButton("#stop");
+  for (let index = 0; index < slimeMarkers.length; index += 1) await clickButton("#undo");
+  assert.equal(JSON.stringify(await studioDocument()), savedDocument,
+    "directional attack visual checks do not persist changes to the authored project.");
 
   // An unplayable map gives an actionable error instead of failing silently.
   await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
@@ -884,8 +1373,8 @@ try {
   await clickButton("#new-game");
   await fillInput("#new-name", "Browser Generic Two");
   await fillInput("#new-author", "Second author");
-  await fillInput("#new-width", 320);
-  await fillInput("#new-height", 256);
+  await fillInput("#new-width", 2048);
+  await fillInput("#new-height", 2048);
   await clickButton("#new-create");
   assert.equal(await evaluate(`document.querySelector("#new-confirm").hidden`), false);
   await clickButton("#new-save");
@@ -903,6 +1392,7 @@ try {
   await waitFor(`document.querySelector("#save-state").textContent.includes("Saved")`);
   let expectedSecond = editedSecond;
   let importedAssets = [];
+  let oversizedAsset = null;
   let gopherMeasurements = null;
 
   if (gopherZipPath) {
@@ -957,8 +1447,8 @@ try {
     }
     await clickButton('#palette-view button[data-view="medium"]');
     const chosen = importedAssets.find(asset => asset.direction === "south");
-    await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
-    await dragFromPalette(chosen.assetId, 184, 184);
+    await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 700, cameraY: 700 })`);
+    await dragFromPalette(chosen.assetId, 1100, 1040);
     const placedGopher = (await studioDocument()).objects.find(object => object.assetId === chosen.assetId);
     assert.ok(placedGopher, "a selected static gopher direction can be placed");
     assert.equal(placedGopher.type, "prop");
@@ -1026,8 +1516,10 @@ try {
       "duplicate browser import creates no extra assets");
     await clickButton("#asset-import-cancel");
 
+    await selectSaved(firstEntry.projectId, firstEntry.mapId);
+    await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(firstEntry.mapId)}`);
     const oversizedPngPath = join(profile, "oversized-asset.png");
-    await writeFile(oversizedPngPath, makeRgbaPng(321, 48));
+    await writeFile(oversizedPngPath, makeRgbaPng(641, 48));
     await clickButton("#import-assets");
     await setFileInput("#asset-import-file", oversizedPngPath);
     await waitFor(`!document.querySelector("#asset-import-preview").hidden &&
@@ -1036,18 +1528,20 @@ try {
     await fillInput("#asset-import-author", "Disposable test");
     await fillInput("#asset-import-source", "Generated browser test PNG");
     await clickButton("#asset-import-submit");
-    const catalogAfterOversizedImport = (await (await fetch(`${apiOrigin}/api/projects/${secondEntry.projectId}/assets`)).json()).assets;
-    const oversizedAsset = catalogAfterOversizedImport.find(asset => asset.width === 321 && asset.height === 48);
+    const catalogAfterOversizedImport = (await (await fetch(`${apiOrigin}/api/projects/${firstEntry.projectId}/assets`)).json()).assets;
+    oversizedAsset = catalogAfterOversizedImport.find(asset => asset.width === 641 && asset.height === 48);
     assert.ok(oversizedAsset, "a valid image larger than the map remains imported at its original size");
-    importedAssets.push(oversizedAsset);
     await waitFor(`document.querySelector('.asset-card[data-asset-id="${oversizedAsset.assetId}"]') !== null &&
       !document.querySelector("#asset-import-dialog").open`);
+    await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
     const beforeOversizedPlacement = await studioDocument();
     const oversizedPreview = await dragFromPalette(oversizedAsset.assetId, 184, 184);
     assert.match(oversizedPreview, /:invalid$/, "an image wider than the map shows an invalid placement preview");
     await waitFor(`document.querySelector('[data-testid="studio-status"]').textContent.includes("larger than this")`);
     assert.deepEqual(await studioDocument(), beforeOversizedPlacement,
       "an image larger than the map is not silently resized or added to the document");
+    await selectSaved(secondEntry.projectId, secondEntry.mapId);
+    await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(secondEntry.mapId)}`);
   }
 
   // Discard-and-create must retain edits if the server refuses creation.
@@ -1076,8 +1570,12 @@ try {
     const paletteIds = await evaluate(`[...document.querySelectorAll(".asset-card")].map(card => card.dataset.assetId)`);
     assert.ok(paletteIds.every(id => id.startsWith("generic-") || id.startsWith("asset-")));
     assert.deepEqual(paletteIds.filter(id => id.startsWith("asset-")).sort(),
-      (entry.projectId === secondEntry.projectId ? importedAssets.map(asset => asset.assetId) : []).sort(),
+      (entry.projectId === secondEntry.projectId ? importedAssets.map(asset => asset.assetId) :
+        entry.projectId === firstEntry.projectId && oversizedAsset ? [oversizedAsset.assetId] : []).sort(),
       "reopened project palette includes only its project-scoped assets");
+    const editorViewBeforePlay = entry.projectId === secondEntry.projectId && gopherZipPath
+      ? { zoom: 1.65, cameraX: 123, cameraY: 87 } : null;
+    if (editorViewBeforePlay) await evaluate(`window.__studioTest.setView(${JSON.stringify(editorViewBeforePlay)})`);
     await clickButton("#play");
     await waitFor(`document.querySelector("#studio").dataset.playState === "playing" && document.querySelector('[data-testid="generic-preview"]')?.dataset.position !== undefined`);
     if (entry.projectId === secondEntry.projectId && gopherZipPath) {
@@ -1085,17 +1583,60 @@ try {
       assert.deepEqual(JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.importedAssetIds`)),
         expectedAssets.filter(assetId => expected.objects.some(object => object.assetId === assetId)),
         "Play renders the placed imported artwork from the reopened project");
-      const playMeasure = await evaluate(`(() => {
+      const readPlayCamera = () => evaluate(`(() => {
         const canvas = document.querySelector('[data-testid="generic-preview"]');
         const rect = canvas.getBoundingClientRect();
-        const transform = canvas.getContext("2d").getTransform();
-        return { backingWidth: canvas.width, cssWidth: rect.width, worldScale: transform.a,
-          assetCssWidth: ${gopherMeasurements.placedWorld.width} * transform.a * rect.width / canvas.width,
-          assetCssHeight: ${gopherMeasurements.placedWorld.height} * transform.d * rect.height / canvas.height };
+        const ratio = Number(canvas.dataset.pixelRatio);
+        const position = JSON.parse(canvas.dataset.position);
+        const cameraX = Number(canvas.dataset.cameraX);
+        const cameraY = Number(canvas.dataset.cameraY);
+        return { backingWidth: canvas.width, backingHeight: canvas.height, cssWidth: rect.width, cssHeight: rect.height,
+          pixelRatio: ratio, worldScale: Number(canvas.dataset.worldScale), cameraX, cameraY, position,
+          playerCssX: position.x - cameraX, playerCssY: position.y - cameraY,
+          assetCssWidth: ${gopherMeasurements.placedWorld.width} * Number(canvas.dataset.worldScale),
+          assetCssHeight: ${gopherMeasurements.placedWorld.height} * Number(canvas.dataset.worldScale) };
       })()`);
-      assert.ok(playMeasure.assetCssWidth > 0 && playMeasure.assetCssHeight > 0,
-        "Play renders imported artwork with a measurable positive CSS extent");
-      gopherMeasurements.play = playMeasure;
+      await waitFor(`(() => { const canvas = document.querySelector('[data-testid="generic-preview"]');
+        return canvas.width === Math.round(canvas.clientWidth * window.devicePixelRatio) &&
+          canvas.height === Math.round(canvas.clientHeight * window.devicePixelRatio); })()`);
+      let playMeasure = await readPlayCamera();
+      assert.equal(playMeasure.worldScale, 1, "generic Play renders one world pixel per CSS pixel");
+      assert.equal(playMeasure.assetCssWidth, 48, "the imported gopher remains 48 CSS pixels wide in Play");
+      assert.equal(playMeasure.assetCssHeight, 48, "the imported gopher remains 48 CSS pixels high in Play");
+      assert.ok(Math.abs(playMeasure.playerCssX - playMeasure.cssWidth / 2) <= 1 &&
+        Math.abs(playMeasure.playerCssY - playMeasure.cssHeight / 2) <= 1,
+      "the active player is followed at the center of the large-world viewport");
+      assert.ok(playMeasure.cameraX >= 0 && playMeasure.cameraY >= 0 &&
+        playMeasure.cameraX <= 2048 - playMeasure.cssWidth &&
+        playMeasure.cameraY <= 2048 - playMeasure.cssHeight,
+      "large-world camera stays clamped to world boundaries");
+      await waitFor(`(() => { const canvas = document.querySelector('[data-testid="generic-preview"]');
+        return canvas.width === Math.round(canvas.clientWidth * window.devicePixelRatio) &&
+          canvas.height === Math.round(canvas.clientHeight * window.devicePixelRatio); })()`);
+      playMeasure = await readPlayCamera();
+      await setViewport(1200, 800);
+      await waitFor(`(() => { const canvas = document.querySelector('[data-testid="generic-preview"]');
+        return canvas && canvas.clientWidth !== ${playMeasure.cssWidth} &&
+          canvas.width === Math.round(canvas.clientWidth * window.devicePixelRatio) &&
+          Math.abs(Number(canvas.dataset.cameraX) -
+            (Number(JSON.parse(canvas.dataset.position).x) - canvas.clientWidth / 2)) <= 1; })()`);
+      const resizedMeasure = await readPlayCamera();
+      assert.equal(resizedMeasure.worldScale, 1, "resizing preserves 1:1 world-to-CSS scale");
+      assert.ok(Math.abs(resizedMeasure.playerCssX - resizedMeasure.cssWidth / 2) <= 1 &&
+        Math.abs(resizedMeasure.playerCssY - resizedMeasure.cssHeight / 2) <= 1,
+      "resized large-world viewport continues following the active player");
+      assert.ok(resizedMeasure.cameraX >= 0 && resizedMeasure.cameraY >= 0 &&
+        resizedMeasure.cameraX <= 2048 - resizedMeasure.cssWidth &&
+        resizedMeasure.cameraY <= 2048 - resizedMeasure.cssHeight,
+      "resized camera remains clamped to world boundaries");
+      await setViewport(1600, 1000);
+      await waitFor(`(() => { const canvas = document.querySelector('[data-testid="generic-preview"]');
+        return canvas.clientWidth === ${playMeasure.cssWidth} &&
+          canvas.width === Math.round(canvas.clientWidth * window.devicePixelRatio) &&
+          Math.abs(Number(canvas.dataset.cameraX) -
+            (Number(JSON.parse(canvas.dataset.position).x) - canvas.clientWidth / 2)) <= 1; })()`);
+      playMeasure = await readPlayCamera();
+      playCameraMeasurements.push({ largeWorld: playMeasure, resized: resizedMeasure });
     }
     const positionBefore = JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.position`));
     assert.equal(await evaluate(`document.activeElement.dataset.testid`), "generic-preview");
@@ -1105,9 +1646,37 @@ try {
     await delay(60);
     const positionAfter = JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.position`));
     assert.ok(positionAfter.x > positionBefore.x, "generic player moves via the installed public runtime");
+    if (entry.projectId === secondEntry.projectId && gopherZipPath) {
+      const afterMove = await evaluate(`(() => {
+        const canvas = document.querySelector('[data-testid="generic-preview"]');
+        const position = JSON.parse(canvas.dataset.position);
+        return { position, cameraX: Number(canvas.dataset.cameraX), cameraY: Number(canvas.dataset.cameraY),
+          worldScale: Number(canvas.dataset.worldScale), cssWidth: canvas.clientWidth, cssHeight: canvas.clientHeight };
+      })()`);
+      assert.ok(afterMove.position.x > positionBefore.x && afterMove.position.x > positionAfter.x - 1);
+      assert.equal(afterMove.worldScale, 1);
+      assert.ok(Math.abs(afterMove.position.x - afterMove.cameraX - afterMove.cssWidth / 2) <= 1,
+        "player movement advances through the world while the camera follows");
+      await key("keyDown", "ArrowRight", "ArrowRight");
+      await delay(9000);
+      await key("keyUp", "ArrowRight", "ArrowRight");
+      await delay(100);
+      const atEastBoundary = await evaluate(`(() => {
+        const canvas = document.querySelector('[data-testid="generic-preview"]');
+        const position = JSON.parse(canvas.dataset.position);
+        return { position, cameraX: Number(canvas.dataset.cameraX), maxCameraX: 2048 - canvas.clientWidth,
+          cssWidth: canvas.clientWidth, worldScale: Number(canvas.dataset.worldScale) };
+      })()`);
+      assert.equal(atEastBoundary.position.x, 2040, "player radius remains inside the east world edge");
+      assert.equal(atEastBoundary.cameraX, atEastBoundary.maxCameraX, "camera clamps at the east world boundary");
+      assert.equal(atEastBoundary.worldScale, 1);
+      playCameraMeasurements.push({ eastBoundary: atEastBoundary });
+    }
     assert.equal(await evaluate(`document.querySelector('[data-testid="astraeum-world"]') === null`), true);
     await clickButton("#stop");
     assert.deepEqual(await studioDocument(), expected, "Stop does not persist movement");
+    if (editorViewBeforePlay) assert.deepEqual(await studioView(), editorViewBeforePlay,
+      "Stop restores the independent editor pan and zoom");
   }
   await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
   await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "astraeum-tower-floor-1"`);
@@ -1115,18 +1684,92 @@ try {
   assert.deepEqual(await (await fetch(mapUrl)).json(), astraeumBefore, "New Game leaves Astraeum content, timestamps and migrations unchanged");
   assert.equal(await evaluate(`document.querySelector('.asset-card[data-asset-id="wall-damp-stone"]') !== null`), true);
 
+  await clickButton("#new-game");
+  await fillInput("#new-name", "Browser Small World");
+  await fillInput("#new-author", "Disposable camera test");
+  await fillInput("#new-width", 64);
+  await fillInput("#new-height", 64);
+  await clickButton("#new-create");
+  await waitFor(`!document.querySelector("#new-dialog").open && document.querySelector("#project-name").textContent === "Browser Small World"`);
+  const smallWorld = await studioDocument();
+  assert.deepEqual(smallWorld.bounds, { width: 64, height: 64 });
+  const smallEntry = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps
+    .find(entry => entry.mapId === smallWorld.id);
+  assert.ok(smallEntry);
+  const smallEditorView = { zoom: 1.4, cameraX: 19, cameraY: 23 };
+  await evaluate(`window.__studioTest.setView(${JSON.stringify(smallEditorView)})`);
+  await clickButton("#play");
+  await waitFor(`document.querySelector("#studio").dataset.playState === "playing" &&
+    document.querySelector('[data-testid="generic-preview"]')?.dataset.position !== undefined &&
+    document.querySelector('[data-testid="generic-preview"]').width === Math.round(
+      document.querySelector('[data-testid="generic-preview"]').clientWidth * window.devicePixelRatio)`);
+  const readSmallCamera = () => evaluate(`(() => {
+    const canvas = document.querySelector('[data-testid="generic-preview"]');
+    const position = JSON.parse(canvas.dataset.position);
+    const rect = canvas.getBoundingClientRect();
+    const cameraX = Number(canvas.dataset.cameraX);
+    const cameraY = Number(canvas.dataset.cameraY);
+    return { worldScale: Number(canvas.dataset.worldScale), width: canvas.clientWidth, height: canvas.clientHeight,
+      cameraX, cameraY, position, playerCssX: position.x - cameraX, playerCssY: position.y - cameraY,
+      smoothing: canvas.getContext("2d").imageSmoothingEnabled };
+  })()`);
+  const smallInitial = await readSmallCamera();
+  assert.equal(smallInitial.worldScale, 1, "small worlds stay at 1:1 scale");
+  assert.ok(smallInitial.width > 64 && smallInitial.height > 64, "small map fits inside the Play viewport");
+  assert.ok(Math.abs(smallInitial.cameraX - (64 - smallInitial.width) / 2) < 0.01 &&
+    Math.abs(smallInitial.cameraY - (64 - smallInitial.height) / 2) < 0.01,
+  "small worlds are centered in the viewport without scaling");
+  assert.equal(smallInitial.smoothing, false, "Play keeps pixel-art interpolation disabled");
+  await setViewport(1200, 800);
+  await waitFor(`(() => {
+    const canvas = document.querySelector('[data-testid="generic-preview"]');
+    return canvas.clientWidth !== ${smallInitial.width} &&
+      canvas.width === Math.round(canvas.clientWidth * window.devicePixelRatio) &&
+      Math.abs(Number(canvas.dataset.cameraX) - (64 - canvas.clientWidth) / 2) < 0.01;
+  })()`);
+  const smallResized = await readSmallCamera();
+  assert.equal(smallResized.worldScale, 1, "resizing a small-world viewport preserves pixel scale");
+  assert.ok(Math.abs(smallResized.cameraX - (64 - smallResized.width) / 2) < 0.01 &&
+    Math.abs(smallResized.cameraY - (64 - smallResized.height) / 2) < 0.01,
+  "small world remains centered after resizing");
+  await key("keyDown", "ArrowRight", "ArrowRight");
+  await delay(240);
+  await key("keyUp", "ArrowRight", "ArrowRight");
+  await delay(80);
+  const smallMoved = await readSmallCamera();
+  assert.ok(smallMoved.position.x > smallResized.position.x, "small-world player moves in Play");
+  assert.equal(smallMoved.cameraX, smallResized.cameraX, "the camera stays centered instead of following within a fully visible small world");
+  assert.ok(smallMoved.position.x <= 56, "player movement remains clamped inside the small world");
+  smallWorldCameraMeasurements = { initial: smallInitial, resized: smallResized, moved: smallMoved };
+  await clickButton("#stop");
+  assert.deepEqual(await studioView(), smallEditorView, "Stop restores small-world editor pan and zoom");
+  await setViewport(1600, 1000);
+  await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "astraeum-tower-floor-1"`);
+  assert.deepEqual(await (await fetch(mapUrl)).json(), astraeumBefore, "the Play camera checks do not alter Astraeum");
+
   assert.deepEqual(browserExceptions, [], "the Studio browser workflow reports no uncaught exceptions.");
   if (gopherMeasurements) console.log(`Imported gopher dimensions: ${JSON.stringify(gopherMeasurements)}`);
+  if (playCameraMeasurements.length) console.log(`Generic Play camera: ${JSON.stringify(playCameraMeasurements)}`);
+  if (smallWorldCameraMeasurements) console.log(`Small-world Play camera: ${JSON.stringify(smallWorldCameraMeasurements)}`);
+  console.log(`Directional Halberd visual captures (separate from combat assertions): ${JSON.stringify(directionalAttackEvidence)}`);
   console.log(`Studio workflow passed: migrated format 1 (${legacy.walls} walls, 1 collision box, backup kept); ` +
     `New Game created two generic projects via browser controls, validated inputs, rejected duplicates, cancelled safely, ` +
     `saved distinct maps, reopened after restart, moved in Play/Stop and returned to unchanged Astraeum; ` +
     `Open Game switched isolated projects, protected unsaved edits including failed saves, reopened after restart, ` +
     `played the selected map and required explicit untyped-model confirmation; ` +
+    `generic Play kept small worlds centered at 1:1 scale through resize; ` +
+    (gopherZipPath ? `large-world camera followed the player and clamped at the east edge; ` : "") +
     `unresolved collision labelled, assigned wall artwork / kept / deleted with undo; ` +
     `dragged a wall and a barrel from the palette; moved the wall off-grid without moving the floor; ` +
     `barrel stayed above the wall; snap, 5 px nudge, undo/redo, floor lock; saved and reopened; ` +
     `Play button ran the edited map and Aries stopped at x=${beforeRelease} against the wall at ` +
-    `x=${nudged.transform.x}; Stop restored the view; unplayable map showed an actionable error; ` +
+    `x=${nudged.transform.x}; Stop restored the view; the Floor 1 slime chased, dealt contact damage, and died to the Halberd; ` +
+    `Space, left-click, and right-trigger attacks plus directional dodge were exercised in all control modes; ` +
+    `simulated standard-gamepad movement/aim, analog magnitude, neutral-stick, held input, disconnect and blur passed; ` +
+    `keyboard/mouse movement-only, dodge stamina/cooldown and UI-focus checks passed; ` +
+    `Halberd thrust/sweep visuals appeared facing north/east/south/west; ` +
+    `unplayable map showed an actionable error; ` +
     `palette ${paletteViews.join("/")} views dragged-to-place and the view was remembered locally; ` +
     (gopherZipPath
       ? "imported the eight static 48x48 gopher directions with no animations, checked project isolation and duplicates, and verified placement, save/reopen and Play rendering."

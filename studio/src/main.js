@@ -33,6 +33,7 @@ import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
 let { drawAsset, drawDesign } = towerRender;
 import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
 import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
+import { readStandardGamepad } from "@multiplayer-game/theme-sdk";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
 import { importedAssetDefinition } from "../project-assets.js";
 import "./styles.css";
@@ -43,6 +44,12 @@ const projectAssetsUrl = projectId => `/api/projects/${encodeURIComponent(projec
 const LAYER_PREFS_KEY = "web-studio.astraeum.layers.v1";
 const layerPrefsKey = model => model === generic.MODEL ? "web-studio.generic-grid-v1.layers.v1" : LAYER_PREFS_KEY;
 const PALETTE_VIEW_KEY = "web-studio.palette-view.v1";
+const PLAYER_CONTROL_MODE_KEY = "web-studio.player-control-mode.v1";
+const PLAYER_CONTROL_MODES = Object.freeze({
+  "keyboard-only": { label: "Keyboard Only", bindings: "WASD: Move · Arrow keys: Dodge · Space: Attack." },
+  "keyboard-mouse": { label: "Keyboard + Mouse", bindings: "Arrow keys move · Pointer aims · Left click attacks · Hold right mouse + arrow to dodge." },
+  "game-controller": { label: "Game Controller", bindings: "Left stick moves · Right stick aims · RT attacks · Hold B/Circle + left-stick direction to dodge." }
+});
 const PALETTE_VIEWS = Object.freeze({
   large: { label: "Large", thumb: 72 },
   medium: { label: "Medium", thumb: 44 },
@@ -63,6 +70,8 @@ const canvas = $("#map-canvas");
 const context = canvas.getContext("2d", { alpha: false });
 const editorView = $("#editor-view");
 const playHost = $("#play-host");
+let playerSettingsReturnFocus = null;
+let playerControllerStatusTimer = null;
 
 const state = {
   document: null,
@@ -98,11 +107,65 @@ const state = {
   paletteDrag: null,
   layers: loadLayerPrefs(),
   paletteView: loadPaletteView(),
+  playerControlMode: loadPlayerControlMode(),
   openGroups: new Set(["walls", "props", "items", "spawns", "collision"]),
   hierarchyKey: "",
   scene: { document: null, key: "", canvas: null },
   play: { phase: "idle", game: null, mount: null, timer: null, view: null, resizeObserver: null }
 };
+
+function loadPlayerControlMode() {
+  try {
+    const stored = localStorage.getItem(PLAYER_CONTROL_MODE_KEY);
+    return Object.hasOwn(PLAYER_CONTROL_MODES, stored) ? stored : "keyboard-mouse";
+  } catch {
+    return "keyboard-mouse";
+  }
+}
+
+function savePlayerControlMode(mode) {
+  if (!Object.hasOwn(PLAYER_CONTROL_MODES, mode)) return;
+  state.playerControlMode = mode;
+  try {
+    localStorage.setItem(PLAYER_CONTROL_MODE_KEY, mode);
+  } catch {
+    // Player controls are optional preferences, separate from the game design.
+  }
+  updatePlayerSettings();
+  window.dispatchEvent(new CustomEvent("studio:player-settings-mode-change", { detail: { mode } }));
+}
+
+function updatePlayerSettings() {
+  const selected = PLAYER_CONTROL_MODES[state.playerControlMode];
+  $("#player-mode-summary").textContent = selected.label;
+  $("#player-control-mode").value = state.playerControlMode;
+  $("#player-control-bindings").textContent = selected.bindings;
+  $("#player-settings-note").textContent = state.model === generic.MODEL
+    ? "Generic Grid currently supports its existing WASD and arrow-key movement controls; these mode-specific bindings apply to Astraeum Tower Play."
+    : "This preference is saved locally in this browser and is not part of the game design.";
+}
+
+function updatePlayerControllerStatus(status, id = "") {
+  const output = $("#player-controller-status");
+  output.dataset.status = status;
+  if (status === "connected") {
+    output.textContent = `Connected · Standard mapping${id ? ` · ${id}` : ""}`;
+  } else if (status === "unsupported") {
+    output.textContent = "Connected · Standard mapping unavailable";
+  } else if (status === "invalid") {
+    output.textContent = `Connected · Standard mapping · Invalid input${id ? ` · ${id}` : ""}`;
+  } else if (status === "unavailable") {
+    output.textContent = "Gamepad access unavailable";
+  } else {
+    output.textContent = "Disconnected · Standard mapping required";
+  }
+}
+
+function refreshPlayerControllerStatus() {
+  const gamepads = navigator.getGamepads?.() ?? null;
+  const input = readStandardGamepad(gamepads);
+  updatePlayerControllerStatus(input.status, input.id ?? "");
+}
 
 function loadLayerPrefs(model = ASTRAEUM_MODEL) {
   const layers = model === generic.MODEL ? generic.DESIGN_LAYERS : towerProject.DESIGN_LAYERS;
@@ -228,6 +291,7 @@ function redo() {
 function refreshChrome({ structure = true } = {}) {
   const loaded = Boolean(state.document);
   const isDirty = loaded && dirty();
+  updatePlayerSettings();
   $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
   $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
   $("#save").disabled = !loaded || !isDirty || isPlaying();
@@ -1129,7 +1193,7 @@ async function play() {
     if (play.phase !== "starting") throw new Error("Play was cancelled.");
     play.mount = mountLocalPreview(playHost, play.game,
       state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
-        : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG), {
+        : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG, state.playerControlMode), {
       onInputRejected: () => setStatus("The runtime rejected an input.", true)
     });
     // The runtime re-measures only on window resize; forward layout changes too.
@@ -1151,8 +1215,11 @@ async function play() {
     play.phase = "playing";
     studio.dataset.playState = "playing";
     $("#play-loading").hidden = true;
-    playCanvas.focus();
-    setStatus(`Playing the edited map (unsaved edits included). Arrows/WASD move ${state.model === generic.MODEL ? "the player" : "Aries"}. Stop returns to editing.`);
+    playCanvas.focus({ preventScroll: true });
+    const playControls = state.model === generic.MODEL
+      ? "Arrows/WASD move the player."
+      : "See the displayed controls for the selected mode.";
+    setStatus(`Playing the edited map (unsaved edits included). ${playControls} Stop returns to editing.`);
   } catch (error) {
     teardownPlay();
     refreshChrome();
@@ -1170,10 +1237,38 @@ function stop() {
 
 // ---------------------------------------------------------------- events
 
+function openPlayerSettings() {
+  const dialog = $("#player-settings-dialog");
+  if (dialog.open) return;
+  const settingsButton = $("#player-settings");
+  playerSettingsReturnFocus = isPlaying() ? playHost.querySelector("canvas") : settingsButton;
+  window.dispatchEvent(new Event("studio:player-settings-open"));
+  updatePlayerSettings();
+  refreshPlayerControllerStatus();
+  dialog.showModal();
+  playerControllerStatusTimer = window.setInterval(refreshPlayerControllerStatus, 250);
+}
+
+function closePlayerSettings() {
+  if (playerControllerStatusTimer !== null) {
+    window.clearInterval(playerControllerStatusTimer);
+    playerControllerStatusTimer = null;
+  }
+  window.dispatchEvent(new Event("studio:player-settings-close"));
+  const target = isPlaying() ? playHost.querySelector("canvas") : playerSettingsReturnFocus;
+  playerSettingsReturnFocus = null;
+  (target?.isConnected ? target : $("#player-settings")).focus({ preventScroll: true });
+}
+
 function ignoredShortcutTarget(target) {
   return target instanceof Element &&
     target.closest("input, textarea, select, [contenteditable='true']") !== null;
 }
+
+const playInputCodes = new Set([
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyL", "Space"
+]);
 
 function configureEvents() {
   new ResizeObserver(resize).observe(editorView);
@@ -1194,15 +1289,16 @@ function configureEvents() {
   }, { passive: false });
   canvas.addEventListener("contextmenu", event => event.preventDefault());
   window.addEventListener("keydown", event => {
-    if ($("#open-dialog").open || $("#new-dialog").open) return;
-    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
-      event.preventDefault();
-      save();
-      return;
-    }
+    if ($("#open-dialog").open || $("#new-dialog").open || $("#player-settings-dialog").open) return;
     if (ignoredShortcutTarget(event.target)) return;
     if (isPlaying()) {
       if (event.code === "Escape" && state.play.phase === "playing") stop();
+      else if (playInputCodes.has(event.code)) event.preventDefault();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
+      event.preventDefault();
+      save();
       return;
     }
     if (event.code === "Space" && event.target === canvas) {
@@ -1284,6 +1380,13 @@ function configureEvents() {
   });
   $("#play").addEventListener("click", play);
   $("#stop").addEventListener("click", stop);
+  $("#player-settings").addEventListener("click", openPlayerSettings);
+  $("#player-control-mode").addEventListener("change", event => savePlayerControlMode(event.target.value));
+  $("#player-settings-close").addEventListener("click", () => $("#player-settings-dialog").close());
+  $("#player-settings-dialog").addEventListener("close", closePlayerSettings);
+  window.addEventListener("studio:player-controller-status", event =>
+    updatePlayerControllerStatus(event.detail.status, event.detail.id));
+  updatePlayerSettings();
   $("#play-error-close").addEventListener("click", () => {
     $("#play-error").hidden = true;
     studio.dataset.playState = "idle";

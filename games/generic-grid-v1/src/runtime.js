@@ -83,23 +83,36 @@ export function genericSkin(design, assetCatalog = ASSET_CATALOG, artwork = null
           if (!snapshot) return;
           const movement = [...keys].reduce((sum, code) => ({ x: sum.x + codes[code][0], y: sum.y + codes[code][1] }), { x: 0, y: 0 });
           host.dispatchInput({ type: "move", x: Math.sign(movement.x), y: Math.sign(movement.y) });
-          canvas.width = Math.max(1, canvas.clientWidth);
-          canvas.height = Math.max(1, canvas.clientHeight);
-          const scale = Math.min(canvas.width / design.bounds.width, canvas.height / design.bounds.height);
+          const viewportWidth = Math.max(1, canvas.clientWidth);
+          const viewportHeight = Math.max(1, canvas.clientHeight);
+          const pixelRatio = window.devicePixelRatio || 1;
+          canvas.width = Math.max(1, Math.round(viewportWidth * pixelRatio));
+          canvas.height = Math.max(1, Math.round(viewportHeight * pixelRatio));
+          const player = snapshot.players[0]?.position;
+          const cameraAxis = (position, worldSize, viewportSize) => worldSize <= viewportSize
+            ? (worldSize - viewportSize) / 2
+            : Math.max(0, Math.min(worldSize - viewportSize, position - viewportSize / 2));
+          const cameraX = cameraAxis(player?.x ?? design.bounds.width / 2, design.bounds.width, viewportWidth);
+          const cameraY = cameraAxis(player?.y ?? design.bounds.height / 2, design.bounds.height, viewportHeight);
           context.fillStyle = "#22252b";
-          context.fillRect(0, 0, canvas.width, canvas.height);
-          context.setTransform(scale, 0, 0, scale,
-            (canvas.width - design.bounds.width * scale) / 2, (canvas.height - design.bounds.height * scale) / 2);
+          context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+          context.fillRect(0, 0, viewportWidth, viewportHeight);
+          context.imageSmoothingEnabled = false;
+          context.setTransform(pixelRatio, 0, 0, pixelRatio, -cameraX * pixelRatio, -cameraY * pixelRatio);
           drawDesign(context, artwork, design, { mode: "play", assetCatalog });
           canvas.dataset.importedAssetIds = JSON.stringify(design.objects
             .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
-          for (const player of snapshot.players) {
+          for (const activePlayer of snapshot.players) {
             context.fillStyle = "#087f5b";
             context.beginPath();
-            context.arc(player.position.x, player.position.y, 8, 0, Math.PI * 2);
+            context.arc(activePlayer.position.x, activePlayer.position.y, 8, 0, Math.PI * 2);
             context.fill();
           }
-          canvas.dataset.position = JSON.stringify(snapshot.players[0]?.position);
+          canvas.dataset.position = JSON.stringify(player);
+          canvas.dataset.cameraX = String(cameraX);
+          canvas.dataset.cameraY = String(cameraY);
+          canvas.dataset.worldScale = String(context.getTransform().a * canvas.getBoundingClientRect().width / canvas.width);
+          canvas.dataset.pixelRatio = String(pixelRatio);
           canvas.dataset.tick = String(snapshot.tick);
         },
         dispose() { neutral(); listeners.abort(); canvas.remove(); }

@@ -144,8 +144,8 @@ export const ASSET_CATALOG = Object.freeze({
     type: "spawn", label: "Slime spawn", legacyMarker: "s", artwork: null,
     placeholder: { glyph: "s", color: "#7fd36b" },
     pivot: { x: 10, y: 10 }, snap: { x: 16, y: 16, forced: true },
-    play: "editor-only", playNote: "Not spawned in Play; enemies are not implemented. Monsters were drawn in code in the original, so no artwork was extracted.",
-    details: "no artwork · no gameplay yet"
+    play: "implemented", playNote: "Spawns the original Floor 1 green slime: hop-chase movement and 12 contact damage. Its static procedural drawing uses no sprite frames.",
+    details: "procedural slime · 36 HP · hop-chase · contact damage"
   }),
   "collision-box": asset({
     type: "collision", label: "Collision box", artwork: null, size: { width: 32, height: 32 },

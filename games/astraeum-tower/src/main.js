@@ -18,7 +18,7 @@ const game = await createLocalGame({
   viewer: { accountId, role: "player" }
 });
 const mounted = mountLocalPreview(root, game, towerSkinFactory(artwork), {
-  onInputRejected: () => { status.textContent = "The game module rejected movement input."; }
+  onInputRejected: () => { status.textContent = "The game module rejected an input action."; }
 });
 
 const timer = window.setInterval(() => {
@@ -29,7 +29,7 @@ const timer = window.setInterval(() => {
     status.textContent = `Local simulation failed: ${error instanceof Error ? error.message : String(error)}`;
   }
 }, 1000 / 30);
-status.textContent = "Aries is ready. Focus the map and move with the arrow keys or WASD.";
+status.textContent = "Aries is ready. Follow the displayed Keyboard + Mouse bindings.";
 
 window.addEventListener("pagehide", () => {
   window.clearInterval(timer);

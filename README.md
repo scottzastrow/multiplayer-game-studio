@@ -81,7 +81,9 @@ Run `npm run studio:dev`, then open `http://127.0.0.1:4173`.
 map dimensions (default 640 x 480 pixels; multiples of 32 from 64 to 2048).
 It creates a blank Generic Grid v1 game with two safe player starts, primitive
 placement tools and a simple public-runtime movement preview, not a copy of
-Astraeum. Duplicate names are rejected and unsaved edits are protected.
+Astraeum. Generic Play follows the player at 1:1 world-to-CSS-pixel scale;
+smaller worlds center without scaling. Duplicate names are rejected and
+unsaved edits are protected.
 Save/Ctrl+S writes the selected map to SQLite; Open Game reopens it after
 restart. Play includes unsaved edits and Stop returns without saving movement.
 Generated `games/<project-id>/` directories contain code, assets and metadata,

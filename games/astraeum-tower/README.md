@@ -6,11 +6,31 @@ public kit package files from the existing dependency installation; it does
 not replace or reinstall `games/sample`.
 
 The local preview loads the exact 36 × 22 Floor 1 grid and its original Aries
-art. Move with the arrow keys or WASD. Movement uses the original 2 px per
-60 fps frame tuning, four-direction movement, directional sprite sheets and
-anchors. The independent tilemap adapter translates wall runs to public
-rectangular map collisions and preserves the original wall-face collision
-band. Art pixels are rendered without smoothing. The public map schema
+art. Studio Play offers three control modes, with the selected bindings shown
+above the canvas. The standalone preview uses Keyboard + Mouse.
+
+- **Keyboard Only:** WASD: Move · Arrow keys: Dodge · Space: Attack.
+- **Keyboard + Mouse:** arrow keys move, the pointer aims, left click attacks,
+  and holding right mouse plus a directional arrow dodges.
+- **Game Controller:** the left stick moves, the right stick aims, right trigger
+  attacks, and B/Circle plus a left-stick direction dodges. Stick movement
+  keeps its analog magnitude through the public standard-gamepad adapter.
+
+Short attack presses are buffered to the next simulation step. Dodge preserves
+Anh's 14-frame speed curve (6.2 px/frame at the start, tapering to 45%),
+34-point stamina cost from 100, six-frame cooldown, and 0.9 stamina/frame
+regeneration after a 30-frame delay. Dodge frames retain the original damage
+invulnerability. A dodge press is edge-triggered and cannot repeat while held;
+it requires a release/re-arm and sufficient stamina/cooldown.
+Blur, disconnect, Stop, and control-mode changes clear queued input. Keyboard
+and mouse/gamepad actions are translated to generic movement, aim, attack, and
+dodge actions before reaching combat. Physical-controller testing remains
+pending; the Studio browser smoke uses simulated standard-gamepad input.
+Movement uses the original 2 px per 60 fps frame tuning, four-direction
+movement, directional sprite sheets and anchors. The independent tilemap
+adapter translates wall runs to public rectangular map collisions and
+preserves the original wall-face collision band. Art pixels are rendered
+without smoothing. The public map schema
 requires two player spawns; a second open floor tile is reserved but unused
 because this preview has only Aries.
 
@@ -57,7 +77,21 @@ SHA-256 hashes, and Anh Nguyen's artwork credit are recorded in
 `assets/provenance.json`. The reference folder is not used as a runtime
 dependency and is left unchanged.
 
-Combat, loot, chest interactions, and floor completion are explicitly pending.
+The first-floor encounter implements the original green slime's 36 HP,
+230 px aggro range, 1 px/frame base speed with 2.3x hops, and 12 contact
+damage, with 50 frames of player invulnerability after a hit. Aries's Halberd preserves
+its 20 base damage, 50 px reach, 2.3 rad sweep, and 34-frame cooldown. Its
+original 9-frame thrust is followed after 8 frames by a 13-frame sweep; the
+original hit windows deal 10 then 20 damage. Both phases use the original
+procedural bright thrust and sweeping crescent visuals, not invented sprite
+frames. Damage numbers, hit sparks, knockback, and death particles are
+procedural; the slime is drawn as a static Canvas shape, without invented
+sprite or attack frames. The preview has this
+one-player encounter only; player death/respawn, spells, other enemies, loot,
+chest interactions, and floor completion remain pending. Input and health
+state are keyed by account ID as groundwork only; multiplayer is not supported
+or verified.
+
 This project uses only installed public kit exports and browser Canvas APIs;
 it does not import private engine internals. The tilemap adapter is a reusable
 candidate, separate from Tower-specific gameplay. The public API has no
@@ -72,4 +106,11 @@ in a smaller viewport, map centering without stretch, device-pixel scaling,
 lighting alignment, traversal through the doorway and narrow corridors, turns,
 directional-key priority, wall sliding and blocking, sprite animation and crisp
 rendering, original and fully lit settings, control validation, and resizing
-in a browser.
+in a browser. The Studio Play encounter and control modes are covered by its
+disposable browser smoke. That smoke sends real CDP keyboard/mouse events and
+standard-gamepad adapter input, verifies attack and dodge actions separately
+from visible thrust/sweep Canvas captures in all four facings, and checks
+movement-only input, short taps, dodge re-arming, stamina/cooldown rejection,
+neutral-stick behavior, disconnect, blur, UI focus, Play focus, and shortcut
+isolation. Set `STUDIO_ATTACK_EVIDENCE_DIR` to save the four-direction weapon
+captures. Physical-controller behavior remains unverified.

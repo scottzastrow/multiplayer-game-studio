@@ -58,7 +58,10 @@ and project/map pair. Play uses the current design (including unsaved edits)
 and the generic adapter: Arrows/WASD move a radius-8 player at 4 pixels per
 fixed tick, bounded by the map and explicit 32-pixel blockers. Blocked or
 overlapping starts produce an actionable Play error. Stop disposes the
-preview without saving movement.
+preview without saving movement. The generic Play camera follows the active
+player at a fixed 1:1 world-to-CSS-pixel scale, clamped to world bounds; worlds
+smaller than the viewport stay centered without scaling. Pixel-art smoothing
+is disabled, and Stop restores the editor's independent pan and zoom.
 
 ## Project-scoped asset importing
 
@@ -79,9 +82,21 @@ Image pixels map one-to-one to world pixels; placement does not scale or
 rewrite image data. The supplied south-facing gopher PNG has a 48 x 48 source
 canvas but transparent margins leave 34 x 37 opaque pixels (at x=7, y=5),
 which can make the visible character look smaller than its placed bounds.
-Palette thumbnails are scaled independently. Play fits the whole world to its
-canvas, so its CSS pixel scale depends on the preview viewport rather than the
-editor zoom.
+Palette thumbnails are scaled independently. Generic Grid v1 Play follows the
+active player at a 1:1 world-to-CSS-pixel scale; smaller worlds are centered
+without scaling. Its camera is independent of editor pan and zoom. Astraeum
+Tower Play offers **Keyboard Only: WASD: Move · Arrow keys: Dodge · Space: Attack**,
+Keyboard + Mouse (arrows, pointer aim, left-click attack, right-mouse-plus-
+arrow dodge), and Game Controller (left/right sticks, right-trigger attack,
+B/Circle-plus-direction dodge). It preserves the original 14-frame dodge,
+34-stamina cost, six-frame cooldown and invulnerability. The selected mode's
+bindings appear in Play; keyboard, mouse, and simulated standard-gamepad
+checks run through Studio's disposable browser smoke. Physical-controller
+testing remains pending. The Halberd uses its procedural attacks against the
+authored Floor 1 slimes; the slime is a static procedural Canvas drawing, with
+no added sprite frames. This is a one-player encounter, not multiplayer
+support. Imported assets remain static artwork and do not acquire behavior
+automatically.
 
 Imports are limited to 16 MB ZIPs, 40 archive entries, 16 MB total uncompressed
 data, 1 MB metadata, 4 MB per PNG, dimensions up to 2048 x 2048, and at most
@@ -100,7 +115,7 @@ isolation, duplicate handling, and rejected archives. Set
 `STUDIO_GOPHER_ZIP` to the supplied ZIP path before running this test or
 `npm run studio:smoke`; the browser workflow verifies all eight directions,
 zero animations, source alpha bounds, 48 x 48 world and editor CSS dimensions
-at 100% zoom, Play's viewport-fit scale, palette layouts, placement,
+at 100% zoom, Play's 1:1 scale, palette layouts, placement,
 save/reopen, unchanged catalogs in a second project, and blocked placement for
 an image too large for its map. Both checks use disposable data.
 Game export and PixelLab API integration are separate milestones. No engine-kit

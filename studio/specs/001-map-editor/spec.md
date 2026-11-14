@@ -50,6 +50,20 @@ game remains in `games/astraeum-tower/`.
   create two generic games, edit/save different maps, restart/reopen, confirm
   isolation, move in Play/Stop for both and return to unchanged Astraeum.
   Cover invalid inputs, duplicate names and cancellation.
+- Astraeum Play presents Keyboard Only, Keyboard + Mouse, and Game Controller
+  modes with mode-specific instructions. Translate device input to generic
+  movement, aim, attack, and dodge actions; preserve analog stick magnitude,
+  buffer brief attack/dodge presses, and clear queued input on Stop, blur,
+  disconnect, and mode changes. UI controls must not drive gameplay.
+- Preserve the original directional dodge curve, duration, stamina cost,
+  cooldown, regeneration, and damage invulnerability. A held dodge cannot
+  repeat until released/re-armed; controller dodge requires B/Circle and a
+  non-neutral left stick, and mouse dodge requires right mouse plus an arrow.
+- Verify all three modes through the actual Studio Play button using real
+  keyboard/mouse events and simulated standard-gamepad input, including
+  movement without dodge, short taps, held input, stamina/cooldown rejection,
+  neutral stick, disconnect, blur, and visible Halberd attacks. Physical
+  controller testing remains explicitly pending.
 
 ## Object model and placement correction
 
