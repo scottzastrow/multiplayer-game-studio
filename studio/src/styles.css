@@ -115,6 +115,18 @@ button:disabled { opacity: .48; cursor: default; }
 #open-dialog h2 { margin: 0 0 8px; }
 #open-dialog p { color: #c3cad4; }
 #new-dialog { width: min(540px, 90vw); max-height: 85vh; overflow: auto; padding: 20px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
+#asset-import-dialog { width: min(680px, 92vw); max-height: 86vh; overflow: auto; padding: 20px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
+#asset-import-dialog::backdrop { background: #000a; }
+#asset-import-dialog h2 { margin: 0 0 8px; }
+#asset-import-dialog p { color: #c3cad4; }
+#asset-import-form { display: grid; gap: 10px; }
+#asset-import-form label { display: grid; gap: 4px; }
+#asset-import-form input, #asset-import-form select { width: 100%; padding: 6px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 4px; background: #21242a; }
+#asset-import-message:not(:empty) { color: #ffaaa8; }
+#asset-import-message.success { color: #bff0cf; }
+.asset-preview-images { display: flex; flex-wrap: wrap; gap: 8px; max-height: 250px; overflow: auto; }
+.asset-preview-item { display: grid; justify-items: center; gap: 3px; padding: 5px; border: 1px solid #454b56; border-radius: 4px; color: #c3cad4; font-size: 11px; }
+.asset-preview-item img { width: 72px; height: 72px; object-fit: contain; image-rendering: pixelated; background: #202329; }
 #new-dialog::backdrop { background: #000a; }
 #new-dialog h2 { margin: 0 0 8px; }
 #new-fields { display: grid; gap: 10px; padding: 0; border: 0; min-width: 0; }

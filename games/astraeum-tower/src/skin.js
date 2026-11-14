@@ -6,6 +6,7 @@ import {
   towerLightingSettings
 } from "./lighting/tower-lighting.js";
 import {
+  ASSET_CATALOG,
   DEFAULT_FLOOR_DOCUMENT,
   createFloorMap,
   floorDocumentGrid,
@@ -141,13 +142,14 @@ function flickeringCandleLights(candles, time, placedLights) {
 export function towerSkinFactory(
   artwork,
   lightingOptions = towerLightingSettings,
-  project = DEFAULT_FLOOR_DOCUMENT
+  project = DEFAULT_FLOOR_DOCUMENT,
+  assetCatalog = ASSET_CATALOG
 ) {
   const initialLightingSettings = createTowerLightingSettings(lightingOptions);
-  const design = validateFloorDocument(project);
-  const grid = floorDocumentGrid(design);
-  const map = createFloorMap(design);
-  const placedLights = objectLights(design);
+  const design = validateFloorDocument(project, assetCatalog);
+  const grid = floorDocumentGrid(design, assetCatalog);
+  const map = createFloorMap(design, assetCatalog);
+  const placedLights = objectLights(design, assetCatalog);
   return Object.freeze({
     metadata: Object.freeze({
       id: "astraeum-tower-floor-one-skin",
@@ -173,6 +175,8 @@ export function towerSkinFactory(
       canvas.dataset.worldWidth = String(map.bounds.width);
       canvas.dataset.worldHeight = String(map.bounds.height);
       canvas.dataset.collisionRectangles = String(map.collisions.length);
+      canvas.dataset.importedAssetIds = JSON.stringify(design.objects
+        .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
       canvas.setAttribute("role", "img");
       canvas.setAttribute("aria-label", "Astraeum Tower Floor 1: Damp Corridors");
       canvas.tabIndex = 0;
@@ -185,7 +189,7 @@ export function towerSkinFactory(
       const backgroundContext = background.getContext("2d", { alpha: false });
       if (!backgroundContext) throw new Error("Canvas 2D background rendering is unavailable.");
       backgroundContext.imageSmoothingEnabled = false;
-      const candles = drawDesign(backgroundContext, artwork, design, { grid, map, mode: "play" });
+      const candles = drawDesign(backgroundContext, artwork, design, { grid, map, mode: "play", assetCatalog });
 
       const position = document.createElement("output");
       position.dataset.testid = "astraeum-position";

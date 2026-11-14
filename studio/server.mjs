@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, lstatSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,11 @@ import {
   migrateFloorDocumentV1,
   validateFloorDocument
 } from "../games/astraeum-tower/src/project.js";
+import { ASSET_CATALOG } from "../games/astraeum-tower/src/catalog.js";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL, isProjectMapId } from "./project-identity.js";
 import * as generic from "../games/generic-grid-v1/src/project.js";
+import { parseAssetUpload, sha256, validateImportFields } from "./asset-import.js";
+import { importedAssetDefinition } from "./project-assets.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = resolve(root, "studio", "data");
@@ -100,6 +103,33 @@ function initializeStorage() {
         report_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS project_asset_imports (
+        project_id TEXT NOT NULL,
+        import_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        author TEXT NOT NULL,
+        source TEXT NOT NULL,
+        source_filename TEXT NOT NULL,
+        source_metadata BLOB NOT NULL,
+        metadata_sha256 TEXT NOT NULL,
+        archive_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, import_id)
+      );
+      CREATE TABLE IF NOT EXISTS project_assets (
+        project_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        import_id TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        direction TEXT,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        PRIMARY KEY (project_id, asset_id),
+        UNIQUE (project_id, sha256),
+        FOREIGN KEY (project_id, import_id) REFERENCES project_asset_imports(project_id, import_id)
+      );
     `);
     if (legacy) {
       database.prepare(`INSERT INTO maps (project_id, map_id, document_json, updated_at)
@@ -165,6 +195,13 @@ const listMigrations = database.prepare(`
 const lastFailure = database.prepare(`
   SELECT report_json FROM migrations WHERE project_id = ? AND map_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1
 `);
+const projectAssetRows = database.prepare(`
+  SELECT a.project_id, a.asset_id, a.import_id, a.source_path, a.direction, a.width, a.height, a.sha256,
+    i.name AS import_name, i.category, i.author, i.source, i.source_filename,
+    i.metadata_sha256, i.archive_sha256, i.created_at
+  FROM project_assets a JOIN project_asset_imports i USING (project_id, import_id)
+  WHERE a.project_id = ? ORDER BY i.created_at, a.source_path
+`);
 
 function storedFormat(json) {
   try {
@@ -222,7 +259,8 @@ function documentProblem(row, projectId, mapId) {
   try {
     const document = JSON.parse(row.document_json);
     if (document.id !== mapId) return "The saved document ID does not match the map ID.";
-    (row.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)(document);
+    const catalog = assetCatalogFor(projectId, row.model);
+    (row.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)(document, catalog);
     return null;
   } catch (error) {
     return `Unsupported ${row.model === generic.MODEL ? "Generic Grid" : "Astraeum"} document format: ${error.message}`;
@@ -264,13 +302,162 @@ function isLoopback(address) {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
-async function readJson(request) {
-  let body = "";
+async function readJson(request, maximum = 2_000_000) {
+  const chunks = [];
+  let length = 0;
   for await (const chunk of request) {
-    body += chunk;
-    if (Buffer.byteLength(body) > 2_000_000) throw new RangeError("Request exceeds the 2 MB limit.");
+    length += chunk.length;
+    if (length > maximum) throw new RangeError(`Request exceeds the ${Math.round(maximum / 1_000_000)} MB limit.`);
+    chunks.push(chunk);
   }
-  return JSON.parse(body);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function projectExists(projectId) {
+  return projectId === ASTRAEUM_PROJECT_ID ||
+    Boolean(database.prepare("SELECT 1 FROM projects WHERE project_id = ?").get(projectId) ||
+    database.prepare("SELECT 1 FROM maps WHERE project_id = ? LIMIT 1").get(projectId));
+}
+
+function assetCatalogFor(projectId, model) {
+  const catalog = model === generic.MODEL ? { ...generic.ASSET_CATALOG } : { ...ASSET_CATALOG };
+  for (const row of projectAssetRows.all(projectId)) {
+    const record = {
+      ...row,
+      name: row.direction ? `${row.import_name} · ${row.direction}` : row.import_name
+    };
+    catalog[row.asset_id] = importedAssetDefinition(record, model);
+  }
+  return catalog;
+}
+
+function rowsForProjectAssets(projectId) {
+  return projectAssetRows.all(projectId).map(row => ({
+    projectId: row.project_id,
+    assetId: row.asset_id,
+    importId: row.import_id,
+    name: row.direction ? `${row.import_name} · ${row.direction}` : row.import_name,
+    category: row.category,
+    author: row.author,
+    source: row.source,
+    sourceFilename: row.source_filename,
+    sourcePath: row.source_path,
+    direction: row.direction,
+    width: row.width,
+    height: row.height,
+    sha256: row.sha256,
+    metadataSha256: row.metadata_sha256,
+    archiveSha256: row.archive_sha256,
+    createdAt: row.created_at
+  }));
+}
+
+function decodeUpload(data) {
+  if (typeof data !== "string" || data.length > 23_000_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) {
+    throw new TypeError("Upload data must be valid base64 within the size limit.");
+  }
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.toString("base64") !== data) throw new TypeError("Upload data must be canonical base64.");
+  return bytes;
+}
+
+function sendPng(response, bytes) {
+  response.writeHead(200, {
+    "content-type": "image/png",
+    "content-length": bytes.length,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff"
+  });
+  response.end(bytes);
+}
+
+function projectAssetsDirectory(projectId) {
+  const projectDirectory = resolve(gamesDirectory, projectId);
+  const relativeProject = relative(gamesDirectory, projectDirectory);
+  if (!relativeProject || relativeProject === ".." || relativeProject.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error("Project asset path escaped the games directory.");
+  }
+  const projectStat = lstatSync(projectDirectory);
+  if (!projectStat.isDirectory() || projectStat.isSymbolicLink()) throw new Error("Project directory is not a real directory.");
+  const assetsDirectory = resolve(projectDirectory, "assets");
+  if (relative(projectDirectory, assetsDirectory) !== `assets`) throw new Error("Project asset directory is invalid.");
+  mkdirSync(assetsDirectory, { recursive: true });
+  const assetsStat = lstatSync(assetsDirectory);
+  if (!assetsStat.isDirectory() || assetsStat.isSymbolicLink()) throw new Error("Project assets path is not a real directory.");
+  return assetsDirectory;
+}
+
+function importAssets(projectId, input) {
+  const fields = validateImportFields(input);
+  const bytes = decodeUpload(input.data);
+  const upload = parseAssetUpload(input.filename, bytes);
+  const hashes = upload.images.map(image => sha256(image.bytes));
+  if (new Set(hashes).size !== hashes.length) {
+    const error = new Error("The upload contains duplicate image bytes; no assets were imported.");
+    error.status = 409;
+    throw error;
+  }
+  for (const hash of hashes) {
+    if (database.prepare("SELECT 1 FROM project_assets WHERE project_id = ? AND sha256 = ?").get(projectId, hash)) {
+      const error = new Error("This project already contains one or more identical images; no assets were imported.");
+      error.status = 409;
+      throw error;
+    }
+  }
+  const assetsDirectory = projectAssetsDirectory(projectId);
+  const importId = randomUUID();
+  const temporaryDirectory = resolve(assetsDirectory, `.import-${importId}`);
+  const finalDirectory = resolve(assetsDirectory, importId);
+  const imageRecords = upload.images.map((image, index) => ({
+    ...image,
+    assetId: `asset-${hashes[index]}`,
+    sha256: hashes[index]
+  }));
+  let transaction = false;
+  let published = false;
+  mkdirSync(temporaryDirectory);
+  try {
+    for (const image of imageRecords) {
+      writeFileSync(resolve(temporaryDirectory, `${image.assetId}.png`), image.bytes, { flag: "wx" });
+    }
+    writeFileSync(resolve(temporaryDirectory, "source-metadata.json"), upload.metadataBytes, { flag: "wx" });
+    database.exec("BEGIN IMMEDIATE");
+    transaction = true;
+    if (!projectExists(projectId)) throw new Error("Project no longer exists.");
+    for (const hash of hashes) {
+      if (database.prepare("SELECT 1 FROM project_assets WHERE project_id = ? AND sha256 = ?").get(projectId, hash)) {
+        const error = new Error("This project already contains one or more identical images; no assets were imported.");
+        error.status = 409;
+        throw error;
+      }
+    }
+    const createdAt = new Date().toISOString();
+    database.prepare(`INSERT INTO project_asset_imports
+      (project_id, import_id, name, category, author, source, source_filename, source_metadata,
+       metadata_sha256, archive_sha256, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(projectId, importId, fields.name, fields.category, fields.author, fields.source,
+        upload.filename, upload.metadataBytes, sha256(upload.metadataBytes), upload.archiveHash, createdAt);
+    const insertAsset = database.prepare(`INSERT INTO project_assets
+      (project_id, asset_id, import_id, source_path, direction, width, height, sha256)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const image of imageRecords) {
+      insertAsset.run(projectId, image.assetId, importId, image.path, image.direction,
+        image.width, image.height, image.sha256);
+    }
+    renameSync(temporaryDirectory, finalDirectory);
+    published = true;
+    database.exec("COMMIT");
+    transaction = false;
+    return { importId, assets: rowsForProjectAssets(projectId).filter(row => row.importId === importId),
+      metadata: upload.metadata, animations: upload.animations };
+  } catch (error) {
+    if (transaction) database.exec("ROLLBACK");
+    if (published) rmSync(finalDirectory, { recursive: true, force: true });
+    throw error;
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
 }
 
 function createProject(input) {
@@ -374,6 +561,78 @@ const server = createServer(async (request, response) => {
     }
     return;
   }
+  const assetMatch = /^\/api\/projects\/([^/]+)\/assets(?:\/(preview|asset-[a-f0-9]{64}))?$/.exec(path);
+  if (assetMatch) {
+    const projectId = assetMatch[1];
+    const action = assetMatch[2];
+    if (!isProjectMapId(projectId)) {
+      send(response, 400, { error: "Invalid project ID." });
+      return;
+    }
+    if (!projectExists(projectId)) {
+      send(response, 404, { error: "Project not found." });
+      return;
+    }
+    try {
+      if (request.method === "GET" && !action) {
+        send(response, 200, { assets: rowsForProjectAssets(projectId) });
+        return;
+      }
+      if (request.method === "GET" && action?.startsWith("asset-")) {
+        const row = database.prepare("SELECT import_id, sha256 FROM project_assets WHERE project_id = ? AND asset_id = ?")
+          .get(projectId, action);
+        if (!row) {
+          send(response, 404, { error: "Imported image not found in this project." });
+          return;
+        }
+        const assetsDirectory = projectAssetsDirectory(projectId);
+        const file = resolve(assetsDirectory, row.import_id, `${action}.png`);
+        if (relative(assetsDirectory, file).startsWith("..")) throw new Error("Imported image path escaped the project.");
+        const bytes = readFileSync(file);
+        if (sha256(bytes) !== row.sha256) throw new Error("Imported image bytes no longer match their recorded SHA-256 hash.");
+        sendPng(response, bytes);
+        return;
+      }
+      if (request.method !== "POST" || !["preview", undefined].includes(action)) {
+        send(response, 405, { error: "Method not allowed." });
+        return;
+      }
+      const input = await readJson(request, 24_000_000);
+      if (action === "preview") {
+        const upload = parseAssetUpload(input.filename, decodeUpload(input.data));
+        const states = upload.archive ? upload.metadata.states.map(state => ({
+          name: state.character.name,
+          width: state.character.size.width,
+          height: state.character.size.height,
+          directions: Object.keys(state.frames.rotations),
+          animations: Object.keys(state.frames.animations)
+        })) : [];
+        send(response, 200, {
+          filename: upload.filename,
+          archive: upload.archive,
+          archiveHash: upload.archiveHash,
+          animations: upload.animations,
+          states,
+          images: upload.images.map(image => ({
+            path: image.path,
+            stateName: image.stateName,
+            direction: image.direction,
+            width: image.width,
+            height: image.height,
+            data: image.bytes.toString("base64")
+          }))
+        });
+        return;
+      }
+      const result = importAssets(projectId, input);
+      send(response, 201, result);
+    } catch (error) {
+      console.error(`Asset import request failed for ${projectId}:`, error);
+      send(response, error.status ?? (error instanceof TypeError || error instanceof SyntaxError ? 400 : 500),
+        { error: error.message });
+    }
+    return;
+  }
   const match = /^\/api\/projects\/([^/]+)\/maps\/([^/]+)(\/model\/astraeum-floor-v2)?$/.exec(path);
   if (!match) {
     send(response, 404, { error: "Map not found." });
@@ -459,7 +718,8 @@ const server = createServer(async (request, response) => {
     if (![ASTRAEUM_MODEL, generic.MODEL].includes(parsed.model)) {
       throw new TypeError("An explicit supported model is required.");
     }
-    const document = (parsed.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)(parsed.document);
+    const catalog = assetCatalogFor(projectId, parsed.model);
+    const document = (parsed.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)(parsed.document, catalog);
     let inTransaction = false;
     try {
       database.exec("BEGIN IMMEDIATE");

@@ -1,9 +1,9 @@
 import { validateMapDefinition } from "@multiplayer-game/theme-sdk";
-import { createFloorMap, drawDesign, MODEL } from "./project.js";
+import { ASSET_CATALOG, createFloorMap, drawDesign, MODEL } from "./project.js";
 
 const metadata = Object.freeze({ id: MODEL, version: "1.0.0", stateSchemaVersion: 1 });
-export function genericPreview(design) {
-  const map = validateMapDefinition(createFloorMap(design));
+export function genericPreview(design, assetCatalog = ASSET_CATALOG) {
+  const map = validateMapDefinition(createFloorMap(design, assetCatalog));
   return {
     map, settings: { moveDistance: 4 }, seed: 1,
     roster: [{ accountId: "player", username: "Player", joinedOrder: 0 }],
@@ -47,7 +47,7 @@ export function genericPreview(design) {
     }
   };
 }
-export function genericSkin(design) {
+export function genericSkin(design, assetCatalog = ASSET_CATALOG, artwork = null) {
   return {
     metadata: { id: `${MODEL}-skin`, version: "1.0.0", acceptedModuleId: MODEL, acceptedStateSchemaVersions: [1] },
     mount(host) {
@@ -90,7 +90,9 @@ export function genericSkin(design) {
           context.fillRect(0, 0, canvas.width, canvas.height);
           context.setTransform(scale, 0, 0, scale,
             (canvas.width - design.bounds.width * scale) / 2, (canvas.height - design.bounds.height * scale) / 2);
-          drawDesign(context, null, design, { mode: "play" });
+          drawDesign(context, artwork, design, { mode: "play", assetCatalog });
+          canvas.dataset.importedAssetIds = JSON.stringify(design.objects
+            .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
           for (const player of snapshot.players) {
             context.fillStyle = "#087f5b";
             context.beginPath();

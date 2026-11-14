@@ -34,10 +34,12 @@ let { drawAsset, drawDesign } = towerRender;
 import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
 import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
+import { importedAssetDefinition } from "../project-assets.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
 const mapUrl = ({ projectId, mapId }) => `/api/projects/${encodeURIComponent(projectId)}/maps/${encodeURIComponent(mapId)}`;
+const projectAssetsUrl = projectId => `/api/projects/${encodeURIComponent(projectId)}/assets`;
 const LAYER_PREFS_KEY = "web-studio.astraeum.layers.v1";
 const layerPrefsKey = model => model === generic.MODEL ? "web-studio.generic-grid-v1.layers.v1" : LAYER_PREFS_KEY;
 const PALETTE_VIEW_KEY = "web-studio.palette-view.v1";
@@ -72,6 +74,8 @@ const state = {
   openSelection: null,
   pendingSave: false,
   openRequest: 0,
+  importedAssets: [],
+  assetCatalog: towerProject.ASSET_CATALOG,
   savedJson: "",
   artwork: null,
   selectedId: null,
@@ -137,6 +141,36 @@ function saveLayerPrefs() {
   }
 }
 
+async function loadProjectAssets(projectId, model) {
+  const response = await fetch(projectAssetsUrl(projectId));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? `Asset catalog failed (${response.status}).`);
+  const baseCatalog = model === generic.MODEL ? generic.ASSET_CATALOG : towerProject.ASSET_CATALOG;
+  const catalog = { ...baseCatalog };
+  const images = {};
+  for (const record of payload.assets) {
+    if (record.projectId !== projectId || !/^asset-[a-f0-9]{64}$/.test(record.assetId)) {
+      throw new Error("The imported asset catalog contains an invalid project identity.");
+    }
+    catalog[record.assetId] = importedAssetDefinition(record, model);
+    const imageResponse = await fetch(`${projectAssetsUrl(projectId)}/${record.assetId}`);
+    if (!imageResponse.ok) throw new Error(`Could not load imported image ${record.name}.`);
+    const image = new Image();
+    const imageUrl = URL.createObjectURL(await imageResponse.blob());
+    image.src = imageUrl;
+    try {
+      await image.decode();
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+    if (image.naturalWidth !== record.width || image.naturalHeight !== record.height) {
+      throw new Error(`Imported image ${record.name} dimensions do not match its catalog.`);
+    }
+    images[record.assetId] = image;
+  }
+  return { catalog, images, records: payload.assets };
+}
+
 const isPlaying = () => state.play.phase !== "idle";
 const selectedObject = () => state.document?.objects.find(object => object.id === state.selectedId) ?? null;
 const isSelectable = object => state.layers[object.layer].visible && !state.layers[object.layer].locked;
@@ -200,6 +234,7 @@ function refreshChrome({ structure = true } = {}) {
   $("#save").disabled ||= state.saving;
   $("#open-game").disabled = isPlaying() || state.saving || state.switching || !state.artwork;
   $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
+  $("#import-assets").disabled = !loaded || isPlaying() || state.saving || state.switching || state.creating;
   $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork;
   $("#undo").disabled = state.undo.length === 0 || isPlaying();
   $("#redo").disabled = state.redo.length === 0 || isPlaying();
@@ -364,7 +399,9 @@ function updateInspector() {
   const bounds = objectBounds(object);
   const unresolved = isUnresolvedCollision(object);
   $("#object-id").value = object.id;
-  $("#object-type").textContent = unresolved ? `${UNRESOLVED_LABEL} (${OBJECT_TYPES[object.type].label.toLowerCase()})` : OBJECT_TYPES[object.type].label;
+  $("#object-type").textContent = unresolved ? `${UNRESOLVED_LABEL} (${OBJECT_TYPES[object.type].label.toLowerCase()})`
+    : asset.importedInfo ? `${OBJECT_TYPES[object.type].label} · ${asset.importedInfo.category} artwork (visual only)`
+      : OBJECT_TYPES[object.type].label;
   $("#object-asset").textContent = `${asset.label} (${object.assetId})`;
   $("#object-layer").textContent = `${layerName(object.layer)} (fixed by type)`;
   $("#object-order").textContent = String(object.order);
@@ -384,7 +421,11 @@ function updateInspector() {
   const badge = PLAY_BADGES[asset.play];
   $("#object-play").textContent = `${badge.text}. ${asset.playNote}`;
   $("#object-play").className = `play-note ${asset.play}`;
-  $("#object-artwork").textContent = asset.artwork
+  $("#object-artwork").textContent = asset.importedInfo
+    ? `Imported artwork · ${asset.importedInfo.author} · ${asset.importedInfo.source}` +
+      (asset.importedInfo.direction ? ` · ${asset.importedInfo.direction}` : "") +
+      ` · SHA-256 ${asset.importedInfo.sha256}`
+    : asset.artwork
     ? `Artwork: ${asset.artwork.file} region ${asset.artwork.region.x},${asset.artwork.region.y} ` +
       `${asset.artwork.region.width}×${asset.artwork.region.height} · ${ARTWORK_CREDIT}`
     : asset.type === "collision" ? "No artwork: an invisible collision-only blocker, not a wall." : "No artwork: shown as a placeholder.";
@@ -640,6 +681,10 @@ function placementTransform(assetId, point) {
 
 function placementProblem(assetId, transform) {
   const asset = ASSET_CATALOG[assetId];
+  if (asset.size.width > FLOOR1_BOUNDS.width || asset.size.height > FLOOR1_BOUNDS.height) {
+    return `${asset.label} (${asset.size.width}×${asset.size.height} px) is larger than this ` +
+      `${FLOOR1_BOUNDS.width}×${FLOOR1_BOUNDS.height} px map and cannot be placed.`;
+  }
   const layer = OBJECT_TYPES[asset.type].layer;
   if (state.layers[layer].locked) return `The ${layerName(layer)} layer is locked. Unlock it in Layers to place ${asset.label}.`;
   if (!state.layers[layer].visible) return `The ${layerName(layer)} layer is hidden. Show it in Layers to place ${asset.label}.`;
@@ -877,7 +922,9 @@ function configurePalette() {
       card.dataset.assetId = assetId;
       card.dataset.type = asset.type;
       card.dataset.playStatus = asset.play;
-      const credit = asset.artwork
+      const credit = asset.importedInfo
+        ? `${asset.importedInfo.author} · ${asset.importedInfo.source} · ${asset.importedInfo.category} artwork`
+        : asset.artwork
         ? `${asset.artwork.file} [${asset.artwork.region.x},${asset.artwork.region.y} ${asset.artwork.region.width}×${asset.artwork.region.height}] · ${ARTWORK_CREDIT}`
         : "No artwork";
       card.title = `${asset.label} — ${OBJECT_TYPES[asset.type].label}\n${asset.details}\n${asset.playNote}\n${credit}`;
@@ -894,7 +941,9 @@ function configurePalette() {
       badge.textContent = badgeInfo.text;
       if (asset.play === "editor-only") badge.title = "Editor only — no gameplay yet. Saved with the design but not used by Play.";
       const small = document.createElement("small");
-      small.textContent = asset.artwork ? `${asset.artwork.file} · ${ARTWORK_CREDIT}` : asset.type === "collision" ? "No artwork · invisible blocker" : "No artwork · placeholder";
+      small.textContent = asset.importedInfo
+        ? `${asset.importedInfo.direction ?? asset.importedInfo.category} · ${asset.importedInfo.author} · ${asset.importedInfo.source}`
+        : asset.artwork ? `${asset.artwork.file} · ${ARTWORK_CREDIT}` : asset.type === "collision" ? "No artwork · invisible blocker" : "No artwork · placeholder";
       copy.append(title, badge, small);
       if (thumbSize) card.append(assetThumbnail(assetId, thumbSize));
       else {
@@ -1069,8 +1118,8 @@ async function play() {
     $("#stop").hidden = false;
     await nextFrame();
     await nextFrame();
-    play.game = await createLocalGame(state.model === generic.MODEL ? genericPreview(design) : {
-      moduleFactory: createTowerGameModule(design),
+    play.game = await createLocalGame(state.model === generic.MODEL ? genericPreview(design, ASSET_CATALOG, state.artwork) : {
+      moduleFactory: createTowerGameModule(design, ASSET_CATALOG),
       settings: towerSettings,
       map: createFloorMap(design),
       seed: 1,
@@ -1079,7 +1128,8 @@ async function play() {
     });
     if (play.phase !== "starting") throw new Error("Play was cancelled.");
     play.mount = mountLocalPreview(playHost, play.game,
-      state.model === generic.MODEL ? genericSkin(design) : towerSkinFactory(state.artwork, undefined, design), {
+      state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
+        : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG), {
       onInputRejected: () => setStatus("The runtime rejected an input.", true)
     });
     // The runtime re-measures only on window resize; forward layout changes too.
@@ -1212,6 +1262,7 @@ function configureEvents() {
   $("#save").addEventListener("click", save);
   $("#open-game").addEventListener("click", showOpenDialog);
   configureNewGame();
+  configureAssetImport();
   $("#open-cancel").addEventListener("click", () => $("#open-dialog").close());
   $("#switch-cancel").addEventListener("click", () => showSwitchConfirmation(false));
   $("#open-selected").addEventListener("click", () => {
@@ -1410,7 +1461,8 @@ async function createNewGame(saveFirst = false) {
       throw new Error("The new game response has an invalid identity. Check Open Game before retrying.");
     }
     const design = generic.validateFloorDocument(payload.document);
-    applyDesign({ projectId: payload.projectId, mapId: payload.mapId }, payload, design);
+    const assets = await loadProjectAssets(payload.projectId, payload.model);
+    applyDesign({ projectId: payload.projectId, mapId: payload.mapId }, payload, design, assets);
     $("#new-dialog").close();
     setStatus(`Created ${payload.project.name}. Saved in SQLite; ready to edit.`);
   } catch (error) {
@@ -1422,6 +1474,126 @@ async function createNewGame(saveFirst = false) {
   }
 }
 
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function defaultAssetName(filename) {
+  const stem = filename.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+  return stem ? stem[0].toLocaleUpperCase() + stem.slice(1) : "Imported artwork";
+}
+
+function showAssetImportMessage(message, success = false) {
+  const element = $("#asset-import-message");
+  element.textContent = message;
+  element.classList.toggle("success", success);
+}
+
+async function previewAssetUpload(file) {
+  state.pendingAssetUpload = null;
+  $("#asset-import-preview").hidden = true;
+  $("#asset-import-submit").disabled = true;
+  $("#asset-preview-images").replaceChildren();
+  if (!file) return;
+  const maximum = file.name.toLowerCase().endsWith(".zip") ? 16 * 1024 * 1024 : 4 * 1024 * 1024;
+  if (file.size > maximum) {
+    showAssetImportMessage(`File exceeds the ${Math.round(maximum / 1024 / 1024)} MB limit.`);
+    return;
+  }
+  showAssetImportMessage("Validating and previewing image metadata…");
+  try {
+    const data = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+    const response = await fetch(`${projectAssetsUrl(state.identity.projectId)}/preview`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filename: file.name, data })
+    });
+    const preview = await response.json();
+    if (!response.ok) throw new Error(preview.error ?? `Preview failed (${response.status}).`);
+    if (!$("#asset-import-dialog").open) return;
+    state.pendingAssetUpload = { filename: file.name, data };
+    $("#asset-import-name").value = defaultAssetName(file.name);
+    $("#asset-import-category").value = preview.archive && preview.states.length ? "character" : "prop";
+    $("#asset-import-author").value = "";
+    $("#asset-import-source").value = preview.archive ? "PixelLab ZIP export" : "";
+    const descriptions = preview.states.map(stateInfo =>
+      `${stateInfo.name}: ${stateInfo.width}×${stateInfo.height}, ${stateInfo.directions.length} directions, ` +
+      `${stateInfo.animations.length} animation frames`).join("; ");
+    $("#asset-import-summary").textContent = preview.archive
+      ? `${descriptions || `${preview.images.length} static images`}. ${preview.animations} animation frames; no animation will be generated.`
+      : `${preview.images[0].width}×${preview.images[0].height} PNG. Static visual only; no animation.`;
+    for (const image of preview.images) {
+      const item = document.createElement("div");
+      item.className = "asset-preview-item";
+      const element = document.createElement("img");
+      element.alt = `${image.stateName ? `${image.stateName} ` : ""}${image.direction ?? ""} preview`;
+      element.src = `data:image/png;base64,${image.data}`;
+      const caption = document.createElement("span");
+      caption.textContent = `${image.direction ? `${image.direction} · ` : ""}${image.width}×${image.height}`;
+      item.append(element, caption);
+      $("#asset-preview-images").append(item);
+    }
+    $("#asset-import-preview").hidden = false;
+    $("#asset-import-submit").disabled = false;
+    showAssetImportMessage("Preview verified. Add author/source credits before importing.");
+  } catch (error) {
+    showAssetImportMessage(`Could not preview image: ${error.message}`);
+  }
+}
+
+function configureAssetImport() {
+  $("#import-assets").addEventListener("click", () => {
+    if (!state.document || isPlaying() || state.saving || state.switching) return;
+    $("#asset-import-form").reset();
+    $("#asset-import-preview").hidden = true;
+    $("#asset-import-submit").disabled = true;
+    $("#asset-preview-images").replaceChildren();
+    showAssetImportMessage("");
+    state.pendingAssetUpload = null;
+    $("#asset-import-dialog").showModal();
+  });
+  $("#asset-import-cancel").addEventListener("click", () => $("#asset-import-dialog").close());
+  $("#asset-import-file").addEventListener("change", event => previewAssetUpload(event.target.files[0]));
+  $("#asset-import-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!state.pendingAssetUpload || !$("#asset-import-form").reportValidity()) return;
+    const submit = $("#asset-import-submit");
+    submit.disabled = true;
+    $("#asset-import-file").disabled = true;
+    showAssetImportMessage("Importing validated images…");
+    try {
+      const response = await fetch(projectAssetsUrl(state.identity.projectId), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...state.pendingAssetUpload,
+          name: $("#asset-import-name").value,
+          category: $("#asset-import-category").value,
+          author: $("#asset-import-author").value,
+          source: $("#asset-import-source").value
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `Import failed (${response.status}).`);
+      const assets = await loadProjectAssets(state.identity.projectId, state.model);
+      activateAssetCatalog(state.model, assets);
+      state.scene.document = null;
+      configurePalette();
+      refreshChrome();
+      $("#asset-import-dialog").close();
+      setStatus(`Imported ${result.assets.length} static image${result.assets.length === 1 ? "" : "s"} into this project. Visual only; no collision or behavior.`);
+    } catch (error) {
+      showAssetImportMessage(`Import failed: ${error.message}`);
+    } finally {
+      $("#asset-import-file").disabled = false;
+      submit.disabled = !state.pendingAssetUpload;
+    }
+  });
+}
+
 async function fetchDesign(identity, allowTemplate = false) {
   const response = await fetch(mapUrl(identity));
   const payload = await response.json();
@@ -1431,19 +1603,46 @@ async function fetchDesign(identity, allowTemplate = false) {
     throw new Error("The loaded design identity or model did not match the requested project and map.");
   }
   if (!payload.document && !allowTemplate) throw new Error("The selected saved map no longer exists.");
-  const model = payload.model === generic.MODEL ? generic : towerProject;
-  return { payload, document: model.validateFloorDocument(payload.document ?? createFloorDocument()) };
+  const modelId = payload.model ?? ASTRAEUM_MODEL;
+  const model = modelId === generic.MODEL ? generic : towerProject;
+  const assets = await loadProjectAssets(identity.projectId, modelId);
+  return { payload, assets, document: model.validateFloorDocument(payload.document ?? createFloorDocument(), assets.catalog) };
 }
 
-function applyDesign(identity, payload, design) {
+function activateAssetCatalog(modelId, assets) {
+  const model = modelId === generic.MODEL ? generic : towerProject;
+  const assetCatalog = assets.catalog;
+  ASSET_CATALOG = assetCatalog;
+  DESIGN_LAYERS = model.DESIGN_LAYERS;
+  OBJECT_TYPES = model.OBJECT_TYPES;
+  clampTransform = (assetId, point, bounds = FLOOR1_BOUNDS) =>
+    model.clampTransform(assetId, point, bounds, assetCatalog);
+  collisionRect = model.collisionRect;
+  createDesignObject = generic.MODEL === modelId
+    ? (id, assetId, transform, order) => model.createDesignObject(id, assetId, transform, order, assetCatalog)
+    : (id, assetId, transform, order, options) => model.createDesignObject(id, assetId, transform, order, options, assetCatalog);
+  createFloorMap = document => model.createFloorMap(document, assetCatalog);
+  floorDocumentGrid = document => model.floorDocumentGrid(document, assetCatalog);
+  hitTest = (document, point, selectable) => model.hitTest(document, point, selectable, assetCatalog);
+  isUnresolvedCollision = model.isUnresolvedCollision;
+  objectBounds = object => model.objectBounds(object, assetCatalog);
+  playStartProblems = document => model.playStartProblems(document, assetCatalog);
+  snapTransform = (assetId, point) => model.snapTransform(assetId, point, assetCatalog);
+  transformAtPoint = (assetId, point) => model.transformAtPoint(assetId, point, assetCatalog);
+  validateFloorDocument = document => model.validateFloorDocument(document, assetCatalog);
+  const renderer = modelId === generic.MODEL ? generic : towerRender;
+  drawAsset = (context, artwork, assetId, transform, options = {}) =>
+    renderer.drawAsset(context, artwork, assetId, transform, { ...options, assetCatalog });
+  drawDesign = (context, artwork, design, options = {}) =>
+    renderer.drawDesign(context, artwork, design, { ...options, assetCatalog });
+  state.assetCatalog = assetCatalog;
+  state.importedAssets = assets.records;
+  state.artwork = { ...state.artwork, imported: assets.images };
+}
+
+function applyDesign(identity, payload, design, assets) {
   state.model = payload.model ?? ASTRAEUM_MODEL;
-  const model = state.model === generic.MODEL ? generic : towerProject;
-  ({
-    ASSET_CATALOG, DESIGN_LAYERS, OBJECT_TYPES, clampTransform, collisionRect, createDesignObject,
-    createFloorMap, floorDocumentGrid, hitTest, isUnresolvedCollision, objectBounds, playStartProblems,
-    snapTransform, transformAtPoint, validateFloorDocument
-  } = model);
-  ({ drawAsset, drawDesign } = state.model === generic.MODEL ? generic : towerRender);
+  activateAssetCatalog(state.model, assets);
   FLOOR1_BOUNDS = design.bounds;
   state.layers = loadLayerPrefs(state.model);
   state.placeAssetId = null;
@@ -1477,7 +1676,8 @@ function applyDesign(identity, payload, design) {
   document.title = `Web Studio - ${$("#project-name").textContent}`;
   canvas.setAttribute("aria-label", `${$("#project-name").textContent} map editor`);
   $("#palette-credit").textContent = state.model === generic.MODEL
-    ? "Built-in generic shapes - no imported artwork" : "Floor 1 artwork by Anh Nguyen (PixelLab)";
+    ? `Built-in generic shapes${state.importedAssets.length ? ` · ${state.importedAssets.length} imported images` : ""}`
+    : `Floor 1 artwork by Anh Nguyen (PixelLab)${state.importedAssets.length ? ` · ${state.importedAssets.length} imported images` : ""}`;
   configurePalette();
   centerCamera();
   refreshChrome();
@@ -1505,8 +1705,8 @@ async function switchToSelected(saveFirst = false) {
         throw new Error(result.error ?? "Could not assign the Astraeum model.");
       }
     }
-    const { payload, document: design } = await fetchDesign(identity);
-    applyDesign(identity, payload, design);
+    const { payload, document: design, assets } = await fetchDesign(identity);
+    applyDesign(identity, payload, design, assets);
     $("#open-dialog").close();
   } catch (error) {
     openMessage(`Could not open map: ${error.message}`, true);
@@ -1544,8 +1744,8 @@ async function openFloor() {
       }
     });
   }
-  const { payload, document: design } = await fetchDesign(state.identity, true);
-  applyDesign(state.identity, payload, design);
+  const { payload, document: design, assets } = await fetchDesign(state.identity, true);
+  applyDesign(state.identity, payload, design, assets);
 }
 
 openFloor().catch(error => {

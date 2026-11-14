@@ -38,6 +38,17 @@
 - [x] Verify two generic games through actual browser controls: invalid and
   duplicate inputs, cancellation, separate edits/saves, restart/reopen,
   isolated Play/Stop and return to unchanged Astraeum.
-- [ ] Following milestone: asset importing with project-specific compatibility
-  and credits. No silent fallback to Tower assets.
+- [x] Add project-scoped PNG and PixelLab ZIP import with preview, editable
+  palette metadata/credits, source-byte preservation, SHA-256 records,
+  bounded archive/image validation, and all-or-nothing duplicate-safe storage.
+- [x] Show imported art in both model-specific palettes; support placement,
+  selection, movement, undo/redo, save/reopen and rendering in Play without
+  implicitly adding collision or behavior.
+- [x] Verify the supplied mutant-gopher ZIP (eight static 48 x 48 directions,
+  no animation frames), project isolation, duplicate handling, and unsafe,
+  malformed and dimension-mismatched input rejection with focused tests and
+  disposable browser data; measure source alpha bounds, placed world size,
+  editor CSS size at 100% zoom, Play's viewport-fit rendering, and explicit
+  rejection of placement when an image exceeds the current map.
+- [ ] Game export and PixelLab API integration remain separate milestones.
 - [ ] T042 remains open (no publication/deployment or kit rebuild).

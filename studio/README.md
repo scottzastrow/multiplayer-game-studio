@@ -60,9 +60,51 @@ fixed tick, bounded by the map and explicit 32-pixel blockers. Blocked or
 overlapping starts produce an actionable Play error. Stop disposes the
 preview without saving movement.
 
-**Asset importing is the following milestone.** Generic projects currently
-use built-in shapes only. No engine-kit rebuild, publication or deployment
-is involved; T042 remains open.
+## Project-scoped asset importing
+
+**Import Assets** accepts individual PNG files and PixelLab ZIP exports. ZIP
+metadata is authoritative: each declared static direction becomes a separate
+palette asset; animation frames are not inferred or generated. The supplied
+mutant-gopher export contains one `Idle` state with eight 48 x 48 directions
+and no animation frames.
+
+Preview images before import, then set the palette name, descriptive category,
+author and source credits. PNG bytes and ZIP `metadata.json` bytes are kept
+unchanged; SHA-256 hashes are recorded for every image, the metadata and the
+source archive. Files live under `games/<project-id>/assets/`, while the
+project-scoped SQLite catalog is authoritative. Different projects have
+isolated catalogs. Identical images within a project are explicitly rejected
+without partial files or records; existing files are never overwritten.
+Image pixels map one-to-one to world pixels; placement does not scale or
+rewrite image data. The supplied south-facing gopher PNG has a 48 x 48 source
+canvas but transparent margins leave 34 x 37 opaque pixels (at x=7, y=5),
+which can make the visible character look smaller than its placed bounds.
+Palette thumbnails are scaled independently. Play fits the whole world to its
+canvas, so its CSS pixel scale depends on the preview viewport rather than the
+editor zoom.
+
+Imports are limited to 16 MB ZIPs, 40 archive entries, 16 MB total uncompressed
+data, 1 MB metadata, 4 MB per PNG, dimensions up to 2048 x 2048, and at most
+32 images. Only PNG images and `metadata.json` are accepted in ZIPs. The
+service rejects unsafe paths, special/encrypted/unsupported ZIP forms,
+duplicate or unreferenced images, malformed PNGs, dimension mismatches, and
+animated exports. Imported art is visual-only: character artwork does not
+add collision, AI, combat, or animation. Imported assets appear in each
+palette layout, can be placed/moved/undone, persist on save/reopen, and render
+in Play. An image larger than the current map remains at its original size but
+cannot be placed; the editor shows an invalid preview and explains that a
+larger map is required rather than silently shrinking it.
+
+`npm run studio:assets:test` tests original bytes and hashes, project
+isolation, duplicate handling, and rejected archives. Set
+`STUDIO_GOPHER_ZIP` to the supplied ZIP path before running this test or
+`npm run studio:smoke`; the browser workflow verifies all eight directions,
+zero animations, source alpha bounds, 48 x 48 world and editor CSS dimensions
+at 100% zoom, Play's viewport-fit scale, palette layouts, placement,
+save/reopen, unchanged catalogs in a second project, and blocked placement for
+an image too large for its map. Both checks use disposable data.
+Game export and PixelLab API integration are separate milestones. No engine-kit
+rebuild, publication or deployment is involved; T042 remains open.
 
 ## Local API
 
@@ -215,8 +257,12 @@ groups, and empty groups need no lazy population. Regression checks cover
 idle tree stability and collapsing/reopening an empty group.
 Both checks use a disposable `STUDIO_GAMES_PATH` under `studio/data/`; only
 test-specific files are removed. Production defaults to `games/`.
-Later milestones: asset importing, multiplayer editing, dynamic-object
-motion, item and enemy gameplay, generators, and PixelLab integration.
+With `STUDIO_GOPHER_ZIP` set, the browser workflow also previews and imports
+the supplied eight-direction static character, checks all palette layouts,
+places and saves a direction, reopens it, renders it in Play, confirms
+duplicate rejection, and confirms a separate project's catalog stays empty.
+Later milestones: game export, multiplayer editing, dynamic-object motion,
+item and enemy gameplay, generators, and PixelLab API integration.
 
 <details>
 <summary>Previous Astraeum verification result (before New Game)</summary>

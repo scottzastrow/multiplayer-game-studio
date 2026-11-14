@@ -144,6 +144,7 @@
       </main>
       <footer class="asset-dock">
         <div class="palette-heading"><strong>Asset palette</strong><span id="palette-credit">Floor 1 artwork by Anh Nguyen (PixelLab)</span>
+          <button id="import-assets" class="button secondary" type="button" disabled>Import Assets</button>
           <div id="palette-view" class="segmented" role="radiogroup" aria-label="Palette display" data-testid="palette-view">
             <button type="button" role="radio" data-view="large" title="Large thumbnails">Large</button>
             <button type="button" role="radio" data-view="medium" title="Medium thumbnails">Medium</button>
@@ -153,6 +154,32 @@
         </div>
         <div class="asset-list" id="asset-list" aria-label="Assets"></div>
       </footer>
+      <dialog id="asset-import-dialog" aria-labelledby="asset-import-title">
+        <form id="asset-import-form">
+          <h2 id="asset-import-title">Import Assets</h2>
+          <p>Import individual PNG images or a PixelLab ZIP. Images stay visual-only; importing artwork does not add collision, AI, combat, or animation.</p>
+          <label>PNG or PixelLab ZIP<input id="asset-import-file" type="file" accept="image/png,.png,.zip,application/zip" required></label>
+          <section id="asset-import-preview" hidden>
+            <p id="asset-import-summary"></p>
+            <div id="asset-preview-images" class="asset-preview-images"></div>
+            <label>Asset name<input id="asset-import-name" maxlength="64" required></label>
+            <label>Asset type
+              <select id="asset-import-category">
+                <option value="prop">Prop artwork</option>
+                <option value="character">Character artwork</option>
+                <option value="item">Item artwork</option>
+              </select>
+            </label>
+            <label>Author / artist credits<input id="asset-import-author" maxlength="128" required></label>
+            <label>Source / license credit<input id="asset-import-source" maxlength="256" required></label>
+          </section>
+          <p id="asset-import-message" role="status" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button id="asset-import-submit" class="button primary" type="submit" disabled>Import</button>
+            <button id="asset-import-cancel" class="button secondary" type="button">Cancel</button>
+          </div>
+        </form>
+      </dialog>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

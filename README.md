@@ -85,8 +85,13 @@ Astraeum. Duplicate names are rejected and unsaved edits are protected.
 Save/Ctrl+S writes the selected map to SQLite; Open Game reopens it after
 restart. Play includes unsaved edits and Stop returns without saving movement.
 Generated `games/<project-id>/` directories contain code, assets and metadata,
-not duplicate maps. Asset importing is the following milestone.
-See `studio/README.md` for storage and verification details. T042 stays open.
+not duplicate maps. **Import Assets** accepts PNGs and PixelLab ZIPs into
+project-scoped catalogs; source bytes and credits are preserved, and imported
+artwork remains visual-only. Imported pixels map one-to-one to world pixels;
+transparent margins can make the visible artwork look smaller than its placed
+bounds. Game export and PixelLab API integration remain separate milestones.
+See `studio/README.md` for safety limits and verification details. T042 stays
+open.
 
 ### Kit provenance and controller support
 

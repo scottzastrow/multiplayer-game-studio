@@ -5,6 +5,7 @@ import {
   createFloorMap,
   floorDocumentGrid
 } from "./project.js";
+import { ASSET_CATALOG } from "./catalog.js";
 
 const ORIGINAL_PLAYER_SPEED = 2;
 const PLAYER_WALL_FACE_PX = 12;
@@ -18,9 +19,9 @@ const DIRECTIONS = Object.freeze({
 
 export const towerSettings = Object.freeze({ playerSpeed: ORIGINAL_PLAYER_SPEED });
 
-export function createTowerGameModule(project = DEFAULT_FLOOR_DOCUMENT) {
-  const grid = floorDocumentGrid(project);
-  const map = createFloorMap(project);
+export function createTowerGameModule(project = DEFAULT_FLOOR_DOCUMENT, assetCatalog = ASSET_CATALOG) {
+  const grid = floorDocumentGrid(project, assetCatalog);
+  const map = createFloorMap(project, assetCatalog);
   const blockers = collisionRects(project);
   return Object.freeze({
     metadata: Object.freeze({

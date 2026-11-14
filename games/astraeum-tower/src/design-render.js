@@ -239,13 +239,17 @@ function drawCollisionBox(context, bounds) {
 }
 
 /** Draws one asset with its pivot at `transform`; also used for palette previews. */
-export function drawAsset(context, artwork, assetId, transform, { alpha = 1 } = {}) {
-  const asset = ASSET_CATALOG[assetId];
-  const bounds = objectBounds({ assetId, transform });
+export function drawAsset(context, artwork, assetId, transform, { alpha = 1, assetCatalog = ASSET_CATALOG } = {}) {
+  const asset = assetCatalog[assetId];
+  const bounds = objectBounds({ assetId, transform }, assetCatalog);
   context.save();
   context.globalAlpha *= alpha * asset.alpha;
   if (asset.type === "collision") {
     drawCollisionBox(context, bounds);
+  } else if (asset.imported) {
+    const image = artwork.imported[assetId];
+    context.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight,
+      bounds.x, bounds.y, bounds.width, bounds.height);
   } else if (asset.artwork) {
     const { image, region } = asset.artwork;
     context.drawImage(artwork[image], region.x, region.y, region.width, region.height,
@@ -296,12 +300,12 @@ const ALL_VISIBLE = Object.freeze({
  * Returns the derived candle lights.
  */
 export function drawDesign(context, artwork, design, { grid, map, mode = "play",
-  visible = ALL_VISIBLE, decorations = true } = {}) {
+  visible = ALL_VISIBLE, decorations = true, assetCatalog = ASSET_CATALOG } = {}) {
   context.fillStyle = "#0b0910";
   context.fillRect(0, 0, design.bounds.width, design.bounds.height);
   drawTerrainAndAlignedWalls(context, artwork, design, visible);
   const ordered = renderOrder(design);
-  const draw = object => drawAsset(context, artwork, object.assetId, object.transform);
+  const draw = object => drawAsset(context, artwork, object.assetId, object.transform, { assetCatalog });
   // Off-grid walls cannot join the dual-grid autotile, so they use the solid-wall tile
   // at their own rectangle (never the floor tile).
   for (const object of ordered) {
@@ -311,7 +315,7 @@ export function drawDesign(context, artwork, design, { grid, map, mode = "play",
   }
   for (const object of ordered) {
     if (object.type !== "prop" || !visible.props) continue;
-    if (mode === "play" && ASSET_CATALOG[object.assetId].playVisible === false) continue;
+    if (mode === "play" && assetCatalog[object.assetId].playVisible === false) continue;
     draw(object);
   }
   const decor = decorations && visible.terrain && visible.walls
