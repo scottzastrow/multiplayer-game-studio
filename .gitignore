@@ -5,6 +5,7 @@ backups/
 !/data/README.md
 /exports/*
 !/exports/README.md
+/studio/data/
 node_modules/
 dist/
 *.zip

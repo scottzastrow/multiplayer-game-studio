@@ -1,0 +1,1272 @@
+import { createLocalGame, mountLocalPreview } from "@multiplayer-game/local-preview";
+import { ARTWORK_CREDIT } from "../../games/astraeum-tower/src/catalog.js";
+import {
+  ASSET_CATALOG,
+  DESIGN_LAYERS,
+  FLOOR1_BOUNDS,
+  MAP_CELL_SIZE,
+  OBJECT_TYPES,
+  artworkReplacementAssets,
+  assignArtworkToCollision,
+  clampTransform,
+  collisionRect,
+  createDesignObject,
+  createFloorDocument,
+  createFloorMap,
+  floorDocumentGrid,
+  hitTest,
+  isUnresolvedCollision,
+  keepCollisionBox,
+  objectBounds,
+  planArtworkReplacement,
+  playStartProblems,
+  snapTransform,
+  transformAtPoint,
+  validateFloorDocument
+} from "../../games/astraeum-tower/src/project.js";
+import { drawAsset, drawDesign, loadArtwork } from "../../games/astraeum-tower/src/design-render.js";
+import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
+import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
+import "./styles.css";
+
+const CELL = MAP_CELL_SIZE;
+const MAP_URL = "/api/maps/astraeum-tower-floor-1";
+const LAYER_PREFS_KEY = "web-studio.astraeum.layers.v1";
+const PALETTE_VIEW_KEY = "web-studio.palette-view.v1";
+const PALETTE_VIEWS = Object.freeze({
+  large: { label: "Large", thumb: 72 },
+  medium: { label: "Medium", thumb: 44 },
+  small: { label: "Small", thumb: 28 },
+  list: { label: "List", thumb: 0 }
+});
+const UNRESOLVED_LABEL = "Unresolved collision";
+const HISTORY_LIMIT = 100;
+const NUDGE_PX = 5;
+const PLAY_BADGES = Object.freeze({
+  implemented: { text: "In Play", className: "badge play" },
+  partial: { text: "Partial in Play", className: "badge partial" },
+  "editor-only": { text: "Editor only", className: "badge editor-only" }
+});
+const $ = selector => document.querySelector(selector);
+const studio = $("#studio");
+const canvas = $("#map-canvas");
+const context = canvas.getContext("2d", { alpha: false });
+const editorView = $("#editor-view");
+const playHost = $("#play-host");
+
+const state = {
+  document: null,
+  savedJson: "",
+  artwork: null,
+  selectedId: null,
+  tool: "select",
+  placeAssetId: null,
+  preview: null,
+  showGrid: true,
+  snap: true,
+  zoom: 1,
+  cameraX: 0,
+  cameraY: 0,
+  viewportWidth: 1,
+  viewportHeight: 1,
+  pixelRatio: 1,
+  undo: [],
+  redo: [],
+  spaceDown: false,
+  pointerMode: null,
+  pointerStart: null,
+  paletteDrag: null,
+  layers: loadLayerPrefs(),
+  paletteView: loadPaletteView(),
+  openGroups: new Set(["walls", "props", "items", "spawns", "collision"]),
+  hierarchyKey: "",
+  scene: { document: null, key: "", canvas: null },
+  play: { phase: "idle", game: null, mount: null, timer: null, view: null, resizeObserver: null }
+};
+
+function loadLayerPrefs() {
+  const defaults = Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id,
+    { visible: true, locked: layer.id === "terrain" }]));
+  try {
+    const stored = JSON.parse(localStorage.getItem(LAYER_PREFS_KEY) ?? "null");
+    if (stored && typeof stored === "object") {
+      for (const layer of DESIGN_LAYERS) {
+        const value = stored[layer.id];
+        if (value && typeof value.visible === "boolean" && typeof value.locked === "boolean") {
+          defaults[layer.id] = { visible: value.visible, locked: value.locked };
+        }
+      }
+    }
+  } catch {
+    // Ignore unreadable editor preferences; they are not part of the design.
+  }
+  return defaults;
+}
+
+function loadPaletteView() {
+  try {
+    const stored = localStorage.getItem(PALETTE_VIEW_KEY);
+    return Object.hasOwn(PALETTE_VIEWS, stored) ? stored : "medium";
+  } catch {
+    return "medium";
+  }
+}
+
+function saveLayerPrefs() {
+  try {
+    localStorage.setItem(LAYER_PREFS_KEY, JSON.stringify(state.layers));
+  } catch {
+    // Preferences are optional.
+  }
+}
+
+const isPlaying = () => state.play.phase !== "idle";
+const selectedObject = () => state.document?.objects.find(object => object.id === state.selectedId) ?? null;
+const isSelectable = object => state.layers[object.layer].visible && !state.layers[object.layer].locked;
+const layerName = id => DESIGN_LAYERS.find(layer => layer.id === id).name;
+
+function dirty() {
+  return JSON.stringify(state.document) !== state.savedJson;
+}
+
+function setStatus(message, isError = false) {
+  const status = $("#status");
+  status.textContent = message;
+  status.classList.toggle("error", isError);
+}
+
+// ---------------------------------------------------------------- history
+
+function pushUndo(before) {
+  state.undo.push(before);
+  if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
+  state.redo.length = 0;
+}
+
+/** Documents are never mutated in place, so history can keep references. */
+function commitDocument(next, before = state.document) {
+  state.document = validateFloorDocument(next);
+  pushUndo(before);
+  refreshChrome();
+}
+
+function replaceObject(document, id, patch) {
+  return { ...document, objects: document.objects.map(object => object.id === id ? { ...object, ...patch } : object) };
+}
+
+function undo() {
+  if (!state.undo.length || isPlaying()) return;
+  state.redo.push(state.document);
+  state.document = state.undo.pop();
+  if (!selectedObject()) state.selectedId = null;
+  refreshChrome();
+  setStatus("Undone.");
+}
+
+function redo() {
+  if (!state.redo.length || isPlaying()) return;
+  state.undo.push(state.document);
+  state.document = state.redo.pop();
+  if (!selectedObject()) state.selectedId = null;
+  refreshChrome();
+  setStatus("Redone.");
+}
+
+// ---------------------------------------------------------------- chrome
+
+function refreshChrome({ structure = true } = {}) {
+  const loaded = Boolean(state.document);
+  const isDirty = loaded && dirty();
+  $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
+  $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
+  $("#save").disabled = !loaded || !isDirty || isPlaying();
+  $("#play").disabled = !loaded || isPlaying() || !state.artwork;
+  $("#undo").disabled = state.undo.length === 0 || isPlaying();
+  $("#redo").disabled = state.redo.length === 0 || isPlaying();
+  $("#zoom-label").textContent = `${Math.round(state.zoom * 100)}%`;
+  $("#select-tool").classList.toggle("active", state.tool === "select");
+  $("#place-tool").classList.toggle("active", state.tool === "place");
+  $("#place-tool").disabled = !state.placeAssetId;
+  $("#place-asset-label").textContent = state.placeAssetId ? ASSET_CATALOG[state.placeAssetId].label : "—";
+  canvas.classList.toggle("selecting", state.tool === "select");
+  for (const card of $("#asset-list").querySelectorAll(".asset-card")) {
+    card.classList.toggle("active", state.tool === "place" && card.dataset.assetId === state.placeAssetId);
+  }
+  if (loaded) {
+    updateInspector();
+    if (structure) {
+      updateLayers();
+      updateHierarchy();
+    }
+  }
+  render();
+}
+
+function updateLayers() {
+  const list = $("#layer-list");
+  const counts = layerCounts();
+  list.replaceChildren(...DESIGN_LAYERS.map(layer => {
+    const prefs = state.layers[layer.id];
+    const row = document.createElement("div");
+    row.className = `layer-row${prefs.locked ? " locked" : ""}${prefs.visible ? "" : " hidden-layer"}`;
+    row.dataset.layer = layer.id;
+    const name = document.createElement("span");
+    name.className = "layer-name";
+    name.textContent = `${layer.name}`;
+    const count = document.createElement("small");
+    count.textContent = String(counts[layer.id]);
+    const visible = document.createElement("button");
+    visible.type = "button";
+    visible.className = `layer-toggle${prefs.visible ? " on" : ""}`;
+    visible.dataset.action = "visible";
+    visible.setAttribute("aria-pressed", String(prefs.visible));
+    visible.setAttribute("aria-label", `${prefs.visible ? "Hide" : "Show"} ${layer.name} layer`);
+    visible.title = prefs.visible ? "Visible — click to hide" : "Hidden — click to show";
+    visible.textContent = prefs.visible ? "👁" : "◌";
+    visible.addEventListener("click", () => {
+      prefs.visible = !prefs.visible;
+      afterLayerChange();
+    });
+    const lock = document.createElement("button");
+    lock.type = "button";
+    lock.className = `layer-toggle${prefs.locked ? " on" : ""}`;
+    lock.dataset.action = "lock";
+    lock.setAttribute("aria-pressed", String(prefs.locked));
+    lock.setAttribute("aria-label", `${prefs.locked ? "Unlock" : "Lock"} ${layer.name} layer`);
+    lock.title = prefs.locked ? "Locked: visible but not selectable — click to unlock" : "Unlocked — click to lock";
+    lock.textContent = prefs.locked ? "🔒" : "🔓";
+    lock.addEventListener("click", () => {
+      prefs.locked = !prefs.locked;
+      afterLayerChange();
+    });
+    row.append(visible, lock, name, count);
+    return row;
+  }));
+}
+
+function afterLayerChange() {
+  saveLayerPrefs();
+  const selected = selectedObject();
+  if (selected && !isSelectable(selected)) state.selectedId = null;
+  state.hierarchyKey = "";
+  refreshChrome();
+}
+
+function layerCounts() {
+  const counts = Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id, 0]));
+  for (const object of state.document?.objects ?? []) counts[object.layer] += 1;
+  return counts;
+}
+
+function updateHierarchy() {
+  const objects = state.document.objects;
+  const unresolved = objects.filter(isUnresolvedCollision);
+  const key = `${objects.length}|${objects.map(object => object.id).join(",").length}|${state.selectedId}|` +
+    `${unresolved.map(object => object.id).join(",")}|` +
+    `${JSON.stringify(state.layers)}|${[...state.openGroups].join(",")}|${state.undo.length}|${state.redo.length}`;
+  if (key === state.hierarchyKey) return;
+  state.hierarchyKey = key;
+  $("#object-count").textContent = String(objects.length);
+  const tree = $("#object-tree");
+  const scrollTop = tree.scrollTop;
+  const groups = DESIGN_LAYERS.map(layer => {
+    const members = objects.filter(object => object.layer === layer.id)
+      .sort((left, right) => left.order - right.order);
+    const details = document.createElement("details");
+    details.className = "tree-group";
+    details.dataset.layer = layer.id;
+    details.open = state.openGroups.has(layer.id);
+    const summary = document.createElement("summary");
+    const prefs = state.layers[layer.id];
+    const unresolvedHere = members.filter(isUnresolvedCollision).length;
+    summary.textContent = `${layer.name} (${members.length})${unresolvedHere ? ` · ${unresolvedHere} unresolved` : ""}` +
+      `${prefs.locked ? " · locked" : ""}${prefs.visible ? "" : " · hidden"}`;
+    details.append(summary);
+    details.addEventListener("toggle", () => {
+      if (details.open) state.openGroups.add(layer.id);
+      else state.openGroups.delete(layer.id);
+      if (details.open && !details.querySelector(".tree-item")) {
+        state.hierarchyKey = "";
+        updateHierarchy();
+      }
+    });
+    if (details.open) {
+      const fragment = document.createDocumentFragment();
+      for (const object of members) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = `tree-item${object.id === state.selectedId ? " selected" : ""}`;
+        item.dataset.objectId = object.id;
+        item.setAttribute("role", "treeitem");
+        item.disabled = !isSelectable(object);
+        const unresolvedItem = isUnresolvedCollision(object);
+        item.title = item.disabled ? `${layer.name} layer is ${prefs.locked ? "locked" : "hidden"}`
+          : unresolvedItem ? `${UNRESOLVED_LABEL}: former off-grid format 1 wall with no artwork` : ASSET_CATALOG[object.assetId].label;
+        const glyph = document.createElement("span");
+        glyph.className = `type-glyph type-${object.type}`;
+        glyph.textContent = unresolvedItem ? "⚠" : { "terrain-tile": "▦", wall: "▧", prop: "◆", item: "✦", spawn: "◎", collision: "▢" }[object.type];
+        const label = document.createElement("span");
+        label.textContent = object.id;
+        item.append(glyph, label);
+        if (unresolvedItem) {
+          item.classList.add("unresolved");
+          const flag = document.createElement("span");
+          flag.className = "unresolved-flag";
+          flag.textContent = UNRESOLVED_LABEL;
+          item.append(flag);
+        } else if (object.migration) {
+          const flag = document.createElement("span");
+          flag.className = "migrated-flag";
+          flag.title = object.migration.note;
+          flag.textContent = "migrated";
+          item.append(flag);
+        }
+        item.addEventListener("click", () => selectObject(object.id, { reveal: true }));
+        fragment.append(item);
+      }
+      details.append(fragment);
+    }
+    return details;
+  });
+  tree.replaceChildren(...groups);
+  tree.scrollTop = scrollTop;
+  tree.querySelector(".tree-item.selected")?.scrollIntoView({ block: "nearest" });
+}
+
+function updateInspector() {
+  updateUnresolvedSummary();
+  const object = selectedObject();
+  $("#empty-inspector").hidden = Boolean(object);
+  $("#object-inspector").hidden = !object;
+  if (!object) return;
+  const asset = ASSET_CATALOG[object.assetId];
+  const bounds = objectBounds(object);
+  const unresolved = isUnresolvedCollision(object);
+  $("#object-id").value = object.id;
+  $("#object-type").textContent = unresolved ? `${UNRESOLVED_LABEL} (${OBJECT_TYPES[object.type].label.toLowerCase()})` : OBJECT_TYPES[object.type].label;
+  $("#object-asset").textContent = `${asset.label} (${object.assetId})`;
+  $("#object-layer").textContent = `${layerName(object.layer)} (fixed by type)`;
+  $("#object-order").textContent = String(object.order);
+  $("#object-size").textContent = `${bounds.width} × ${bounds.height} px`;
+  for (const [axis, field] of [["x", $("#object-x")], ["y", $("#object-y")]]) {
+    if (document.activeElement !== field) field.value = String(object.transform[axis]);
+    field.step = asset.snap.forced ? String(CELL) : "1";
+  }
+  const collision = $("#object-collision");
+  collision.checked = Boolean(object.collision);
+  collision.disabled = asset.collision !== "optional";
+  $("#object-collision-label").textContent = asset.collision === "none"
+    ? "No collision (asset defines none)"
+    : asset.collision === "required"
+      ? `Collision ${asset.collisionBox.width} × ${asset.collisionBox.height} (required)`
+      : `Collision ${asset.collisionBox.width} × ${asset.collisionBox.height} (optional)`;
+  const badge = PLAY_BADGES[asset.play];
+  $("#object-play").textContent = `${badge.text}. ${asset.playNote}`;
+  $("#object-play").className = `play-note ${asset.play}`;
+  $("#object-artwork").textContent = asset.artwork
+    ? `Artwork: ${asset.artwork.file} region ${asset.artwork.region.x},${asset.artwork.region.y} ` +
+      `${asset.artwork.region.width}×${asset.artwork.region.height} · ${ARTWORK_CREDIT}`
+    : asset.type === "collision" ? "No artwork: an invisible collision-only blocker, not a wall." : "No artwork: shown as a placeholder.";
+  $("#object-migration").hidden = !object.migration || unresolved;
+  $("#object-migration").textContent = object.migration ? `Migration: ${object.migration.note}` : "";
+  $("#unresolved-panel").hidden = !unresolved;
+  if (unresolved) {
+    $("#unresolved-origin").textContent =
+      `Origin: format 1 wall ${object.id} sat off the 32 px grid, so format 1 drew its cell with the floor tile ` +
+      "while it still blocked movement. The migration could not tell which artwork was intended, so it kept " +
+      "the exact 32 × 32 collision as this box and left the original document untouched in the database backup. " +
+      "It keeps blocking movement in Play until you choose an action below.";
+    updateResolveOutcome();
+  }
+  $("#delete-object").hidden = unresolved;
+  $("#delete-object").disabled = Boolean(asset.required);
+  $("#delete-object").title = asset.required ? `${asset.label} is required; move it instead.` : "Delete (Del)";
+}
+
+function updateUnresolvedSummary() {
+  const count = state.document?.objects.filter(isUnresolvedCollision).length ?? 0;
+  $("#unresolved-summary").hidden = count === 0;
+  $("#unresolved-count").textContent = `⚠ ${count} ${UNRESOLVED_LABEL.toLowerCase()}${count === 1 ? "" : "s"} from the migration`;
+}
+
+function updateResolveOutcome() {
+  const object = selectedObject();
+  if (!object || !isUnresolvedCollision(object)) return;
+  const plan = planArtworkReplacement(object, $("#resolve-asset").value);
+  $("#resolve-outcome").textContent = plan.text;
+  $("#resolve-outcome").dataset.outcome = plan.outcome;
+}
+
+function configureResolveActions() {
+  const select = $("#resolve-asset");
+  select.replaceChildren(...artworkReplacementAssets().map(assetId => {
+    const asset = ASSET_CATALOG[assetId];
+    const option = document.createElement("option");
+    option.value = assetId;
+    option.textContent = `${asset.label} — ${OBJECT_TYPES[asset.type].label}${asset.play === "editor-only" ? " (editor only)" : ""}`;
+    return option;
+  }));
+  select.value = "wall-damp-stone";
+  select.addEventListener("change", updateResolveOutcome);
+  $("#resolve-assign").addEventListener("click", () => {
+    const object = selectedObject();
+    if (!object || !isUnresolvedCollision(object)) return;
+    const assetId = select.value;
+    const plan = planArtworkReplacement(object, assetId);
+    commitDocument(assignArtworkToCollision(state.document, object.id, assetId));
+    setStatus(`${object.id} now uses ${ASSET_CATALOG[assetId].label} artwork. ${plan.text} Undo with Ctrl+Z.`);
+  });
+  $("#resolve-keep").addEventListener("click", () => {
+    const object = selectedObject();
+    if (!object || !isUnresolvedCollision(object)) return;
+    commitDocument(keepCollisionBox(state.document, object.id));
+    setStatus(`${object.id} kept as an intentional collision box; it still blocks movement in Play. Undo with Ctrl+Z.`);
+  });
+  $("#resolve-delete").addEventListener("click", () => {
+    const object = selectedObject();
+    if (!object || !isUnresolvedCollision(object)) return;
+    deleteSelected();
+    setStatus(`Deleted ${object.id}; its collision is removed and the spot is walkable in Play. Undo with Ctrl+Z.`);
+  });
+  $("#next-unresolved").addEventListener("click", () => {
+    const unresolved = state.document.objects.filter(isUnresolvedCollision);
+    if (!unresolved.length) return;
+    const index = unresolved.findIndex(object => object.id === state.selectedId);
+    const next = unresolved[(index + 1) % unresolved.length];
+    const layer = state.layers[next.layer];
+    if (!layer.visible || layer.locked) {
+      layer.visible = true;
+      layer.locked = false;
+      saveLayerPrefs();
+      state.hierarchyKey = "";
+    }
+    state.openGroups.add(next.layer);
+    selectObject(next.id, { reveal: true });
+    setStatus(`Reviewing ${next.id} (${UNRESOLVED_LABEL.toLowerCase()}): assign artwork, keep it, or delete it.`);
+  });
+}
+
+function selectObject(id, { reveal = false } = {}) {
+  state.selectedId = id;
+  if (reveal && id) {
+    const object = selectedObject();
+    const bounds = objectBounds(object);
+    const visibleWidth = state.viewportWidth / state.zoom;
+    const visibleHeight = state.viewportHeight / state.zoom;
+    if (bounds.x < state.cameraX || bounds.y < state.cameraY ||
+        bounds.x + bounds.width > state.cameraX + visibleWidth ||
+        bounds.y + bounds.height > state.cameraY + visibleHeight) {
+      state.cameraX = bounds.x + bounds.width / 2 - visibleWidth / 2;
+      state.cameraY = bounds.y + bounds.height / 2 - visibleHeight / 2;
+    }
+  }
+  canvas.focus();
+  refreshChrome();
+}
+
+function setTool(tool) {
+  state.tool = tool === "place" && state.placeAssetId ? "place" : "select";
+  if (state.tool === "select") state.preview = null;
+  refreshChrome({ structure: false });
+}
+
+// ---------------------------------------------------------------- rendering
+
+function visibleLayers() {
+  return Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id, state.layers[layer.id].visible]));
+}
+
+function sceneCanvas() {
+  const visible = visibleLayers();
+  const key = JSON.stringify(visible);
+  const scene = state.scene;
+  if (scene.document === state.document && scene.key === key && scene.canvas) return scene.canvas;
+  if (!scene.canvas) {
+    scene.canvas = document.createElement("canvas");
+    scene.canvas.width = FLOOR1_BOUNDS.width;
+    scene.canvas.height = FLOOR1_BOUNDS.height;
+  }
+  const sceneContext = scene.canvas.getContext("2d", { alpha: false });
+  sceneContext.imageSmoothingEnabled = false;
+  drawDesign(sceneContext, state.artwork, state.document, {
+    grid: floorDocumentGrid(state.document),
+    map: createFloorMap(state.document),
+    mode: "editor",
+    visible
+  });
+  scene.document = state.document;
+  scene.key = key;
+  return scene.canvas;
+}
+
+function drawMap() {
+  context.setTransform(state.pixelRatio, 0, 0, state.pixelRatio, 0, 0);
+  context.imageSmoothingEnabled = false;
+  context.fillStyle = "#14161a";
+  context.fillRect(0, 0, state.viewportWidth, state.viewportHeight);
+  const scale = state.pixelRatio * state.zoom;
+  context.setTransform(scale, 0, 0, scale, -state.cameraX * scale, -state.cameraY * scale);
+  context.imageSmoothingEnabled = false;
+  context.drawImage(sceneCanvas(), 0, 0);
+  const line = 1 / state.zoom;
+  if (state.showGrid) {
+    context.save();
+    context.strokeStyle = "#d4e4f21b";
+    context.lineWidth = line;
+    context.beginPath();
+    for (let x = 0; x <= FLOOR1_BOUNDS.width; x += CELL) {
+      context.moveTo(x, 0);
+      context.lineTo(x, FLOOR1_BOUNDS.height);
+    }
+    for (let y = 0; y <= FLOOR1_BOUNDS.height; y += CELL) {
+      context.moveTo(0, y);
+      context.lineTo(FLOOR1_BOUNDS.width, y);
+    }
+    context.stroke();
+    context.restore();
+  }
+  const selected = selectedObject();
+  if (selected) {
+    const bounds = objectBounds(selected);
+    context.save();
+    context.strokeStyle = "#ffcc55";
+    context.lineWidth = 2 * line;
+    context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    const rect = collisionRect(selected);
+    if (rect) {
+      context.strokeStyle = "#59d8ff";
+      context.setLineDash([3 * line, 2 * line]);
+      context.lineWidth = line;
+      context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    }
+    context.setLineDash([]);
+    context.fillStyle = "#ffcc55";
+    context.fillRect(selected.transform.x - 2 * line, selected.transform.y - 2 * line, 4 * line, 4 * line);
+    context.restore();
+  }
+  const preview = state.preview;
+  if (preview) {
+    const bounds = drawAsset(context, state.artwork, preview.assetId, preview.transform, { alpha: 0.65 });
+    context.save();
+    context.strokeStyle = preview.problem ? "#ff6670" : "#7dffa8";
+    context.lineWidth = 2 * line;
+    context.setLineDash([4 * line, 3 * line]);
+    context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    context.restore();
+  }
+  const counts = layerCounts();
+  canvas.dataset.cameraX = String(state.cameraX);
+  canvas.dataset.cameraY = String(state.cameraY);
+  canvas.dataset.zoom = String(state.zoom);
+  canvas.dataset.objectCount = String(state.document.objects.length);
+  canvas.dataset.wallCount = String(state.document.objects.filter(object => object.type === "wall").length);
+  canvas.dataset.layerCounts = JSON.stringify(counts);
+  canvas.dataset.selectedId = state.selectedId ?? "";
+  canvas.dataset.tool = state.tool;
+  canvas.dataset.preview = preview ? `${preview.assetId}@${preview.transform.x},${preview.transform.y}${preview.problem ? ":invalid" : ""}` : "";
+}
+
+function render() {
+  if (!state.artwork || !state.document || isPlaying()) return;
+  drawMap();
+}
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  state.viewportWidth = Math.max(1, Math.floor(rect.width));
+  state.viewportHeight = Math.max(1, Math.floor(rect.height));
+  state.pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.round(state.viewportWidth * state.pixelRatio);
+  canvas.height = Math.round(state.viewportHeight * state.pixelRatio);
+  render();
+}
+
+function centerCamera() {
+  state.cameraX = (FLOOR1_BOUNDS.width - state.viewportWidth / state.zoom) / 2;
+  state.cameraY = (FLOOR1_BOUNDS.height - state.viewportHeight / state.zoom) / 2;
+}
+
+function setZoom(nextZoom, anchorX = state.viewportWidth / 2, anchorY = state.viewportHeight / 2) {
+  const worldX = state.cameraX + anchorX / state.zoom;
+  const worldY = state.cameraY + anchorY / state.zoom;
+  state.zoom = Math.max(0.25, Math.min(4, nextZoom));
+  state.cameraX = worldX - anchorX / state.zoom;
+  state.cameraY = worldY - anchorY / state.zoom;
+  refreshChrome({ structure: false });
+}
+
+function worldPointFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) / state.zoom + state.cameraX,
+    y: (clientY - rect.top) / state.zoom + state.cameraY
+  };
+}
+
+function overCanvas(clientX, clientY) {
+  if (editorView.hidden) return false;
+  const rect = canvas.getBoundingClientRect();
+  return clientX >= rect.left && clientX < rect.right && clientY >= rect.top && clientY < rect.bottom;
+}
+
+// ---------------------------------------------------------------- placement
+
+function placementTransform(assetId, point) {
+  let transform = transformAtPoint(assetId, point);
+  if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
+  return clampTransform(assetId, transform);
+}
+
+function placementProblem(assetId, transform) {
+  const asset = ASSET_CATALOG[assetId];
+  const layer = OBJECT_TYPES[asset.type].layer;
+  if (state.layers[layer].locked) return `The ${layerName(layer)} layer is locked. Unlock it in Layers to place ${asset.label}.`;
+  if (!state.layers[layer].visible) return `The ${layerName(layer)} layer is hidden. Show it in Layers to place ${asset.label}.`;
+  if (asset.unique && state.document.objects.some(object => object.assetId === assetId)) {
+    return `Only one ${asset.label} is allowed. Select and move the existing one.`;
+  }
+  if (asset.type === "terrain-tile" && state.document.objects.some(object => object.type === "terrain-tile" &&
+      object.transform.x === transform.x && object.transform.y === transform.y)) {
+    return "This cell already has a terrain tile.";
+  }
+  return null;
+}
+
+function previewAt(assetId, point) {
+  const transform = placementTransform(assetId, point);
+  return { assetId, transform, problem: placementProblem(assetId, transform) };
+}
+
+function nextObjectId(assetId) {
+  const ids = new Set(state.document.objects.map(object => object.id));
+  let number = 1;
+  while (ids.has(`${assetId}-${number}`)) number += 1;
+  return `${assetId}-${number}`;
+}
+
+function placeFromPreview(preview) {
+  if (!preview) return;
+  if (preview.problem) {
+    setStatus(preview.problem, true);
+    return;
+  }
+  const asset = ASSET_CATALOG[preview.assetId];
+  const layer = OBJECT_TYPES[asset.type].layer;
+  const order = Math.max(-1, ...state.document.objects.filter(object => object.layer === layer)
+    .map(object => object.order)) + 1;
+  const object = createDesignObject(nextObjectId(preview.assetId), preview.assetId, preview.transform, order);
+  commitDocument({ ...state.document, objects: [...state.document.objects, object] });
+  state.selectedId = object.id;
+  refreshChrome();
+  const note = asset.play === "editor-only" ? " Editor only — no gameplay yet." :
+    asset.play === "partial" ? ` ${asset.playNote}` : "";
+  setStatus(`Placed ${asset.label} (${object.id}) at ${object.transform.x}, ${object.transform.y}.${note}`);
+}
+
+function armPlace(assetId) {
+  state.placeAssetId = assetId;
+  state.tool = "place";
+  state.preview = null;
+  const asset = ASSET_CATALOG[assetId];
+  setStatus(`Place ${asset.label}: click the map (Esc to cancel).` +
+    (asset.play === "editor-only" ? " Editor only — no gameplay yet." : ""));
+  refreshChrome({ structure: false });
+  canvas.focus();
+}
+
+// ---------------------------------------------------------------- editing
+
+function moveSelectedTo(transform, { snap = false } = {}) {
+  const object = selectedObject();
+  if (!object) return;
+  const asset = ASSET_CATALOG[object.assetId];
+  let next = { x: Math.round(transform.x), y: Math.round(transform.y) };
+  if (snap || asset.snap.forced) next = snapTransform(object.assetId, next);
+  next = clampTransform(object.assetId, next);
+  if (next.x === object.transform.x && next.y === object.transform.y) {
+    refreshChrome({ structure: false });
+    return;
+  }
+  commitDocument(replaceObject(state.document, object.id, { transform: next }));
+}
+
+function nudgeSelected(dx, dy) {
+  const object = selectedObject();
+  if (!object) return;
+  const step = ASSET_CATALOG[object.assetId].snap.forced ? CELL : NUDGE_PX;
+  moveSelectedTo({ x: object.transform.x + dx * step, y: object.transform.y + dy * step });
+  const moved = selectedObject();
+  setStatus(`Nudged ${moved.id} to ${moved.transform.x}, ${moved.transform.y}.`);
+}
+
+function deleteSelected() {
+  const object = selectedObject();
+  if (!object) return;
+  if (ASSET_CATALOG[object.assetId].required) {
+    setStatus(`${ASSET_CATALOG[object.assetId].label} is required and cannot be deleted; move it instead.`, true);
+    return;
+  }
+  commitDocument({ ...state.document, objects: state.document.objects.filter(item => item.id !== object.id) });
+  state.selectedId = null;
+  refreshChrome();
+  setStatus(`Deleted ${object.id}.`);
+}
+
+function pointerDown(event) {
+  if (isPlaying() || !state.document) return;
+  canvas.focus();
+  if (event.button === 1 || (event.button === 0 && state.spaceDown)) {
+    state.pointerMode = "pan";
+    state.pointerStart = { x: event.clientX, y: event.clientY, cameraX: state.cameraX, cameraY: state.cameraY };
+    canvas.classList.add("panning");
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  if (event.button !== 0) return;
+  const point = worldPointFromClient(event.clientX, event.clientY);
+  if (state.tool === "place" && state.placeAssetId) {
+    placeFromPreview(previewAt(state.placeAssetId, point));
+    state.preview = previewAt(state.placeAssetId, point);
+    render();
+    return;
+  }
+  const object = hitTest(state.document, point, isSelectable);
+  if (!object) {
+    state.selectedId = null;
+    refreshChrome();
+    return;
+  }
+  state.selectedId = object.id;
+  state.pointerMode = "move";
+  state.pointerStart = { point, transform: object.transform, before: state.document, id: object.id };
+  canvas.setPointerCapture(event.pointerId);
+  refreshChrome();
+}
+
+function pointerMove(event) {
+  if (state.pointerMode === "pan") {
+    state.cameraX = state.pointerStart.cameraX - (event.clientX - state.pointerStart.x) / state.zoom;
+    state.cameraY = state.pointerStart.cameraY - (event.clientY - state.pointerStart.y) / state.zoom;
+    render();
+    return;
+  }
+  const point = worldPointFromClient(event.clientX, event.clientY);
+  if (state.pointerMode === "move") {
+    const start = state.pointerStart;
+    const assetId = start.before.objects.find(item => item.id === start.id).assetId;
+    let transform = {
+      x: Math.round(start.transform.x + point.x - start.point.x),
+      y: Math.round(start.transform.y + point.y - start.point.y)
+    };
+    if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
+    transform = clampTransform(assetId, transform);
+    state.document = replaceObject(start.before, start.id, { transform });
+    refreshChrome({ structure: false });
+    return;
+  }
+  if (state.tool === "place" && state.placeAssetId && !state.paletteDrag) {
+    state.preview = previewAt(state.placeAssetId, point);
+    render();
+  }
+}
+
+function pointerUp() {
+  if (state.pointerMode === "pan") canvas.classList.remove("panning");
+  if (state.pointerMode === "move") {
+    const { before, id } = state.pointerStart;
+    if (state.document !== before) {
+      try {
+        state.document = validateFloorDocument(state.document);
+        pushUndo(before);
+        const object = selectedObject();
+        setStatus(`Moved ${id} to ${object.transform.x}, ${object.transform.y}.`);
+      } catch (error) {
+        state.document = before;
+        setStatus(`Move rejected: ${error.message}`, true);
+      }
+    }
+  }
+  state.pointerMode = null;
+  state.pointerStart = null;
+  refreshChrome();
+}
+
+// ---------------------------------------------------------------- palette
+
+function assetThumbnail(assetId, size) {
+  const asset = ASSET_CATALOG[assetId];
+  const thumb = document.createElement("canvas");
+  thumb.width = size;
+  thumb.height = size;
+  thumb.className = "asset-thumb";
+  const thumbContext = thumb.getContext("2d");
+  thumbContext.imageSmoothingEnabled = false;
+  const maxScale = size >= 64 ? 3 : 2;
+  const scale = Math.min(maxScale, (size - 4) / asset.size.width, (size - 4) / asset.size.height);
+  thumbContext.setTransform(scale, 0, 0, scale,
+    (size - asset.size.width * scale) / 2, (size - asset.size.height * scale) / 2);
+  drawAsset(thumbContext, state.artwork, assetId, { x: asset.pivot.x, y: asset.pivot.y });
+  return thumb;
+}
+
+function setPaletteView(view) {
+  if (!Object.hasOwn(PALETTE_VIEWS, view)) return;
+  state.paletteView = view;
+  try {
+    localStorage.setItem(PALETTE_VIEW_KEY, view);
+  } catch {
+    // Display preferences are optional and never part of the design.
+  }
+  configurePalette();
+  refreshChrome({ structure: false });
+}
+
+function configurePaletteView() {
+  for (const button of $("#palette-view").querySelectorAll("button")) {
+    button.addEventListener("click", () => setPaletteView(button.dataset.view));
+  }
+}
+
+function configurePalette() {
+  const list = $("#asset-list");
+  const view = state.paletteView;
+  const thumbSize = PALETTE_VIEWS[view].thumb;
+  list.className = `asset-list view-${view}`;
+  list.dataset.view = view;
+  for (const button of $("#palette-view").querySelectorAll("button")) {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  }
+  list.replaceChildren();
+  for (const type of Object.keys(OBJECT_TYPES)) {
+    const entries = Object.entries(ASSET_CATALOG).filter(([, asset]) => asset.type === type);
+    if (!entries.length) continue;
+    const group = document.createElement("div");
+    group.className = "asset-group";
+    const heading = document.createElement("span");
+    heading.className = "asset-group-title";
+    heading.textContent = OBJECT_TYPES[type].label;
+    group.append(heading);
+    for (const [assetId, asset] of entries) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "asset-card";
+      card.dataset.assetId = assetId;
+      card.dataset.type = asset.type;
+      card.dataset.playStatus = asset.play;
+      const credit = asset.artwork
+        ? `${asset.artwork.file} [${asset.artwork.region.x},${asset.artwork.region.y} ${asset.artwork.region.width}×${asset.artwork.region.height}] · ${ARTWORK_CREDIT}`
+        : "No artwork";
+      card.title = `${asset.label} — ${OBJECT_TYPES[asset.type].label}\n${asset.details}\n${asset.playNote}\n${credit}`;
+      card.setAttribute("aria-label", `${asset.label}, ${OBJECT_TYPES[asset.type].label}. ${PLAY_BADGES[asset.play].text}.`);
+      const copy = document.createElement("span");
+      copy.className = "asset-copy";
+      const title = document.createElement("strong");
+      title.textContent = asset.label;
+      title.title = asset.label;
+      const badge = document.createElement("span");
+      const badgeInfo = PLAY_BADGES[asset.play];
+      badge.className = badgeInfo.className;
+      badge.dataset.testid = "play-badge";
+      badge.textContent = badgeInfo.text;
+      if (asset.play === "editor-only") badge.title = "Editor only — no gameplay yet. Saved with the design but not used by Play.";
+      const small = document.createElement("small");
+      small.textContent = asset.artwork ? `${asset.artwork.file} · ${ARTWORK_CREDIT}` : asset.type === "collision" ? "No artwork · invisible blocker" : "No artwork · placeholder";
+      copy.append(title, badge, small);
+      if (thumbSize) card.append(assetThumbnail(assetId, thumbSize));
+      else {
+        const glyph = document.createElement("span");
+        glyph.className = `type-glyph type-${asset.type}`;
+        glyph.setAttribute("aria-hidden", "true");
+        glyph.textContent = { "terrain-tile": "▦", wall: "▧", prop: "◆", item: "✦", spawn: "◎", collision: "▢" }[asset.type];
+        card.append(glyph);
+      }
+      card.append(copy);
+      card.addEventListener("pointerdown", event => paletteDown(event, assetId, card));
+      card.addEventListener("pointermove", paletteMove);
+      card.addEventListener("pointerup", paletteUp);
+      card.addEventListener("pointercancel", paletteCancel);
+      card.addEventListener("keydown", event => {
+        if (event.code === "Enter" || event.code === "Space") {
+          event.preventDefault();
+          armPlace(assetId);
+        }
+      });
+      group.append(card);
+    }
+    list.append(group);
+  }
+}
+
+function paletteDown(event, assetId, card) {
+  if (event.button !== 0 || isPlaying() || !state.document) return;
+  event.preventDefault();
+  card.setPointerCapture(event.pointerId);
+  state.paletteDrag = { assetId, x: event.clientX, y: event.clientY, dragging: false };
+}
+
+function paletteMove(event) {
+  const drag = state.paletteDrag;
+  if (!drag) return;
+  if (!drag.dragging && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) {
+    drag.dragging = true;
+    document.body.classList.add("dragging-asset");
+  }
+  if (!drag.dragging) return;
+  state.preview = overCanvas(event.clientX, event.clientY)
+    ? previewAt(drag.assetId, worldPointFromClient(event.clientX, event.clientY))
+    : null;
+  render();
+}
+
+function paletteUp(event) {
+  const drag = state.paletteDrag;
+  if (!drag) return;
+  state.paletteDrag = null;
+  document.body.classList.remove("dragging-asset");
+  if (!drag.dragging) {
+    armPlace(drag.assetId);
+    return;
+  }
+  if (overCanvas(event.clientX, event.clientY)) {
+    placeFromPreview(previewAt(drag.assetId, worldPointFromClient(event.clientX, event.clientY)));
+  } else {
+    setStatus("Placement cancelled: drop the asset onto the map.");
+  }
+  state.preview = null;
+  refreshChrome({ structure: false });
+}
+
+function paletteCancel() {
+  state.paletteDrag = null;
+  state.preview = null;
+  document.body.classList.remove("dragging-asset");
+  render();
+}
+
+// ---------------------------------------------------------------- save
+
+async function save() {
+  if (!state.document || isPlaying()) return;
+  try {
+    const response = await fetch(MAP_URL, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ document: state.document })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error ?? `Save failed (${response.status}).`);
+    state.document = validateFloorDocument(payload.document);
+    state.savedJson = JSON.stringify(state.document);
+    refreshChrome();
+    setStatus("Floor 1 saved to the local Studio database.");
+  } catch (error) {
+    setStatus(`Save failed: ${error.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------- play
+
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
+
+function showPlayError(message) {
+  $("#play-error-message").textContent = message;
+  $("#play-error").hidden = false;
+  studio.dataset.playState = "error";
+  setStatus(`Play could not start: ${message}`, true);
+}
+
+function teardownPlay() {
+  const play = state.play;
+  if (play.timer) window.clearInterval(play.timer);
+  play.resizeObserver?.disconnect();
+  try {
+    play.mount?.dispose();
+  } finally {
+    try {
+      play.game?.dispose();
+    } catch {
+      // A game that failed mid-step disposes itself.
+    }
+  }
+  Object.assign(play, { phase: "idle", game: null, mount: null, timer: null, resizeObserver: null });
+  playHost.replaceChildren();
+  playHost.hidden = true;
+  $("#play-loading").hidden = true;
+  editorView.hidden = false;
+  document.body.classList.remove("is-playing");
+  $("#play").hidden = false;
+  $("#stop").hidden = true;
+  studio.dataset.playState = "idle";
+  if (play.view) {
+    state.zoom = play.view.zoom;
+    state.cameraX = play.view.cameraX;
+    state.cameraY = play.view.cameraY;
+    play.view = null;
+  }
+}
+
+async function play() {
+  if (isPlaying() || !state.document || !state.artwork) return;
+  $("#play-error").hidden = true;
+  let design;
+  try {
+    design = validateFloorDocument(structuredClone(state.document));
+    const problems = playStartProblems(design);
+    if (problems.length) throw new Error(problems.join(" "));
+  } catch (error) {
+    showPlayError(error.message);
+    return;
+  }
+  const play = state.play;
+  play.phase = "starting";
+  play.view = { zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY };
+  studio.dataset.playState = "starting";
+  $("#play-loading").hidden = false;
+  setStatus("Starting Play with the edited map…");
+  refreshChrome({ structure: false });
+  try {
+    // The runtime measures its world slot when mounting, so the host must be
+    // visible and laid out first; mounting into a hidden host gave a 1×1 canvas.
+    document.body.classList.add("is-playing");
+    editorView.hidden = true;
+    playHost.hidden = false;
+    $("#play").hidden = true;
+    $("#stop").hidden = false;
+    await nextFrame();
+    await nextFrame();
+    play.game = await createLocalGame({
+      moduleFactory: createTowerGameModule(design),
+      settings: towerSettings,
+      map: createFloorMap(design),
+      seed: 1,
+      roster: [{ accountId: "aries", username: "Aries", joinedOrder: 0 }],
+      viewer: { accountId: "aries", role: "player" }
+    });
+    if (play.phase !== "starting") throw new Error("Play was cancelled.");
+    play.mount = mountLocalPreview(playHost, play.game, towerSkinFactory(state.artwork, undefined, design), {
+      onInputRejected: () => setStatus("The runtime rejected an input.", true)
+    });
+    // The runtime re-measures only on window resize; forward layout changes too.
+    play.resizeObserver = new ResizeObserver(() => window.dispatchEvent(new Event("resize")));
+    play.resizeObserver.observe(playHost);
+    const playCanvas = playHost.querySelector("canvas");
+    if (!playCanvas || playCanvas.clientWidth < 2 || playCanvas.clientHeight < 2) {
+      throw new Error("The Play view has no visible size. Enlarge the browser window and try again.");
+    }
+    play.timer = window.setInterval(() => {
+      try {
+        play.game.step();
+      } catch (error) {
+        teardownPlay();
+        refreshChrome();
+        showPlayError(`The game stopped with an error: ${error.message}`);
+      }
+    }, 1000 / 30);
+    play.phase = "playing";
+    studio.dataset.playState = "playing";
+    $("#play-loading").hidden = true;
+    playCanvas.focus();
+    setStatus("Playing the edited map (unsaved edits included). Arrows/WASD move Aries. Stop returns to editing.");
+  } catch (error) {
+    teardownPlay();
+    refreshChrome();
+    showPlayError(`${error.message} Check the map for blocked spawns or invalid collisions, then press Play again.`);
+  }
+}
+
+function stop() {
+  if (!isPlaying()) return;
+  teardownPlay();
+  refreshChrome();
+  setStatus("Stopped. Back to editing; the authored design and editor view are unchanged.");
+  canvas.focus();
+}
+
+// ---------------------------------------------------------------- events
+
+function ignoredShortcutTarget(target) {
+  return target instanceof Element &&
+    target.closest("input, textarea, select, [contenteditable='true']") !== null;
+}
+
+function configureEvents() {
+  new ResizeObserver(resize).observe(editorView);
+  canvas.addEventListener("pointerdown", pointerDown);
+  canvas.addEventListener("pointermove", pointerMove);
+  canvas.addEventListener("pointerup", pointerUp);
+  canvas.addEventListener("pointercancel", pointerUp);
+  canvas.addEventListener("pointerleave", () => {
+    if (state.tool === "place" && !state.paletteDrag && state.preview) {
+      state.preview = null;
+      render();
+    }
+  });
+  canvas.addEventListener("wheel", event => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    setZoom(state.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+  canvas.addEventListener("contextmenu", event => event.preventDefault());
+  window.addEventListener("keydown", event => {
+    if (ignoredShortcutTarget(event.target)) return;
+    if (isPlaying()) {
+      if (event.code === "Escape" && state.play.phase === "playing") stop();
+      return;
+    }
+    if (event.code === "Space" && event.target === canvas) {
+      state.spaceDown = true;
+      event.preventDefault();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
+      event.preventDefault();
+      save();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyY") {
+      event.preventDefault();
+      redo();
+      return;
+    }
+    if (event.code === "Escape") {
+      if (state.paletteDrag) paletteCancel();
+      setTool("select");
+      return;
+    }
+    const nudges = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (nudges[event.code] && state.selectedId && event.target === canvas) {
+      event.preventDefault();
+      nudgeSelected(...nudges[event.code]);
+      return;
+    }
+    if ((event.code === "Delete" || event.code === "Backspace") && state.selectedId && event.target === canvas) {
+      event.preventDefault();
+      deleteSelected();
+    }
+  });
+  window.addEventListener("keyup", event => {
+    if (event.code === "Space") state.spaceDown = false;
+  });
+  window.addEventListener("blur", () => { state.spaceDown = false; });
+  window.addEventListener("beforeunload", event => {
+    if (state.document && dirty()) event.preventDefault();
+  });
+  $("#select-tool").addEventListener("click", () => setTool("select"));
+  $("#place-tool").addEventListener("click", () => setTool("place"));
+  $("#undo").addEventListener("click", undo);
+  $("#redo").addEventListener("click", redo);
+  $("#show-grid").addEventListener("change", event => {
+    state.showGrid = event.target.checked;
+    render();
+  });
+  $("#snap-grid").addEventListener("change", event => {
+    state.snap = event.target.checked;
+    setStatus(state.snap ? "Snapping on: positions snap to the 32 px grid." :
+      "Snapping off: free placement (terrain, spawns and the stairs portal still snap).");
+  });
+  $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.2));
+  $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.2));
+  $("#save").addEventListener("click", save);
+  $("#play").addEventListener("click", play);
+  $("#stop").addEventListener("click", stop);
+  $("#play-error-close").addEventListener("click", () => {
+    $("#play-error").hidden = true;
+    studio.dataset.playState = "idle";
+    canvas.focus();
+  });
+  $("#delete-object").addEventListener("click", deleteSelected);
+  $("#object-inspector").addEventListener("submit", event => event.preventDefault());
+  for (const [axis, field] of [["x", $("#object-x")], ["y", $("#object-y")]]) {
+    field.addEventListener("change", () => {
+      const object = selectedObject();
+      const value = Number(field.value);
+      if (!object || !Number.isFinite(value)) return;
+      moveSelectedTo({ ...object.transform, [axis]: value });
+    });
+  }
+  $("#object-collision").addEventListener("change", event => {
+    const object = selectedObject();
+    const asset = object && ASSET_CATALOG[object.assetId];
+    if (!asset || asset.collision !== "optional") return;
+    commitDocument(replaceObject(state.document, object.id,
+      { collision: event.target.checked ? { ...asset.collisionBox } : null }));
+    setStatus(`${object.id} collision ${event.target.checked ? "enabled" : "disabled"}.`);
+  });
+}
+
+function describeMigrations(migrations) {
+  const latest = migrations?.[0];
+  if (!latest) return null;
+  if (latest.status === "failed") return { error: true, text: `Migration failed: ${latest.report.error}` };
+  const report = latest.report;
+  const boxes = report.collisionBoxes?.length ?? 0;
+  return {
+    error: false,
+    text: `Upgraded from format ${latest.fromVersion} to ${latest.toVersion} on ` +
+      `${new Date(latest.createdAt).toLocaleString()}: ${report.walls} walls kept as walls` +
+      (boxes ? `; ${boxes} off-grid former walls had no wall artwork and are now collision boxes (` +
+        report.collisionBoxes.map(box => box.id).join(", ") + ")" : "") +
+      (report.overlappingWalls?.length ? `; ${report.overlappingWalls.length} sets of overlapping walls kept as-is` : "") +
+      `. The original is kept untouched in backup #${latest.backupId}.`
+  };
+}
+
+async function openFloor() {
+  const [response, artwork] = await Promise.all([fetch(MAP_URL), loadArtwork()]);
+  state.artwork = artwork;
+  const payload = await response.json().catch(() => ({}));
+  const migration = describeMigrations(payload.migrations);
+  if (migration) {
+    $("#migration-notice").hidden = false;
+    $("#migration-notice").textContent = migration.text;
+    $("#migration-notice").classList.toggle("error", migration.error);
+  }
+  if (!response.ok) {
+    throw new Error(`${payload.error ?? `Local map service responded ${response.status}.`} ` +
+      "Nothing was changed; inspect studio/data/studio.sqlite (maps, migrations tables) before editing.");
+  }
+  state.document = validateFloorDocument(payload.document ?? createFloorDocument());
+  state.savedJson = JSON.stringify(state.document);
+  configurePalette();
+  configurePaletteView();
+  configureResolveActions();
+  configureEvents();
+  await nextFrame();
+  resize();
+  centerCamera();
+  refreshChrome();
+  setStatus(payload.document
+    ? migration && !migration.error && payload.migrations[0].createdAt && Date.now() - Date.parse(payload.migrations[0].createdAt) < 60_000
+      ? "Reopened Floor 1 — upgraded to the object format (see Inspector)."
+      : "Reopened the locally saved Floor 1 design."
+    : "Opened the original Floor 1 map (not yet saved).");
+  if (import.meta.env?.DEV) {
+    window.__studioTest = Object.freeze({
+      document: () => structuredClone(state.document),
+      worldToClient(x, y) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: rect.left + (x - state.cameraX) * state.zoom, y: rect.top + (y - state.cameraY) * state.zoom };
+      },
+      view: () => ({ zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY }),
+      setView(view) {
+        Object.assign(state, view);
+        render();
+      }
+    });
+  }
+}
+
+openFloor().catch(error => {
+  $("#save-state").textContent = "Not loaded";
+  $("#save-state").className = "save-state dirty";
+  setStatus(`Could not open Floor 1: ${error.message}`, true);
+});

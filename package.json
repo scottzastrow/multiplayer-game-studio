@@ -8,6 +8,8 @@
     "preview": "npm run dev --prefix games/sample -- --port 5174 --strictPort",
     "astraeum:dev": "node games/sample/node_modules/vite/bin/vite.js --config games/astraeum-tower/vite.config.js",
     "astraeum:smoke": "node games/astraeum-tower/scripts/browser-smoke.mjs",
+    "studio:dev": "node studio/start.mjs",
+    "studio:smoke": "node studio/scripts/browser-smoke.mjs",
     "verify": "npm run verify --prefix games/sample",
     "build": "npm run build --prefix games/sample",
     "browser:smoke": "npm run browser:smoke --prefix games/sample"

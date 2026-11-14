@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#22252b">
+    <title>Web Studio — Astraeum Tower</title>
+  </head>
+  <body>
+    <div id="studio" data-testid="studio" data-play-state="idle">
+      <header class="toolbar">
+        <div class="brand"><span class="brand-mark">W</span><strong>Web Studio</strong><span class="project-name">Astraeum Tower · Floor 1</span></div>
+        <nav class="tool-group" aria-label="Map tools">
+          <button id="select-tool" class="tool-button active" title="Select and move (Esc)">Select</button>
+          <button id="place-tool" class="tool-button" title="Click the map to place the armed palette asset">Place: <span id="place-asset-label">—</span></button>
+          <button id="undo" class="icon-button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+          <button id="redo" class="icon-button" title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
+          <label class="toggle"><input id="show-grid" type="checkbox" checked> Grid</label>
+          <label class="toggle" title="Snap transforms to the 32 px grid. Terrain, spawns and the stairs portal always snap."><input id="snap-grid" type="checkbox" checked> Snap</label>
+          <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>
+          <output id="zoom-label">100%</output>
+          <button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">+</button>
+        </nav>
+        <div class="file-actions">
+          <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
+          <button id="save" class="button secondary" disabled>Save</button>
+          <button id="play" class="button primary" disabled>▶ Play</button>
+          <button id="stop" class="button danger" hidden>■ Stop</button>
+        </div>
+      </header>
+      <main class="workspace">
+        <aside class="panel hierarchy">
+          <div class="panel-title">Layers</div>
+          <div id="layer-list" class="layer-list" aria-label="Design layers"></div>
+          <div class="panel-title">Hierarchy <span id="object-count"></span></div>
+          <div id="object-tree" class="tree-list" role="tree" aria-label="Design objects"></div>
+        </aside>
+        <section class="viewport" aria-label="Map viewport">
+          <div id="editor-view" class="editor-view">
+            <canvas id="map-canvas" class="selecting" tabindex="0" aria-label="Floor 1 map editor" data-testid="map-canvas"></canvas>
+            <div class="viewport-hint">Drag objects to move · Drag assets from the palette to place · Middle-drag or Space-drag to pan · Wheel to zoom · Arrows nudge 5 px</div>
+          </div>
+          <div id="play-host" class="play-host" hidden></div>
+          <div id="play-loading" class="play-overlay" role="status" data-testid="play-loading" hidden><div class="spinner" aria-hidden="true"></div><span>Starting Play…</span></div>
+          <div id="play-error" class="play-overlay error" role="alert" data-testid="play-error" hidden>
+            <strong>Play could not start</strong>
+            <p id="play-error-message"></p>
+            <button id="play-error-close" class="button secondary" type="button">Back to editing</button>
+          </div>
+          <div id="status" role="status" aria-live="polite" data-testid="studio-status">Opening Floor 1…</div>
+        </section>
+        <aside class="panel inspector">
+          <div class="panel-title">Inspector</div>
+          <div id="migration-notice" class="migration-notice" data-testid="migration-notice" hidden></div>
+          <div id="unresolved-summary" class="unresolved-summary" data-testid="unresolved-summary" hidden>
+            <span id="unresolved-count"></span>
+            <button id="next-unresolved" class="button secondary" type="button">Review next</button>
+          </div>
+          <div id="empty-inspector" class="empty-note">Select an object on the map or in the hierarchy.</div>
+          <form id="object-inspector" hidden>
+            <label>Object ID<input id="object-id" readonly></label>
+            <section id="unresolved-panel" class="unresolved-panel" data-testid="unresolved-panel" hidden>
+              <strong>Unresolved collision</strong>
+              <p id="unresolved-origin"></p>
+              <label>Artwork<select id="resolve-asset"></select></label>
+              <p id="resolve-outcome" class="resolve-outcome" data-testid="resolve-outcome"></p>
+              <button id="resolve-assign" class="button primary wide" type="button">Assign artwork</button>
+              <button id="resolve-keep" class="button secondary wide" type="button" title="Keep the invisible blocker on purpose; it stops being listed as unresolved.">Keep as collision box</button>
+              <button id="resolve-delete" class="button danger wide" type="button" title="Delete the box; this spot becomes walkable in Play.">Delete (removes collision)</button>
+            </section>
+            <div class="facts">
+              <span>Type</span><output id="object-type"></output>
+              <span>Asset</span><output id="object-asset"></output>
+              <span>Layer</span><output id="object-layer"></output>
+              <span>Order</span><output id="object-order"></output>
+              <span>Size</span><output id="object-size"></output>
+            </div>
+            <fieldset class="position-fields">
+              <legend>Transform · pivot in world pixels</legend>
+              <label>X<input id="object-x" type="number" step="1"></label>
+              <label>Y<input id="object-y" type="number" step="1"></label>
+            </fieldset>
+            <label class="check"><input id="object-collision" type="checkbox"> <span id="object-collision-label">Collision</span></label>
+            <p id="object-play" class="play-note"></p>
+            <p id="object-artwork" class="credit-note"></p>
+            <p id="object-migration" class="migration-note" hidden></p>
+            <button id="delete-object" class="button danger wide" type="button">Delete object</button>
+          </form>
+        </aside>
+      </main>
+      <footer class="asset-dock">
+        <div class="palette-heading"><strong>Asset palette</strong><span>Drag onto the map, or click to arm Place · Floor 1 artwork by Anh Nguyen (PixelLab)</span>
+          <div id="palette-view" class="segmented" role="radiogroup" aria-label="Palette display" data-testid="palette-view">
+            <button type="button" role="radio" data-view="large" title="Large thumbnails">Large</button>
+            <button type="button" role="radio" data-view="medium" title="Medium thumbnails">Medium</button>
+            <button type="button" role="radio" data-view="small" title="Small thumbnails">Small</button>
+            <button type="button" role="radio" data-view="list" title="Compact text list">List</button>
+          </div>
+        </div>
+        <div class="asset-list" id="asset-list" aria-label="Assets"></div>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

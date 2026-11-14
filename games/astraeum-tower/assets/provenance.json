@@ -146,6 +146,66 @@
         "height": 29
       },
       "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "rune.png",
+      "sourceKey": "p_rune",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_rune)",
+      "sha256": "9fc317e7af889b384ee45a3e04f3911f203316407866b7ee6ac1f5e6a8684364",
+      "bytes": 12178,
+      "dimensions": {
+        "width": 114,
+        "height": 113
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "chest.png",
+      "sourceKey": "p_chest",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_chest)",
+      "sha256": "cba276462f034e325518169ca56bcf8138c4711e1cceca34440df5f67d4da1bc",
+      "bytes": 1817,
+      "dimensions": {
+        "width": 40,
+        "height": 37
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "herb.png",
+      "sourceKey": "herbIcon",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.herbIcon)",
+      "sha256": "5f7aa25bb2b89100c9fc92d743643251c9a6b394af6c954e95d807bd75e52151",
+      "bytes": 995,
+      "dimensions": {
+        "width": 32,
+        "height": 38
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "sapphire.png",
+      "sourceKey": "g_sapphire",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.g_sapphire)",
+      "sha256": "3492f3a04f0d007b7bf7ef60640532882c3ed0ef80f6399da1990ddb48f007c2",
+      "bytes": 592,
+      "dimensions": {
+        "width": 20,
+        "height": 28
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "amethyst.png",
+      "sourceKey": "g_amethyst0",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.g_amethyst0)",
+      "sha256": "a436e198ef95c635dc1f6bccf9be845a91416f023746ee88f9de1564299e92aa",
+      "bytes": 747,
+      "dimensions": {
+        "width": 24,
+        "height": 29
+      },
+      "credit": "Anh Nguyen (PixelLab)"
     }
   ]
 }

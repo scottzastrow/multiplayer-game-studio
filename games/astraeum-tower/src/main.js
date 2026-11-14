@@ -1,7 +1,7 @@
 import { createLocalGame, mountLocalPreview } from "@multiplayer-game/local-preview";
-import { floor1Map } from "./map.js";
 import { loadArtwork, towerSkinFactory } from "./skin.js";
 import { astraeumGameModule, towerSettings } from "./game.js";
+import { DEFAULT_FLOOR_DOCUMENT, createFloorMap } from "./project.js";
 
 const root = document.querySelector("#preview");
 const status = document.querySelector("#preview-status");
@@ -12,7 +12,7 @@ const accountId = "aries";
 const game = await createLocalGame({
   moduleFactory: astraeumGameModule,
   settings: towerSettings,
-  map: floor1Map,
+  map: createFloorMap(DEFAULT_FLOOR_DOCUMENT),
   seed: 1,
   roster: [{ accountId, username: "Aries", joinedOrder: 0 }],
   viewer: { accountId, role: "player" }

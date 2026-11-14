@@ -109,6 +109,7 @@ export function moveActor(geometry, grid, feet, delta, {
   halfWidth = 0,
   halfHeight = 0,
   wallFacePx = 0,
+  blockers = [],
   cellSize = TILE_CELL_SIZE,
   wallMarker = "#"
 } = {}) {
@@ -118,6 +119,14 @@ export function moveActor(geometry, grid, feet, delta, {
     if (change === 0) continue;
     const candidate = { ...position, [axis]: position[axis] + change };
     if (isActorBlocked(grid, candidate, { halfWidth, halfHeight, wallFacePx, cellSize, wallMarker })) continue;
+    const actorLeft = candidate.x - halfWidth;
+    const actorRight = candidate.x + halfWidth;
+    const actorTop = candidate.y - halfHeight;
+    const actorBottom = candidate.y;
+    const overlapsWall = blockers.some(wall =>
+      actorRight > wall.x && actorLeft < wall.x + wall.width &&
+      actorBottom > wall.y && actorTop < wall.y + wall.height);
+    if (overlapsWall) continue;
     const center = { x: position.x, y: position.y - 4 };
     const movement = axis === "x" ? { x: change, y: 0 } : { x: 0, y: change };
     const moved = geometry.moveCircle(center, movement, radius);
