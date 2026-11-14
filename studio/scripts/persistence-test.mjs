@@ -263,6 +263,42 @@ try {
   origin = await start(creationPath);
   assert.deepEqual((await request(url(origin, one.projectId, one.mapId))).body.document, edited);
   assert.deepEqual((await request(url(origin, two.projectId, two.mapId))).body.document, two.document);
+  const levelsAddress = `${origin}/api/projects/${one.projectId}/levels`;
+  const mutate = body => request(levelsAddress, "POST", { mapId: one.mapId, ...body });
+  assert.equal((await mutate({ action: "delete" })).status, 409, "last active level cannot be deleted");
+  assert.equal((await mutate({ action: "add", name: " " })).status, 400);
+  const blank = await mutate({ action: "add", name: "Blank" });
+  assert.equal(blank.status, 200);
+  const blankId = blank.body.mapId;
+  assert.notEqual(blankId, one.mapId);
+  const blankDocument = (await request(url(origin, one.projectId, blankId))).body.document;
+  assert.equal(blankDocument.objects.length, 2);
+  assert.deepEqual(blankDocument.bounds, edited.bounds);
+  const duplicate = await mutate({ action: "duplicate", name: "Independent copy" });
+  assert.equal(duplicate.status, 200);
+  const copyId = duplicate.body.mapId;
+  assert.deepEqual((await request(url(origin, one.projectId, copyId))).body.document,
+    { ...edited, id: copyId, name: "Independent copy" });
+  assert.equal((await mutate({ action: "rename", mapId: copyId, name: "Renamed" })).status, 200);
+  assert.deepEqual((await request(url(origin, one.projectId, one.mapId))).body.document, edited);
+  assert.equal((await mutate({ action: "delete" })).status, 409, "starting level requires an explicit replacement");
+  assert.equal((await mutate({ action: "delete", replacementMapId: two.mapId })).status, 409, "replacement cannot belong to another project");
+  assert.equal((await mutate({ action: "start", mapId: two.mapId })).status, 404);
+  assert.equal((await mutate({ action: "recover", mapId: two.mapId })).status, 404);
+  assert.equal((await mutate({ action: "delete", replacementMapId: blankId })).status, 200);
+  assert.equal((await request(url(origin, one.projectId, one.mapId))).status, 409);
+  assert.equal((await request(url(origin, one.projectId, one.mapId), "PUT",
+    { projectId: one.projectId, model: generic.MODEL, document: edited })).status, 409);
+  assert.equal((await mutate({ action: "start" })).status, 409);
+  await stop();
+  origin = await start(creationPath);
+  const restartedLevels = `${origin}/api/projects/${one.projectId}/levels`;
+  assert.equal((await request(restartedLevels)).body.startingMapId, blankId);
+  assert.ok((await request(restartedLevels)).body.levels.find(level => level.mapId === one.mapId).deletedAt);
+  assert.equal((await request(restartedLevels, "POST", { action: "recover", mapId: one.mapId })).status, 200);
+  assert.deepEqual((await request(url(origin, one.projectId, one.mapId))).body.document, edited);
+  assert.deepEqual((await request(url(origin, two.projectId, two.mapId))).body.document, two.document);
+  assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels`)).body.levels.length, 1);
   await stop();
 
   const badPath = resolve(testDir, "unknown.sqlite");

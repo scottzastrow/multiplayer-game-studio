@@ -22,6 +22,61 @@ load keeps the current design. Play and Stop use the selected document.
 IDs are 1-128 lowercase ASCII letters, digits, or hyphens,
 and must start and end with a letter or digit.
 
+## Levels in the selected game
+
+The **Levels** panel above Layers has a labelled **Current level** dropdown
+showing the open level and marking the starting level with `(Start)`.
+Choose a level with the pointer or native keyboard controls to open it;
+dirty edits require Save and Open, Discard and Open, or Cancel. Cancelling
+keeps the original level selected and its unsaved edits intact. The compact
+action buttons target the open, selected level; switching and actions are
+disabled during Play or an operation. Recovery stays in the separate
+**Deleted levels (recover)** collapsible section.
+**Add blank** uses the selected game's existing model and defaults: Generic
+Grid keeps the game's dimensions and two safe starts; Astraeum keeps its
+supported fixed bounds with uniform floor and an Aries start, without
+Floor 1's walls, props, enemies or layout. Project assets remain available,
+and Play uses the existing model-specific settings and adapter.
+
+**Duplicate** copies the saved design into a new stable map ID; subsequent
+edits are independent. **Rename** preserves identity. Add, duplicate, rename
+and delete protect dirty edits with save/discard/cancel; discard is applied
+only after a successful operation. **Set as start** changes the game's saved
+starting-level reference without switching or discarding edits. Play previews
+the selected level, not necessarily the start. No automatic transitions exist.
+
+**Delete** always asks for confirmation, refuses the last active level, and
+requires an explicit active replacement from the same game when deleting the
+start. **Deleted levels (recover)** restores the original map ID and saved
+design, without changing the current start. Deletion sets `maps.deleted_at`;
+it never removes map JSON, assets, migration history or backups. Deleted maps
+cannot be opened, saved over or chosen as start until recovered.
+
+The transactional schema upgrade adds the nullable deletion timestamp and
+`project_levels` starting-map reference, leaving existing project rows,
+document bytes, timestamps and migration backups untouched. Existing games
+start at their lowest map ID, except the known Astraeum Floor 1 takes
+precedence. Unsupported legacy records stay untouched and non-openable.
+SQLite, not generated `project.json`, owns the current level list and start;
+the generated `mapIds` field is only the creation-time receipt.
+
+`npm run studio:levels:smoke` launches disposable storage, Vite and Chrome
+with direct CDP (no IDE-debugger prerequisite). It exercises actual controls
+for blank levels in both models, independent duplication, renaming, choosing
+start, save/reopen after service/page restart, dirty save/discard/cancel,
+confirmed delete/recover, project isolation and selected-level Play/Stop.
+Generic spawn transforms are the tile's top-left corner; Play reports the
+radius-8 player's center, offset by half the 32-pixel cell on both axes.
+The smoke asserts that exact centered position, not the authored tile origin.
+For focused dropdown coverage without the broad restart/isolation workflow,
+run `npm run studio:levels:smoke -- --dropdown-only`. It checks keyboard
+selection, unsaved cancellation, selected-level action targeting, separate
+recovery and Play/Stop disabled states using disposable direct CDP.
+`npm run studio:persistence:test` also covers API invariants and migration
+backup preservation. These commands do not use the user's database or games.
+Level transitions, generation, area-fill tools, audio and shared libraries
+remain separate future work. T042 remains open.
+
 ## New Game
 
 **New Game** sits beside Open Game. Enter the game name and author/credits,
@@ -46,7 +101,7 @@ Creation inserts a `projects` row (name, author, model and creation timestamp)
 and a map row in one SQLite transaction. The filesystem directory is an
 exclusive UUID-suffixed allocation, never an overwritten existing directory.
 `games/<project-id>/project.json` holds identity/credits/model/adapter metadata
-and map IDs; `src/runtime.js` references the shared adapter and `assets/` is
+and creation-time map IDs; `src/runtime.js` references the shared adapter and `assets/` is
 initially empty. There are **no saved map copies** in these directories.
 If creation fails, SQLite rolls back and the newly allocated directory is
 removed. Save/discard/cancel protects the current dirty map before creation;
@@ -122,6 +177,13 @@ Game export and PixelLab API integration are separate milestones. No engine-kit
 rebuild, publication or deployment is involved; T042 remains open.
 
 ## Local API
+
+`GET /api/projects/{projectId}/levels` returns that game's active and deleted
+levels and `startingMapId`. `POST` at the same path accepts `action`, `mapId`
+and, for add/duplicate/rename, `name`. Actions are `add`, `duplicate`, `rename`,
+`start`, `delete` and `recover`; deleting the start additionally requires
+`replacementMapId`. Mutations and invariant checks share one SQLite write
+transaction. Map IDs always resolve within the project in the URL.
 
 The loopback API lists saved maps at `GET /api/projects` and uses `GET` and `PUT` at
 `/api/projects/{projectId}/maps/{mapId}`. A PUT contains `projectId` and

@@ -292,6 +292,20 @@ export function createFloorDocument(grid = FLOOR1_GRID) {
   return validateFloorDocument(design);
 }
 
+export function createBlankDocument(id, name) {
+  const design = emptyDesign();
+  design.id = id;
+  design.name = name;
+  for (let y = 0; y < FLOOR1_ROWS; y++) {
+    for (let x = 0; x < FLOOR1_COLUMNS; x++) {
+      design.objects.push(createDesignObject(`terrain-${x}-${y}`, "floor-cobblestone",
+        { x: x * MAP_CELL_SIZE, y: y * MAP_CELL_SIZE }, design.objects.length));
+    }
+  }
+  design.objects.push(createDesignObject("aries-start", "spawn-aries", { x: 80, y: 80 }, 0));
+  return validateFloorDocument(design);
+}
+
 function validateFormatOne(document) {
   if (!document || document.formatVersion !== 1 || document.id !== DESIGN_ID ||
       document.name !== DESIGN_NAME || document.cellSize !== MAP_CELL_SIZE ||
@@ -422,7 +436,8 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
     fail(`Unsupported Floor 1 design format ${String(document.formatVersion)}.`);
   }
   if (typeof document.id !== "string" || !IDENTIFIER.test(document.id) ||
-      document.name !== DESIGN_NAME || document.cellSize !== MAP_CELL_SIZE) {
+      typeof document.name !== "string" || !document.name.trim() || document.name.length > 64 ||
+      /[\u0000-\u001f\u007f]/.test(document.name) || document.cellSize !== MAP_CELL_SIZE) {
     fail("The Floor 1 design identity is invalid.");
   }
   exactKeys(document.bounds, ["width", "height"], "Design bounds");
@@ -463,7 +478,7 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   return {
     formatVersion: DESIGN_FORMAT_VERSION,
     id: document.id,
-    name: DESIGN_NAME,
+    name: document.name,
     cellSize: MAP_CELL_SIZE,
     bounds: { ...FLOOR1_BOUNDS },
     layers: DESIGN_LAYERS.map(layer => ({ ...layer })),

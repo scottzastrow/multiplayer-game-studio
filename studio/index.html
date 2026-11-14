@@ -102,6 +102,22 @@
       </header>
       <main class="workspace">
         <aside class="panel hierarchy">
+          <section aria-label="Levels in selected game">
+            <div class="panel-title">Levels</div>
+            <div class="level-picker">
+              <label for="level-select">Current level</label>
+              <select id="level-select" disabled></select>
+            </div>
+            <div class="level-actions">
+              <button id="level-add" class="button secondary" type="button" disabled>Add blank</button>
+              <button id="level-duplicate" class="button secondary" type="button" disabled>Duplicate</button>
+              <button id="level-rename" class="button secondary" type="button" disabled>Rename</button>
+              <button id="level-start" class="button secondary" type="button" disabled>Set as start</button>
+              <button id="level-delete" class="button danger" type="button" disabled>Delete</button>
+            </div>
+            <details id="deleted-levels"><summary>Deleted levels (recover)</summary><div id="level-recovery"></div></details>
+            <p id="level-message" role="status" aria-live="polite"></p>
+          </section>
           <div class="panel-title">Layers</div>
           <div id="layer-list" class="layer-list" aria-label="Design layers"></div>
           <div class="panel-title">Hierarchy <span id="object-count"></span></div>
@@ -160,6 +176,23 @@
           </form>
         </aside>
       </main>
+      <dialog id="level-dialog" aria-labelledby="level-title">
+        <form id="level-form">
+          <h2 id="level-title"></h2>
+          <p id="level-description"></p>
+          <label id="level-name-field">Level name<input id="level-name" maxlength="64" required></label>
+          <label id="level-replacement-field" hidden>Replacement starting level
+            <select id="level-replacement" required></select>
+          </label>
+          <p id="level-unsaved" hidden>Unsaved edits: Save and continue, or discard only after the operation succeeds. Duplicate copies the saved design.</p>
+          <p id="level-error" role="alert"></p>
+          <div class="dialog-actions">
+            <button id="level-submit" class="button primary" type="submit">Continue</button>
+            <button id="level-discard" class="button danger" type="button" hidden>Discard and continue</button>
+            <button id="level-cancel" class="button secondary" type="button">Cancel</button>
+          </div>
+        </form>
+      </dialog>
       <footer class="asset-dock">
         <div class="palette-heading"><strong>Asset palette</strong><span id="palette-credit">Floor 1 artwork by Anh Nguyen (PixelLab)</span>
           <button id="import-assets" class="button secondary" type="button" disabled>Import Assets</button>

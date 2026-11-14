@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import {
   DESIGN_FORMAT_VERSION,
+  createBlankDocument,
   migrateFloorDocumentV1,
   validateFloorDocument
 } from "../games/astraeum-tower/src/project.js";
@@ -162,6 +163,21 @@ function initializeStorage() {
     if (!database.prepare("PRAGMA table_info(maps)").all().some(column => column.name === "model")) {
       database.exec("ALTER TABLE maps ADD COLUMN model TEXT");
     }
+    if (!database.prepare("PRAGMA table_info(maps)").all().some(column => column.name === "deleted_at")) {
+      database.exec("ALTER TABLE maps ADD COLUMN deleted_at TEXT");
+    }
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS project_levels (
+        project_id TEXT PRIMARY KEY,
+        starting_map_id TEXT NOT NULL,
+        FOREIGN KEY (project_id, starting_map_id) REFERENCES maps(project_id, map_id)
+      );
+      INSERT INTO project_levels (project_id, starting_map_id)
+        SELECT project_id, COALESCE(MAX(CASE WHEN project_id = 'astraeum-tower'
+          AND map_id = 'astraeum-tower-floor-1' THEN map_id END), MIN(map_id))
+        FROM maps WHERE deleted_at IS NULL
+        GROUP BY project_id ON CONFLICT(project_id) DO NOTHING;
+    `);
     database.prepare("UPDATE maps SET model = ? WHERE project_id = ? AND map_id = ? AND model IS NULL")
       .run(ASTRAEUM_MODEL, ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID);
     database.exec("COMMIT");
@@ -173,8 +189,8 @@ function initializeStorage() {
 initializeStorage();
 database.exec("PRAGMA foreign_keys = ON");
 
-const getMap = database.prepare("SELECT document_json, updated_at, model FROM maps WHERE project_id = ? AND map_id = ?");
-const listMaps = database.prepare("SELECT project_id, map_id, document_json, updated_at, model FROM maps ORDER BY project_id, map_id");
+const getMap = database.prepare("SELECT document_json, updated_at, model, deleted_at FROM maps WHERE project_id = ? AND map_id = ?");
+const listMaps = database.prepare("SELECT project_id, map_id, document_json, updated_at, model FROM maps WHERE deleted_at IS NULL ORDER BY project_id, map_id");
 const saveMap = database.prepare(`
   INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(project_id, map_id) DO UPDATE SET document_json = excluded.document_json, updated_at = excluded.updated_at,
@@ -507,6 +523,7 @@ function createProject(input) {
       .run(projectId, values.name, nameKey, values.author, generic.MODEL, createdAt);
     database.prepare("INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)")
       .run(projectId, mapId, JSON.stringify(document), createdAt, generic.MODEL);
+    ensureStartingLevel(projectId, mapId);
     database.exec("COMMIT");
     transaction = false;
     return { projectId, mapId, model: generic.MODEL, project: metadata, document, updatedAt: createdAt, migrations: [] };
@@ -516,6 +533,86 @@ function createProject(input) {
     } finally {
       if (transaction) database.exec("ROLLBACK");
     }
+    throw error;
+  }
+}
+
+function ensureStartingLevel(projectId, mapId) {
+  database.prepare("INSERT INTO project_levels VALUES (?, ?) ON CONFLICT(project_id) DO NOTHING")
+    .run(projectId, mapId);
+}
+
+function levelList(projectId) {
+  const startingMapId = database.prepare("SELECT starting_map_id FROM project_levels WHERE project_id = ?")
+    .get(projectId)?.starting_map_id ?? null;
+  const levels = database.prepare("SELECT * FROM maps WHERE project_id = ? ORDER BY updated_at, map_id").all(projectId)
+    .map(row => {
+      const reason = unsupportedReason(row, projectId, row.map_id);
+      const name = reason === null ? JSON.parse(row.document_json).name : row.map_id;
+      return { mapId: row.map_id, name, model: row.model, deletedAt: row.deleted_at,
+        starting: startingMapId === row.map_id, supported: reason === null, reason };
+    });
+  return { projectId, startingMapId, levels };
+}
+
+function levelError(message, status = 409) {
+  const error = new Error(message);
+  error.status = status;
+  throw error;
+}
+
+function changeLevels(projectId, input) {
+  if (!input || !isProjectMapId(input.mapId)) levelError("A valid level ID is required.", 400);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const source = getMap.get(projectId, input.mapId);
+    if (!source) levelError("Level not found in this game.", 404);
+    const problem = unsupportedReason(source, projectId, input.mapId);
+    if (problem) levelError(problem);
+    const project = database.prepare("SELECT model FROM projects WHERE project_id = ?").get(projectId);
+    if (project && source.model !== project.model) levelError("The level model does not match this game.");
+    if (source.deleted_at && input.action !== "recover") levelError("Recover this level before changing it.");
+    const now = new Date().toISOString();
+    let mapId = input.mapId;
+    if (["add", "duplicate", "rename"].includes(input.action)) {
+      if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 64 ||
+          /[\u0000-\u001f\u007f]/.test(input.name)) levelError("Level name must be nonblank, at most 64 characters, without control characters.", 400);
+      const name = input.name.trim();
+      const original = JSON.parse(source.document_json);
+      if (input.action === "rename") {
+        saveMap.run(projectId, mapId, JSON.stringify({ ...original, name }), now, source.model);
+      } else {
+        mapId = `map-${randomUUID()}`;
+        const document = input.action === "duplicate" ? { ...original, id: mapId, name }
+          : source.model === generic.MODEL ? generic.createDocument(mapId, name, original.bounds)
+          : createBlankDocument(mapId, name);
+        saveMap.run(projectId, mapId, JSON.stringify(document), now, source.model);
+      }
+    } else if (input.action === "start") {
+      database.prepare("UPDATE project_levels SET starting_map_id = ? WHERE project_id = ?").run(mapId, projectId);
+    } else if (input.action === "delete") {
+      const active = database.prepare("SELECT map_id FROM maps WHERE project_id = ? AND deleted_at IS NULL").all(projectId);
+      if (active.length <= 1) levelError("A game must keep at least one active level.");
+      const starting = database.prepare("SELECT starting_map_id FROM project_levels WHERE project_id = ?").get(projectId);
+      if (starting?.starting_map_id === mapId) {
+        const replacement = getMap.get(projectId, input.replacementMapId ?? "");
+        if (!replacement || replacement.deleted_at || input.replacementMapId === mapId ||
+            unsupportedReason(replacement, projectId, input.replacementMapId)) {
+          levelError("Choose a valid active replacement starting level in this game.");
+        }
+        database.prepare("UPDATE project_levels SET starting_map_id = ? WHERE project_id = ?")
+          .run(input.replacementMapId, projectId);
+      }
+      database.prepare("UPDATE maps SET deleted_at = ? WHERE project_id = ? AND map_id = ?").run(now, projectId, mapId);
+    } else if (input.action === "recover") {
+      if (!source.deleted_at) levelError("This level is already active.");
+      database.prepare("UPDATE maps SET deleted_at = NULL WHERE project_id = ? AND map_id = ?").run(projectId, mapId);
+    } else levelError("Unknown level action.", 400);
+    const result = { ...levelList(projectId), mapId };
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    database.exec("ROLLBACK");
     throw error;
   }
 }
@@ -531,6 +628,25 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = new URL(request.url, "http://127.0.0.1").pathname;
+  const levelsMatch = /^\/api\/projects\/([^/]+)\/levels$/.exec(path);
+  if (levelsMatch) {
+    const projectId = levelsMatch[1];
+    if (!isProjectMapId(projectId)) {
+      send(response, 400, { error: "Invalid project ID." });
+      return;
+    }
+    try {
+      if (!projectExists(projectId)) levelError("Game not found.", 404);
+      if (request.method === "GET") send(response, 200, levelList(projectId));
+      else if (request.method === "POST") send(response, 200, changeLevels(projectId, await readJson(request)));
+      else send(response, 405, { error: "Method not allowed." });
+    } catch (error) {
+      console.error(`Level request failed for ${projectId}:`, error);
+      send(response, error.status ?? (error instanceof SyntaxError || error instanceof TypeError ? 400 : 500),
+        { error: error.message });
+    }
+    return;
+  }
   if (path === "/api/projects") {
     if (request.method === "POST") {
       try {
@@ -551,6 +667,8 @@ const server = createServer(async (request, response) => {
         const reason = unsupportedReason(row, row.project_id, row.map_id);
         const canAdopt = row.model === null && documentProblem(row, row.project_id, row.map_id) === null;
         return { projectId: row.project_id, mapId: row.map_id, model: row.model,
+          name: reason === null ? JSON.parse(row.document_json).name : row.map_id,
+          starting: database.prepare("SELECT starting_map_id FROM project_levels WHERE project_id = ?").get(row.project_id)?.starting_map_id === row.map_id,
           project: database.prepare("SELECT name, author FROM projects WHERE project_id = ?").get(row.project_id) ?? null,
           updatedAt: row.updated_at, supported: reason === null, canAdopt, reason };
       });
@@ -653,6 +771,11 @@ const server = createServer(async (request, response) => {
       database.exec("BEGIN IMMEDIATE");
       active = true;
       const row = getMap.get(projectId, mapId);
+      if (row?.deleted_at) {
+        database.exec("ROLLBACK");
+        send(response, 409, { error: "This level is deleted. Recover it from the Levels panel." });
+        return;
+      }
       if (!row || (row.model !== null && row.model !== ASTRAEUM_MODEL)) {
         database.exec("ROLLBACK");
         send(response, 409, { error: "Only an untyped saved Astraeum-compatible map can be assigned this model." });
@@ -678,6 +801,10 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET") {
     try {
       const row = getMap.get(projectId, mapId);
+      if (row?.deleted_at) {
+        send(response, 409, { error: "This level is deleted. Recover it from the Levels panel." });
+        return;
+      }
       const migrations = migrationsFor(projectId, mapId);
       const reason = row && unsupportedReason(row, projectId, mapId);
       if (reason) {
@@ -725,6 +852,11 @@ const server = createServer(async (request, response) => {
       database.exec("BEGIN IMMEDIATE");
       inTransaction = true;
       const existing = getMap.get(projectId, mapId);
+      if (existing?.deleted_at) {
+        database.exec("ROLLBACK");
+        send(response, 409, { error: "Cannot save a deleted level. Recover it first." });
+        return;
+      }
       const project = database.prepare("SELECT model FROM projects WHERE project_id = ?").get(projectId);
       if (project && project.model !== parsed.model) {
         database.exec("ROLLBACK");
@@ -743,6 +875,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       saveMap.run(projectId, mapId, JSON.stringify(document), new Date().toISOString(), parsed.model);
+      ensureStartingLevel(projectId, mapId);
       database.exec("COMMIT");
     } catch (error) {
       if (inTransaction) database.exec("ROLLBACK");

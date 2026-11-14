@@ -52,6 +52,22 @@ button:disabled { opacity: .48; cursor: default; }
 .workspace { display: grid; grid-template-columns: 220px minmax(300px, 1fr) 238px; min-height: 0; }
 .panel { z-index: 2; min-width: 0; overflow: auto; background: var(--panel); }
 .hierarchy { border-right: 1px solid #17191e; }
+.level-picker { display: grid; gap: 4px; padding: 8px 8px 0; }
+.level-picker label { color: var(--muted); }
+#level-select { width: 100%; min-width: 0; padding: 5px; font: inherit; color: inherit; background: #21242a; border: 1px solid #59616e; border-radius: 4px; }
+#level-select:disabled { opacity: .48; cursor: default; }
+#level-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.level-entry { display: block; width: 100%; padding: 7px 12px; border: 0; text-align: left; overflow-wrap: anywhere; background: transparent; }
+.level-actions { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px; }
+.level-actions .button { padding: 4px 7px; }
+#deleted-levels { padding: 0 10px; }
+#level-message { margin: 6px 10px; color: #ffaaa8; }
+#level-dialog { width: min(480px, 90vw); color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
+#level-dialog::backdrop { background: #000a; }
+#level-form { display: grid; gap: 10px; }
+#level-form label { display: grid; gap: 4px; }
+#level-form input, #level-form select { width: 100%; padding: 7px; color: inherit; background: #21242a; border: 1px solid #59616e; border-radius: 4px; }
+#level-error { color: #ffaaa8; }
 .inspector { border-left: 1px solid #17191e; }
 .panel-title { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 11px 12px; color: #d3d8e0; font-weight: 700; background: var(--panel); border-bottom: 1px solid var(--line); }
 #object-count { color: var(--muted); font-weight: 400; }

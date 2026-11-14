@@ -12,6 +12,7 @@
     "studio:dev": "node studio/start.mjs",
     "studio:smoke": "node studio/scripts/browser-smoke.mjs",
     "studio:persistence:test": "node studio/scripts/persistence-test.mjs",
+    "studio:levels:smoke": "node studio/scripts/levels-smoke.mjs",
     "studio:assets:test": "node studio/scripts/assets-test.mjs",
     "verify": "npm run verify --prefix games/sample",
     "build": "npm run build --prefix games/sample",

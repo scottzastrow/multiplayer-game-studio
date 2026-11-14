@@ -106,3 +106,30 @@ is part of this milestone.
 - Use only installed public runtime APIs; report a blocker instead of importing
   private engine modules.
 - Keep all changes local and uncommitted; leave T042 open.
+
+## Scoped level-management increment
+
+- Add a Levels panel to the current workbench, scoped strictly to the selected
+  project/game. List/open active levels, add blank, duplicate with a new stable
+  map ID and independent saved state, rename, and select the starting level.
+- Blank levels use that game's existing supported model, project asset catalog
+  and settings defaults. Generic Grid uses the game's dimensions and safe
+  starts; Astraeum uses uniform floor and a safe Aries start, not Floor 1's
+  authored layout. Play/Stop uses the selected level's existing adapter.
+- Protect dirty edits on switch and before operations that replace the open
+  document: save/discard/cancel, with no discard on a failed operation.
+- Require one or more active levels and an active starting-level reference.
+  Deleting the start requires explicitly choosing another valid active level
+  in that same game. Confirm every delete and retain the saved design for
+  recovery with the original ID. Reject opening/saving deleted levels until
+  recovered; never alter another game's maps or asset catalog.
+- SQLite remains authoritative for saved designs, current level membership
+  and starting-level selection. Extend schemas transactionally without
+  rewriting existing project rows, design bytes or migration backups/history.
+  Generated metadata is a creation receipt, not a second map authority.
+- Verify actual UI controls with disposable data and direct CDP, without
+  requiring an IDE debugger: add in both models, duplicate, rename, choose
+  start, protect dirty edits, save/reopen after restart, delete/recover,
+  isolation and Play/Stop on the selected level. Run affected checks once and
+  stop on failure. Preserve user edits/databases; no push, deployment, commit
+  or kit rebuild. T042 stays open.

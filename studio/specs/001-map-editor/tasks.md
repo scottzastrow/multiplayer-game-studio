@@ -59,5 +59,16 @@
   standard-gamepad movement/aim/attack/dodge, UI focus, blur and disconnect;
   document that physical-controller testing remains pending.
 - [ ] Verify controls with a physical controller.
+- [x] Add a selected-game Levels panel with open, model-specific blank creation,
+  independent stable-ID duplication, rename and saved starting-level selection.
+- [x] Add dirty save/discard/cancel protection, confirmed soft-delete/recovery,
+  last-active-level protection and explicit same-game replacement for the start.
+- [x] Transactionally extend SQLite level metadata without rewriting existing
+  project designs, migration history or backups; retain existing Play adapters.
+- [x] Verify level workflows through disposable direct-CDP UI controls, including
+  service restart/reopen, both models, dirty edits, independent saved states,
+  delete/recover, project isolation and selected-level Play/Stop.
+- [ ] Level transitions, generation, area-fill tools, audio and shared libraries
+  remain separate future work.
 - [ ] Game export and PixelLab API integration remain separate milestones.
 - [ ] T042 remains open (no publication/deployment or kit rebuild).

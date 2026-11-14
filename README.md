@@ -85,7 +85,13 @@ Astraeum. Generic Play follows the player at 1:1 world-to-CSS-pixel scale;
 smaller worlds center without scaling. Duplicate names are rejected and
 unsaved edits are protected.
 Save/Ctrl+S writes the selected map to SQLite; Open Game reopens it after
-restart. Play includes unsaved edits and Stop returns without saving movement.
+restart. The workbench **Levels** panel lists only the selected game's levels:
+open, add blank, duplicate, rename, choose the starting level, and confirm
+soft-delete with recovery. Switching protects unsaved edits. At least one
+active level must remain; deleting the start requires a replacement in the
+same game. Blank levels use the existing model, assets and settings, never a
+copy of Floor 1. Play includes unsaved edits from the selected level and Stop
+returns without saving movement.
 Generated `games/<project-id>/` directories contain code, assets and metadata,
 not duplicate maps. **Import Assets** accepts PNGs and PixelLab ZIPs into
 project-scoped catalogs; source bytes and credits are preserved, and imported
@@ -94,6 +100,11 @@ transparent margins can make the visible artwork look smaller than its placed
 bounds. Game export and PixelLab API integration remain separate milestones.
 See `studio/README.md` for safety limits and verification details. T042 stays
 open.
+
+`npm run studio:levels:smoke` verifies level management through the actual UI
+using direct CDP, disposable SQLite/files and its own Chrome profile; it does
+not require an IDE debugger. Level transitions, generation, area-fill tools,
+audio and shared libraries remain future work.
 
 ### Kit provenance and controller support
 

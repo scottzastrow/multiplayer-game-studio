@@ -79,6 +79,11 @@ const state = {
   saving: false,
   switching: false,
   creating: false,
+  levelBusy: false,
+  levels: [],
+  startingMapId: null,
+  levelAction: null,
+  persisted: false,
   model: ASTRAEUM_MODEL,
   openSelection: null,
   pendingSave: false,
@@ -300,6 +305,19 @@ function refreshChrome({ structure = true } = {}) {
   $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
   $("#import-assets").disabled = !loaded || isPlaying() || state.saving || state.switching || state.creating;
   $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork;
+  for (const id of ["save", "play", "open-game", "new-game", "import-assets"]) {
+    $(`#${id}`).disabled ||= state.levelBusy || state.switching;
+  }
+  const levelDisabled = !loaded || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy;
+  $(".workspace").inert = state.switching || state.creating || state.levelBusy;
+  $("#asset-list").inert = state.switching || state.creating || state.levelBusy;
+  for (const action of ["add", "duplicate", "rename", "start", "delete"]) {
+    $(`#level-${action}`).disabled = levelDisabled ||
+      (action === "start" && state.startingMapId === state.identity.mapId) ||
+      (action === "delete" && state.levels.filter(level => !level.deletedAt).length <= 1);
+  }
+  $("#level-select").disabled = levelDisabled;
+  $("#level-recovery").inert = levelDisabled;
   $("#undo").disabled = state.undo.length === 0 || isPlaying();
   $("#redo").disabled = state.redo.length === 0 || isPlaying();
   $("#zoom-label").textContent = `${Math.round(state.zoom * 100)}%`;
@@ -1101,6 +1119,8 @@ async function save() {
       throw new Error("The saved design identity did not match the requested project and map.");
     }
     state.savedJson = JSON.stringify(validateFloorDocument(payload.document));
+    state.persisted = true;
+    await refreshLevels();
     setStatus("Map saved to the local Studio database.");
     return true;
   } catch (error) {
@@ -1289,7 +1309,8 @@ function configureEvents() {
   }, { passive: false });
   canvas.addEventListener("contextmenu", event => event.preventDefault());
   window.addEventListener("keydown", event => {
-    if ($("#open-dialog").open || $("#new-dialog").open || $("#player-settings-dialog").open) return;
+    if (state.switching || state.creating || state.levelBusy ||
+        document.querySelector("dialog[open]")) return;
     if (ignoredShortcutTarget(event.target)) return;
     if (isPlaying()) {
       if (event.code === "Escape" && state.play.phase === "playing") stop();
@@ -1358,6 +1379,7 @@ function configureEvents() {
   $("#save").addEventListener("click", save);
   $("#open-game").addEventListener("click", showOpenDialog);
   configureNewGame();
+  configureLevels();
   configureAssetImport();
   $("#open-cancel").addEventListener("click", () => $("#open-dialog").close());
   $("#switch-cancel").addEventListener("click", () => showSwitchConfirmation(false));
@@ -1466,7 +1488,7 @@ async function showOpenDialog() {
       radio.disabled = !entry.supported && !entry.canAdopt;
       const text = document.createElement("span");
       const title = document.createElement("strong");
-      title.textContent = entry.project ? `${entry.project.name} / ${entry.mapId}` : `${entry.projectId} / ${entry.mapId}`;
+      title.textContent = `${entry.project?.name ?? entry.projectId} / ${entry.name ?? entry.mapId}${entry.starting ? " (Start)" : ""}`;
       const details = document.createElement("small");
       details.textContent = entry.supported ? entry.model === generic.MODEL
         ? `Generic Grid v1 · ${entry.project?.author ?? ""}` : "Astraeum Floor model" : entry.canAdopt
@@ -1498,6 +1520,143 @@ function requestSwitch(saveFirst = false) {
     $("#open-list").inert = true;
   } else {
     switchToSelected(saveFirst);
+  }
+}
+
+const levelsUrl = projectId => `/api/projects/${encodeURIComponent(projectId)}/levels`;
+
+async function refreshLevels() {
+  const projectId = state.identity.projectId;
+  const response = await fetch(levelsUrl(projectId));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Could not load levels.");
+  if (state.identity.projectId !== projectId) return;
+  state.levels = payload.levels;
+  state.startingMapId = payload.startingMapId;
+  $("#level-message").textContent = "";
+  $("#level-select").replaceChildren();
+  $("#level-recovery").replaceChildren();
+  for (const level of state.levels) {
+    if (!level.deletedAt) {
+      const option = new Option(`${level.name}${level.starting ? " (Start)" : ""}`, level.mapId);
+      option.dataset.mapId = level.mapId;
+      option.disabled = !level.supported;
+      option.title = level.reason ?? level.mapId;
+      $("#level-select").append(option);
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "level-entry";
+    button.dataset.mapId = level.mapId;
+    button.textContent = `${level.name}${level.starting ? " (Start)" : ""}${level.deletedAt ? " - Recover" : ""}`;
+    button.disabled = !level.supported;
+    button.title = level.reason ?? level.mapId;
+    button.addEventListener("click", () => {
+      runLevelAction("recover", { mapId: level.mapId });
+    });
+    $("#level-recovery").append(button);
+  }
+  if (!state.persisted && !state.levels.length && state.document) {
+    $("#level-select").append(new Option(`${state.document.name} (not yet saved)`, state.identity.mapId));
+  }
+  $("#level-select").value = state.identity.mapId;
+  refreshChrome({ structure: false });
+}
+
+function configureLevels() {
+  $("#level-select").addEventListener("change", () => {
+    const mapId = $("#level-select").value;
+    $("#level-select").value = state.identity.mapId;
+    const level = state.levels.find(level => level.mapId === mapId && !level.deletedAt && level.supported);
+    if (!level || mapId === state.identity.mapId) return;
+    state.openSelection = { projectId: state.identity.projectId, mapId };
+    $("#open-list").replaceChildren();
+    openMessage(`Open ${level.name}`);
+    showSwitchConfirmation(dirty());
+    $("#open-dialog").showModal();
+    if (!dirty()) requestSwitch();
+  });
+  for (const action of ["add", "duplicate", "rename", "delete"]) {
+    $(`#level-${action}`).addEventListener("click", () => {
+      state.levelAction = action;
+      const deleting = action === "delete";
+      $("#level-title").textContent = { add: "Add blank level", duplicate: "Duplicate level", rename: "Rename level", delete: "Delete level?" }[action];
+      $("#level-description").textContent = deleting
+        ? "The saved design stays in SQLite and can be recovered from Deleted levels."
+        : action === "add" ? "Uses this game's model, project assets and default settings, with safe starts and no copied layout."
+        : action === "duplicate" ? "Creates an independent saved design with a new stable map ID." : "Changes this level's name, not its ID.";
+      $("#level-name-field").hidden = deleting;
+      $("#level-name").disabled = deleting;
+      $("#level-name").value = action === "add" ? "New level" : action === "duplicate"
+        ? `${state.document.name.slice(0, 59)} copy` : state.document.name;
+      const needsReplacement = deleting && state.startingMapId === state.identity.mapId;
+      $("#level-replacement-field").hidden = !needsReplacement;
+      $("#level-replacement").disabled = !needsReplacement;
+      $("#level-replacement").replaceChildren(new Option("Choose a replacement", ""),
+        ...state.levels.filter(level => !level.deletedAt && level.supported && level.mapId !== state.identity.mapId)
+          .map(level => new Option(level.name, level.mapId)));
+      $("#level-unsaved").hidden = !dirty();
+      $("#level-discard").hidden = !dirty();
+      $("#level-submit").textContent = dirty() ? "Save and continue" : deleting ? "Confirm delete" : "Continue";
+      $("#level-error").textContent = "";
+      $("#level-dialog").showModal();
+    });
+  }
+  $("#level-start").addEventListener("click", () => runLevelAction("start"));
+  $("#level-cancel").addEventListener("click", () => $("#level-dialog").close());
+  $("#level-dialog").addEventListener("cancel", event => {
+    if (state.levelBusy) event.preventDefault();
+  });
+  $("#level-form").addEventListener("submit", event => {
+    event.preventDefault();
+    submitLevelAction(true);
+  });
+  $("#level-discard").addEventListener("click", () => {
+    if ($("#level-form").reportValidity()) submitLevelAction(false);
+  });
+}
+
+function submitLevelAction(saveFirst) {
+  runLevelAction(state.levelAction, {
+    name: $("#level-name").value,
+    replacementMapId: $("#level-replacement").disabled ? undefined : $("#level-replacement").value
+  }, saveFirst);
+}
+
+async function runLevelAction(action, values = {}, saveFirst = false) {
+  if (state.levelBusy || state.saving || state.switching || isPlaying()) return;
+  state.levelBusy = true;
+  $("#level-form").inert = true;
+  refreshChrome({ structure: false });
+  try {
+    if ((!state.persisted || (saveFirst && dirty())) && !(await save())) {
+      throw new Error("Could not save the current design; it remains open.");
+    }
+    const response = await fetch(levelsUrl(state.identity.projectId), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, mapId: state.identity.mapId, ...values })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? "Level operation failed.");
+    if (!["start", "recover"].includes(action)) {
+      const mapId = action === "delete"
+        ? result.startingMapId : result.mapId;
+      const identity = { projectId: state.identity.projectId, mapId };
+      const { payload, document: design, assets } = await fetchDesign(identity);
+      applyDesign(identity, payload, design, assets);
+    }
+    await refreshLevels();
+    $("#level-dialog").close();
+    setStatus(action === "recover" ? "Level recovered with its saved ID and design." : "Level changes saved in SQLite.");
+  } catch (error) {
+    $("#level-error").textContent = error.message;
+    $("#level-message").textContent = error.message;
+    setStatus(`Level operation failed: ${error.message}`, true);
+  } finally {
+    state.levelBusy = false;
+    $("#level-form").inert = false;
+    refreshChrome({ structure: false });
   }
 }
 
@@ -1763,6 +1922,9 @@ function applyDesign(identity, payload, design, assets) {
     $("#migration-notice").classList.toggle("error", migration.error);
   }
   state.identity = identity;
+  state.persisted = Boolean(payload.document);
+  state.levels = [];
+  state.startingMapId = null;
   state.document = design;
   state.savedJson = JSON.stringify(state.document);
   state.selectedId = null;
@@ -1773,8 +1935,10 @@ function applyDesign(identity, payload, design, assets) {
   state.hierarchyKey = "";
   $("#play-error").hidden = true;
   studio.dataset.playState = "idle";
-  $("#project-name").textContent = identity.projectId === ASTRAEUM_PROJECT_ID && identity.mapId === ASTRAEUM_FLOOR_1_MAP_ID
-    ? "Astraeum Tower · Floor 1" : payload.project ? payload.project.name : `${identity.projectId} · ${identity.mapId}`;
+  $("#project-name").textContent = payload.project
+    ? payload.project.name === design.name ? payload.project.name : `${payload.project.name} · ${design.name}`
+    : identity.projectId === ASTRAEUM_PROJECT_ID && identity.mapId === ASTRAEUM_FLOOR_1_MAP_ID && design.name === "Damp Corridors"
+      ? "Astraeum Tower · Floor 1" : `${identity.projectId} · ${identity.mapId} · ${design.name}`;
   $("#project-name").title = payload.project ? `Author/credits: ${payload.project.author}\n${identity.projectId} / ${identity.mapId}\n${state.model}` : state.model;
   document.title = `Web Studio - ${$("#project-name").textContent}`;
   canvas.setAttribute("aria-label", `${$("#project-name").textContent} map editor`);
@@ -1789,6 +1953,9 @@ function applyDesign(identity, payload, design, assets) {
       ? "Reopened Floor 1 — upgraded to the object format (see Inspector)."
       : "Reopened the locally saved design."
     : "Opened the original Floor 1 map (not yet saved).");
+  refreshLevels().catch(error => {
+    $("#level-message").textContent = `Could not load levels: ${error.message}`;
+  });
 }
 
 async function switchToSelected(saveFirst = false) {
