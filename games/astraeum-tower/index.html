@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#17121f">
+    <title>Astraeum Tower — First Floor</title>
+    <style>
+      :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #17121f; color: #eee8f5; }
+      * { box-sizing: border-box; }
+      body { height: 100dvh; margin: 0; overflow: hidden; }
+      main { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 8px; width: 100%; height: 100%; padding: 12px 16px; }
+      header { min-width: 0; }
+      h1 { margin: 0 0 2px; font-size: clamp(1.25rem, 3vw, 1.8rem); line-height: 1.2; }
+      header p { margin: 0; color: #c6b8d5; font-size: .9rem; }
+      .eyebrow { color: #d3a9ff; font-size: .82rem; letter-spacing: .12em; text-transform: uppercase; }
+      #preview-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+      #preview { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #0b0910; }
+      .local-preview-world { position: absolute; inset: 0; min-width: 0; min-height: 0; overflow: hidden; outline: 1px solid #625477; outline-offset: -1px; }
+      #preview canvas { display: block; background: #0b0910; image-rendering: pixelated; }
+      #preview canvas:focus-visible { outline: 2px solid #d3a9ff; outline-offset: 3px; }
+      .local-preview-hud { position: absolute; z-index: 1; inset: 8px 8px auto; color: #e5d7f2; font-variant-numeric: tabular-nums; pointer-events: none; }
+      .local-preview-controls { position: absolute; z-index: 2; right: 8px; bottom: 8px; left: 8px; max-height: 44%; overflow: auto; padding: 8px; border: 1px solid #625477; border-radius: 8px; background: rgb(23 18 31 / 90%); backdrop-filter: blur(4px); }
+      .local-preview-controls p { margin: 0 0 6px; font-size: .8rem; }
+      .pending { margin: 0; padding: 6px 10px; border-left: 3px solid #d3a9ff; background: #211a2b; }
+      .pending h2 { margin: 0 0 2px; font-size: .9rem; }
+      .pending p, footer { margin: 0; color: #c6b8d5; font-size: .78rem; }
+      footer code { white-space: nowrap; }
+      @media (max-height: 540px) {
+        main { gap: 4px; padding: 6px 10px; }
+        header p, .pending, footer { display: none; }
+        .local-preview-controls { max-height: 36%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Astraeum Tower · playable foundation</p>
+        <h1>Floor 1: Damp Corridors</h1>
+        <p>Move with the arrow keys or WASD. Adjust world lighting in the screen-space panel.</p>
+      </header>
+      <p id="preview-status" role="status">Loading the local game…</p>
+      <div id="preview"></div>
+      <section class="pending" aria-labelledby="pending-title">
+        <h2 id="pending-title">Not implemented in this slice</h2>
+        <p>Combat, loot, chest interactions, and floor completion are pending. Slimes and chest locations remain in the original map data but have no gameplay behavior.</p>
+      </section>
+      <footer>Character, environment, and Floor 1 art by Anh Nguyen (PixelLab). See <code>assets/provenance.json</code> for asset sources and hashes.</footer>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
