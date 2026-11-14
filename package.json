@@ -10,6 +10,7 @@
     "astraeum:smoke": "node games/astraeum-tower/scripts/browser-smoke.mjs",
     "studio:dev": "node studio/start.mjs",
     "studio:smoke": "node studio/scripts/browser-smoke.mjs",
+    "studio:persistence:test": "node studio/scripts/persistence-test.mjs",
     "verify": "npm run verify --prefix games/sample",
     "build": "npm run build --prefix games/sample",
     "browser:smoke": "npm run browser:smoke --prefix games/sample"

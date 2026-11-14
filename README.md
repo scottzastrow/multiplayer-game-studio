@@ -10,10 +10,12 @@ unchanged and is not Studio source.
 | Directory | Purpose |
 | --- | --- |
 | `engine\` | Packaged runtime/SDK, tracked `developer-kit.lock.json`, ignored versioned `kits\` and verified `archives\`. No backend/source checkout. |
-| `studio\` | Reserved workbench and extensions; **not implemented**. |
+| `studio\` | Local map editor and project-scoped SQLite design store. |
 | `games\sample\` | Tracked editable Local Preview Sample and required tooling; not Anh's adapted game. |
+| `games\astraeum-tower\` | Astraeum game code, assets, metadata and Floor 1 import template. Saved designs live in Studio's SQLite database. |
+| `games\generic-grid-v1\` | Independent, versioned blank-grid model and public movement-preview adapter. New Game creates separate project directories; maps remain in SQLite. |
 | `reference\` | Reserved for untouched original game sources when supplied; none supplied yet. |
-| `data\` | Ignored future local databases/recovery files; **not implemented**. |
+| `data\` | Ignored future local databases/recovery files; Studio currently uses `studio\data\`. |
 | `exports\` | Ignored generated exports; sample theme ZIPs are assets/manifests, not playable games. |
 | `tools\` | Studio setup/upgrade script. |
 
@@ -71,6 +73,20 @@ and focus the map. East/west/Stop buttons remain available. Blur and controller
 disconnect clear input. The sample's shot counter is not combat.
 Controller simulation is automated; physical hardware remains unverified.
 No preview runtime imports the engine checkout or starts its backend.
+
+## Studio New Game and Open Game
+
+Run `npm run studio:dev`, then open `http://127.0.0.1:4173`.
+**New Game** beside **Open Game** collects the game name, author/credits and
+map dimensions (default 640 x 480 pixels; multiples of 32 from 64 to 2048).
+It creates a blank Generic Grid v1 game with two safe player starts, primitive
+placement tools and a simple public-runtime movement preview, not a copy of
+Astraeum. Duplicate names are rejected and unsaved edits are protected.
+Save/Ctrl+S writes the selected map to SQLite; Open Game reopens it after
+restart. Play includes unsaved edits and Stop returns without saving movement.
+Generated `games/<project-id>/` directories contain code, assets and metadata,
+not duplicate maps. Asset importing is the following milestone.
+See `studio/README.md` for storage and verification details. T042 stays open.
 
 ### Kit provenance and controller support
 

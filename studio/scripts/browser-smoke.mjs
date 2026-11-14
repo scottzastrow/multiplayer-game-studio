@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { ASTRAEUM_MODEL } from "../project-identity.js";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const serviceFile = resolve(root, "studio", "server.mjs");
@@ -18,10 +19,12 @@ const webPort = 4174;
 const debugPort = 9224;
 const database = `studio/data/browser-smoke-${process.pid}.sqlite`;
 const legacyDatabase = `studio/data/browser-smoke-legacy-${process.pid}.sqlite`;
+const gamesPath = resolve(root, "studio", "data", `browser-games-${process.pid}`);
 const project = await import(pathToFileURL(resolve(root, "games", "astraeum-tower", "src", "project.js")).href);
 const profile = await mkdtemp(join(tmpdir(), "web-studio-smoke-"));
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
+const mapUrl = `${apiOrigin}/api/projects/astraeum-tower/maps/astraeum-tower-floor-1`;
 let service;
 let web;
 let chrome;
@@ -32,7 +35,8 @@ let sessionId;
 function startService(databasePath = database) {
   const child = spawn(process.execPath, ["--no-warnings", serviceFile], {
     cwd: root,
-    env: { ...process.env, STUDIO_API_PORT: String(apiPort), STUDIO_DATABASE_PATH: databasePath },
+    env: { ...process.env, STUDIO_API_PORT: String(apiPort), STUDIO_DATABASE_PATH: databasePath,
+      STUDIO_GAMES_PATH: `studio/data/browser-games-${process.pid}` },
     stdio: "ignore"
   });
   child.on("error", error => console.error("Service process error:", error));
@@ -237,6 +241,23 @@ async function clickButton(selector) {
   await delay(30);
 }
 
+async function assertStableHierarchy() {
+  assert.equal(await evaluate(`(async () => {
+    const tree = document.querySelector("#object-tree");
+    const groups = [...tree.children];
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return groups.length === tree.children.length &&
+      groups.every((group, index) => group === tree.children[index]);
+  })()`), true, "idle hierarchy must not rebuild from queued details toggle events");
+}
+
+async function fillInput(selector, value) {
+  await clickSelector(selector);
+  await key("keyDown", "KeyA", "a", 2);
+  await key("keyUp", "KeyA", "a", 2);
+  await cdp("Input.insertText", { text: String(value) }, sessionId);
+}
+
 async function reloadPage() {
   await evaluate(`window.__beforeReload = true`).catch(() => {});
   await cdp("Page.reload", { ignoreCache: true }, sessionId);
@@ -275,7 +296,7 @@ try {
   assert.ok(existsSync(chromePath), `Chrome was not found at ${chromePath}.`);
   const legacy = seedLegacyDatabase();
   service = startService(legacyDatabase);
-  await waitForHttp(`${apiOrigin}/api/maps/astraeum-tower-floor-1`, service, "SQLite service (legacy)");
+  await waitForHttp(mapUrl, service, "SQLite service (legacy)");
   web = startWeb();
   await waitForHttp(webOrigin, web, "Studio Vite server");
   chrome = startChrome();
@@ -380,7 +401,7 @@ try {
 
   // ---- Phase 2: the authoring workflow on a fresh database.
   service = startService();
-  await waitForHttp(`${apiOrigin}/api/maps/astraeum-tower-floor-1`, service, "SQLite service");
+  await waitForHttp(mapUrl, service, "SQLite service");
   await openStudio("Opened the original");
   const initial = await evaluate(`(() => ({
     counts: JSON.parse(document.querySelector("#map-canvas").dataset.layerCounts),
@@ -506,7 +527,7 @@ try {
   const savedDocument = JSON.stringify(await studioDocument());
   await stopChild(service);
   service = startService();
-  await waitForHttp(`${apiOrigin}/api/maps/astraeum-tower-floor-1`, service, "restarted SQLite service");
+  await waitForHttp(mapUrl, service, "restarted SQLite service");
   await reloadPage();
   await waitFor(`document.querySelector('[data-testid="studio-status"]')?.textContent.includes("Reopened the locally saved") &&
     window.__studioTest !== undefined`);
@@ -607,8 +628,261 @@ try {
     document.querySelector("#map-canvas")?.dataset.layerCounts !== undefined`);
   assert.equal(JSON.stringify(await studioDocument()), savedDocument, "the view preference is remembered without touching game data.");
 
+  // ---- Phase 3: explicit Astraeum-model projects, switching and isolated saves.
+  const second = JSON.parse(savedDocument);
+  second.id = "second-map";
+  second.objects = second.objects.filter(object => object.id !== wallId);
+  const secondUrl = `${apiOrigin}/api/projects/second-project/maps/second-map`;
+  const putSecond = await fetch(secondUrl, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: "second-project", model: ASTRAEUM_MODEL, document: second })
+  });
+  assert.equal(putSecond.status, 200);
+  {
+    const db = new DatabaseSync(resolve(root, database));
+    db.prepare("INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)")
+      .run("unsupported-game", "foreign-map", JSON.stringify(second), "2025-01-01", "another-game-v1");
+    const untyped = structuredClone(second);
+    untyped.id = "untyped-map";
+    db.prepare("INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)")
+      .run("untyped-project", "untyped-map", JSON.stringify(untyped), "2025-01-01", null);
+    db.close();
+  }
+  async function selectSaved(projectId, mapId) {
+    await clickButton("#open-game");
+    const selector = `.open-entry[data-project-id="${projectId}"][data-map-id="${mapId}"] input`;
+    await waitFor(`document.querySelector(${JSON.stringify(selector)}) !== null`);
+    await clickSelector(selector);
+    await clickButton("#open-selected");
+  }
+  await clickButton("#open-game");
+  await waitFor(`document.querySelector('.open-entry[data-project-id="unsupported-game"]') !== null`);
+  assert.match(await evaluate(`document.querySelector('.open-entry[data-project-id="unsupported-game"]').textContent`), /Unsupported.*model/i);
+  assert.equal(await evaluate(`document.querySelector('.open-entry[data-project-id="unsupported-game"] input').disabled`), true);
+  await clickButton("#open-cancel");
+
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("item-herb", 400, 216);
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Unsaved")`);
+  const unsavedFirst = JSON.stringify(await studioDocument());
+  await selectSaved("second-project", "second-map");
+  assert.equal(await evaluate(`document.querySelector("#open-confirm").hidden`), false);
+  await clickButton("#switch-cancel");
+  await clickButton("#open-cancel");
+  assert.equal(JSON.stringify(await studioDocument()), unsavedFirst, "cancelling a switch retains unsaved edits.");
+  await selectSaved("second-project", "second-map");
+  await clickButton("#switch-discard");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "second-map"`);
+  assert.match(await evaluate(`document.querySelector("#project-name").textContent`), /second-project.*second-map/);
+  assert.equal(JSON.stringify(await studioDocument()), JSON.stringify(second));
+  assert.deepEqual((await (await fetch(mapUrl)).json()).document, JSON.parse(savedDocument), "discard never overwrites the original.");
+  assert.equal(await evaluate(`document.querySelector("#undo").disabled`), true, "history is reset on switch.");
+
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("item-herb", 400, 216);
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Unsaved")`);
+  const secondEdited = await studioDocument();
+  await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
+  await clickButton("#switch-save");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "astraeum-tower-floor-1"`);
+  assert.deepEqual((await (await fetch(secondUrl)).json()).document, secondEdited, "save-and-open saves the selected project.");
+  assert.equal(JSON.stringify(await studioDocument()), savedDocument, "other project remains isolated.");
+
+  await stopChild(service);
+  service = startService();
+  await waitForHttp(mapUrl, service, "restarted SQLite service (projects)");
+  await reloadPage();
+  await waitFor(`window.__studioTest !== undefined && document.querySelector("#map-canvas").dataset.layerCounts !== undefined`);
+  await selectSaved("second-project", "second-map");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "second-map"`);
+  assert.deepEqual(await studioDocument(), secondEdited, "selected project reopens after service restart.");
+  await clickButton("#play");
+  await waitFor(`document.querySelector("#studio").dataset.playState === "playing"`);
+  assert.equal(Number(await evaluate(`document.querySelector('[data-testid="astraeum-world"]').dataset.collisionRectangles`)),
+    project.createFloorMap(secondEdited).collisions.length, "Play uses the selected document.");
+  assert.match(await evaluate(`document.querySelector("#project-name").textContent`), /second-project/);
+  assert.equal(await evaluate(`document.querySelector("#open-game").disabled`), true);
+  await clickButton("#stop");
+  assert.deepEqual(await studioDocument(), secondEdited, "Stop restores the selected design.");
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("item-herb", 450, 216);
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Unsaved")`);
+  const pendingEdit = await studioDocument();
+  await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
+  await stopChild(service);
+  await clickButton("#switch-save");
+  await waitFor(`document.querySelector("#open-message").classList.contains("error")`);
+  assert.deepEqual(await studioDocument(), pendingEdit, "a failed save leaves the unsaved map open.");
+  assert.equal(await evaluate(`document.querySelector("#open-dialog").open`), true);
+  service = startService();
+  await waitForHttp(mapUrl, service, "restarted SQLite service (failed switch)");
+  await clickButton("#switch-cancel");
+  await clickButton("#open-cancel");
+  await clickButton("#undo");
+  assert.deepEqual(await studioDocument(), secondEdited);
+  await selectSaved("untyped-project", "untyped-map");
+  assert.equal(await evaluate(`document.querySelector("#open-model-confirm").hidden`), false);
+  await clickButton("#model-cancel");
+  await clickButton("#open-cancel");
+  assert.deepEqual(await studioDocument(), secondEdited, "cancelling model assignment keeps the selected map.");
+  assert.equal((await (await fetch(`${apiOrigin}/api/projects`)).json()).maps
+    .find(entry => entry.projectId === "untyped-project").model, null);
+  await selectSaved("untyped-project", "untyped-map");
+  assert.equal(await evaluate(`document.querySelector("#open-model-confirm").hidden`), false, "model confirmation shown");
+  await clickButton("#model-confirm");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "untyped-map"`);
+  assert.equal((await (await fetch(`${apiOrigin}/api/projects`)).json()).maps
+    .find(entry => entry.projectId === "untyped-project").model, ASTRAEUM_MODEL);
+
+  // ---- Phase 4: create and edit two genuinely generic games through real controls.
+  await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "astraeum-tower-floor-1"`);
+  const astraeumBefore = await (await fetch(mapUrl)).json();
+  const countBefore = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps.length;
+  await clickButton("#new-game");
+  await fillInput("#new-name", "Cancelled game");
+  await fillInput("#new-author", "Disposable credits");
+  await clickButton("#new-cancel");
+  assert.deepEqual(await studioDocument(), astraeumBefore.document);
+  assert.equal((await (await fetch(`${apiOrigin}/api/projects`)).json()).maps.length, countBefore);
+
+  await clickButton("#new-game");
+  await clickButton("#new-create");
+  assert.equal(await evaluate(`document.querySelector("#new-name").validity.valueMissing`), true);
+  await fillInput("#new-name", "   ");
+  await fillInput("#new-author", "Disposable credits");
+  await clickButton("#new-create");
+  assert.match(await evaluate(`document.querySelector("#new-message").textContent`), /nonblank/);
+  await fillInput("#new-name", "Browser Generic One");
+  for (const width of [63, 65, 2080]) {
+    await fillInput("#new-width", width);
+    await clickButton("#new-create");
+    assert.equal(await evaluate(`document.querySelector("#new-width").checkValidity()`), false);
+    assert.equal((await (await fetch(`${apiOrigin}/api/projects`)).json()).maps.length, countBefore);
+  }
+  await fillInput("#new-width", 640);
+  assert.equal(await evaluate(`document.querySelector("#new-height").value`), "480");
+  await clickButton("#new-create");
+  await waitFor(`!document.querySelector("#new-dialog").open && document.querySelector("#project-name").textContent === "Browser Generic One"`);
+  const firstGeneric = await studioDocument();
+  assert.equal(firstGeneric.objects.length, 2, "generic starter contains only safe player spawns");
+  assert.deepEqual(firstGeneric.bounds, { width: 640, height: 480 });
+  await assertStableHierarchy();
+  await clickButton('.tree-group[data-layer="walls"] > summary');
+  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), false);
+  await clickButton('.tree-group[data-layer="walls"] > summary');
+  assert.equal(await evaluate(`document.querySelector('.tree-group[data-layer="walls"]').open`), true);
+  await assertStableHierarchy();
+  const listing = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps;
+  const firstEntry = listing.find(entry => entry.mapId === firstGeneric.id);
+  assert.equal(firstEntry.model, "generic-grid-v1");
+  assert.deepEqual(firstEntry.project, { name: "Browser Generic One", author: "Disposable credits" });
+  assert.equal(await evaluate(`[...document.querySelectorAll(".asset-card")].every(card => card.dataset.assetId.startsWith("generic-"))`), true);
+  assert.equal(await evaluate(`document.querySelector("#unresolved-summary").hidden`), true);
+  assert.equal(await evaluate(`document.querySelector("#migration-notice").hidden`), true);
+  const genericFile = JSON.parse(await readFile(resolve(gamesPath, firstEntry.projectId, "project.json"), "utf8"));
+  assert.equal(genericFile.model, "generic-grid-v1");
+  assert.equal(genericFile.document, undefined);
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("generic-block", 80, 80);
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Unsaved")`);
+  const editedFirst = await studioDocument();
+  await clickButton("#new-game");
+  await fillInput("#new-name", "Cancelled dirty game");
+  await fillInput("#new-author", "Disposable credits");
+  await clickButton("#new-create");
+  assert.equal(await evaluate(`document.querySelector("#new-confirm").hidden`), false);
+  await clickButton("#new-cancel");
+  assert.deepEqual(await studioDocument(), editedFirst, "cancelling creation preserves unsaved edits");
+  await clickSelector("#map-canvas");
+  await key("keyDown", "KeyS", "s", 2);
+  await key("keyUp", "KeyS", "s", 2);
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Saved")`);
+  assert.deepEqual((await (await fetch(`${apiOrigin}/api/projects/${firstEntry.projectId}/maps/${firstEntry.mapId}`)).json()).document, editedFirst);
+
+  await clickButton("#new-game");
+  await fillInput("#new-name", " browser generic ONE ");
+  await fillInput("#new-author", "Other credits");
+  await clickButton("#new-create");
+  await waitFor(`document.querySelector("#new-message").textContent.includes("already exists")`);
+  assert.deepEqual(await studioDocument(), editedFirst);
+  assert.equal((await readdir(gamesPath)).length, 1, "duplicate names do not allocate files");
+  await clickButton("#new-cancel");
+
+  // Save-and-create protects the current project, without using it as a template.
+  await dragFromPalette("generic-marker", 144, 80);
+  const savedOnCreate = await studioDocument();
+  await clickButton("#new-game");
+  await fillInput("#new-name", "Browser Generic Two");
+  await fillInput("#new-author", "Second author");
+  await fillInput("#new-width", 320);
+  await fillInput("#new-height", 256);
+  await clickButton("#new-create");
+  assert.equal(await evaluate(`document.querySelector("#new-confirm").hidden`), false);
+  await clickButton("#new-save");
+  await waitFor(`!document.querySelector("#new-dialog").open && document.querySelector("#project-name").textContent === "Browser Generic Two"`);
+  assert.deepEqual((await (await fetch(`${apiOrigin}/api/projects/${firstEntry.projectId}/maps/${firstEntry.mapId}`)).json()).document, savedOnCreate);
+  const secondGeneric = await studioDocument();
+  assert.equal(secondGeneric.objects.length, 2);
+  const secondEntry = (await (await fetch(`${apiOrigin}/api/projects`)).json()).maps.find(entry => entry.mapId === secondGeneric.id);
+  assert.notEqual(firstEntry.projectId, secondEntry.projectId);
+  assert.notEqual(firstEntry.mapId, secondEntry.mapId);
+  await evaluate(`window.__studioTest.setView({ zoom: 1, cameraX: 0, cameraY: 0 })`);
+  await dragFromPalette("generic-marker", 80, 80);
+  const editedSecond = await studioDocument();
+  await clickButton("#save");
+  await waitFor(`document.querySelector("#save-state").textContent.includes("Saved")`);
+
+  // Discard-and-create must retain edits if the server refuses creation.
+  await dragFromPalette("generic-block", 48, 48);
+  const dirtySecond = await studioDocument();
+  await clickButton("#new-game");
+  await fillInput("#new-name", "Browser Generic One");
+  await fillInput("#new-author", "Disposable");
+  await clickButton("#new-create");
+  await clickButton("#new-discard");
+  await waitFor(`document.querySelector("#new-message").textContent.includes("already exists")`);
+  assert.deepEqual(await studioDocument(), dirtySecond, "failed creation never discards edits");
+  await clickButton("#new-cancel");
+  await clickButton("#undo");
+  assert.deepEqual(await studioDocument(), editedSecond);
+
+  await stopChild(service);
+  service = startService();
+  await waitForHttp(mapUrl, service, "restarted SQLite service (generic games)");
+  await reloadPage();
+  await waitFor(`window.__studioTest !== undefined && document.querySelector("#map-canvas").dataset.layerCounts !== undefined`);
+  for (const [entry, expected] of [[firstEntry, savedOnCreate], [secondEntry, editedSecond]]) {
+    await selectSaved(entry.projectId, entry.mapId);
+    await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(entry.mapId)}`);
+    assert.deepEqual(await studioDocument(), expected, "generic designs reopen in isolation after restart");
+    assert.equal(await evaluate(`[...document.querySelectorAll(".asset-card")].every(card => card.dataset.assetId.startsWith("generic-"))`), true);
+    await clickButton("#play");
+    await waitFor(`document.querySelector("#studio").dataset.playState === "playing" && document.querySelector('[data-testid="generic-preview"]')?.dataset.position !== undefined`);
+    const positionBefore = JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.position`));
+    assert.equal(await evaluate(`document.activeElement.dataset.testid`), "generic-preview");
+    await key("keyDown", "ArrowRight", "ArrowRight");
+    await delay(180);
+    await key("keyUp", "ArrowRight", "ArrowRight");
+    await delay(60);
+    const positionAfter = JSON.parse(await evaluate(`document.querySelector('[data-testid="generic-preview"]').dataset.position`));
+    assert.ok(positionAfter.x > positionBefore.x, "generic player moves via the installed public runtime");
+    assert.equal(await evaluate(`document.querySelector('[data-testid="astraeum-world"]') === null`), true);
+    await clickButton("#stop");
+    assert.deepEqual(await studioDocument(), expected, "Stop does not persist movement");
+  }
+  await selectSaved("astraeum-tower", "astraeum-tower-floor-1");
+  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === "astraeum-tower-floor-1"`);
+  assert.deepEqual(await studioDocument(), astraeumBefore.document);
+  assert.deepEqual(await (await fetch(mapUrl)).json(), astraeumBefore, "New Game leaves Astraeum content, timestamps and migrations unchanged");
+  assert.equal(await evaluate(`document.querySelector('.asset-card[data-asset-id="wall-damp-stone"]') !== null`), true);
+
   assert.deepEqual(browserExceptions, [], "the Studio browser workflow reports no uncaught exceptions.");
   console.log(`Studio workflow passed: migrated format 1 (${legacy.walls} walls, 1 collision box, backup kept); ` +
+    `New Game created two generic projects via browser controls, validated inputs, rejected duplicates, cancelled safely, ` +
+    `saved distinct maps, reopened after restart, moved in Play/Stop and returned to unchanged Astraeum; ` +
+    `Open Game switched isolated projects, protected unsaved edits including failed saves, reopened after restart, ` +
+    `played the selected map and required explicit untyped-model confirmation; ` +
     `unresolved collision labelled, assigned wall artwork / kept / deleted with undo; ` +
     `dragged a wall and a barrel from the palette; moved the wall off-grid without moving the floor; ` +
     `barrel stayed above the wall; snap, 5 px nudge, undo/redo, floor lock; saved and reopened; ` +
@@ -627,4 +901,5 @@ try {
     }
   }
   await rm(profile, { recursive: true, force: true });
+  await rm(gamesPath, { recursive: true, force: true });
 }

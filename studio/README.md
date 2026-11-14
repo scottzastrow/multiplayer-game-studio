@@ -8,6 +8,107 @@ game's launch command (`npm run astraeum:dev -- --port 5180 --strictPort`) or
 the reference copy. The Studio's default database file is ignored at
 `studio/data/studio.sqlite`.
 
+## Project-aware persistence
+
+SQLite is the authoritative store for saved designs. `games/` retains game
+code, assets, and metadata; the checked-in Floor 1 JSON is an import template,
+not the saved design. Map rows, backups, and migration history are scoped by
+stable `(project_id, map_id)` pairs. The editor initially opens project
+`astraeum-tower`, map `astraeum-tower-floor-1`; its document keeps the
+existing map ID. **Open Game** lists saved project/map pairs and shows the
+selected pair in the editor and Play toolbar. It asks to save, discard, or
+cancel before switching away from unsaved changes; cancelling or a failed
+load keeps the current design. Play and Stop use the selected document.
+IDs are 1-128 lowercase ASCII letters, digits, or hyphens,
+and must start and end with a letter or digit.
+
+## New Game
+
+**New Game** sits beside Open Game. Enter the game name and author/credits,
+choose the explicit **Generic Grid v1** model and accept or change the
+640 x 480 pixel defaults. Each dimension must be a multiple of 32 between
+64 and 2048 pixels, inclusive, as required by the installed public runtime.
+Names and credits must be nonblank, without control characters (64 and 128
+characters maximum, respectively). Case/Unicode-normalized duplicate names
+are rejected, not treated as an overwrite.
+
+The generic starter is independent of Astraeum: a blank background and two
+distinct, safe player starts (the public map contract requires two), with no
+artwork, lighting, Tower collision rules or gameplay. Its own primitive
+catalog contains tiles, blocks, markers, player starts and collision boxes.
+Only that compatible catalog appears for generic games; there is no fallback
+to Tower assets. `games/generic-grid-v1/src/project.js` owns the explicit
+versioned model; `src/runtime.js` is its public-runtime movement adapter.
+The model is not a game identity: every game and map receives a separate
+stable ID, even when using the same model.
+
+Creation inserts a `projects` row (name, author, model and creation timestamp)
+and a map row in one SQLite transaction. The filesystem directory is an
+exclusive UUID-suffixed allocation, never an overwritten existing directory.
+`games/<project-id>/project.json` holds identity/credits/model/adapter metadata
+and map IDs; `src/runtime.js` references the shared adapter and `assets/` is
+initially empty. There are **no saved map copies** in these directories.
+If creation fails, SQLite rolls back and the newly allocated directory is
+removed. Save/discard/cancel protects the current dirty map before creation;
+cancelling or a failed creation leaves the current document open.
+
+Creation opens the new, already saved game. Palette placement, selection,
+movement, Inspector, undo/redo, Save/Ctrl+S and Open Game all use its own model
+and project/map pair. Play uses the current design (including unsaved edits)
+and the generic adapter: Arrows/WASD move a radius-8 player at 4 pixels per
+fixed tick, bounded by the map and explicit 32-pixel blockers. Blocked or
+overlapping starts produce an actionable Play error. Stop disposes the
+preview without saving movement.
+
+**Asset importing is the following milestone.** Generic projects currently
+use built-in shapes only. No engine-kit rebuild, publication or deployment
+is involved; T042 remains open.
+
+## Local API
+
+The loopback API lists saved maps at `GET /api/projects` and uses `GET` and `PUT` at
+`/api/projects/{projectId}/maps/{mapId}`. A PUT contains `projectId` and
+`document`, plus the explicit model (`astraeum-floor-v2` or `generic-grid-v1`); the project ID and
+document's `id` must match the path. Storage
+uses the full pair, so an identical map ID in another project is a separate
+record. Each model validates its own catalog, bounds and document format.
+Only the Astraeum model uses the Tower runtime. A saved map/project cannot
+change models through Save. Unknown models and invalid documents appear as
+unsupported and cannot be opened or overwritten. A legacy untyped document
+that validates as the Astraeum model can be explicitly assigned that model
+from the dialog; the confirmation explains the Tower behavior before the
+service records the choice. This only changes model metadata, not design JSON.
+Untyped incompatible records and records explicitly marked as another model
+cannot be assigned.
+
+`POST /api/projects` accepts `{ name, author, width, height, model }` and returns
+the new project/map identity, metadata and document (HTTP 201). Validation
+errors are HTTP 400; duplicate names are HTTP 409. Generic saves must reference
+an existing generic map, not create projects through PUT. Generated metadata
+is a filesystem companion, not another editable design authority.
+
+<details>
+<summary>Historical project-storage migration</summary>
+
+On startup, the service transactionally assigns the former unscoped Floor 1
+row, its backups, and migration history to the Astraeum pair, preserving the
+stored JSON, timestamps, backup IDs, references, and sequence numbers. It
+then applies the existing format migration when needed. Existing scoped
+databases gain a nullable model field transactionally; only the known Astraeum
+Floor 1 pair is identified automatically. Other records retain their contents
+and require the explicit confirmation above. If a legacy database
+contains any other map identity, startup refuses to assign it to a project
+and rolls back the schema change. Back up the database before manual recovery;
+the service never guesses the owner of unknown legacy records.
+
+</details>
+
+`npm run studio:persistence:test` exercises migrations, legacy backups, failed
+migration protection, ID validation, model isolation, New Game validation,
+minimum/maximum dimensions, duplicate rejection, metadata-only files, rollback
+cleanup after an injected database failure and restart/reopen with disposable
+databases/directories; it does not use the default database.
+
 ## Saved design (format 2)
 
 The authoritative saved document is one versioned JSON object
@@ -30,10 +131,11 @@ collision boxes ? and objects keep their layer and order when moved.
 Grid-aligned walls use the original dual-grid wall autotile; off-grid walls are
 drawn with solid wall artwork over the unchanged floor tile beneath them.
 
-## Migration from format 1
+<details>
+<summary>Historical migration from format 1</summary>
 
 Format 1 stored terrain rows plus a `walls` rectangle list. On startup the
-service upgrades every stored format 1 row inside one SQLite transaction and
+service upgrades the stored Astraeum Floor 1 format 1 row inside a SQLite transaction and
 first copies the original row byte-for-byte into `map_backups`; the outcome is
 recorded in `migrations` and shown in the Inspector. Grid-aligned format 1
 walls become walls with the same IDs. Off-grid format 1 walls were drawn with
@@ -42,6 +144,14 @@ with the same ID, position, and collision, flagged "migrated" with an
 explanation. Overlapping walls are kept and reported. If a row cannot be
 migrated, it is left untouched, the failure is recorded, and the API refuses
 to read or overwrite it (HTTP 409) rather than silently discarding data.
+
+</details>
+
+### Unresolved Astraeum collisions
+
+The Inspector's migration history is collapsed by default (failed migrations
+expand their error details). Unresolved-collision warnings are separate and
+stay visible and actionable.
 
 Migrated off-grid boxes are labelled **Unresolved collision** (with a warning
 glyph) in the hierarchy and Inspector, and the Inspector shows a count with
@@ -91,10 +201,25 @@ milestone is a local, single-player editor and does not verify multiplayer.
 Run `npm run studio:smoke` for the end-to-end browser workflow. It uses
 uniquely named disposable SQLite databases and an isolated headless Chrome
 profile, restarts the service before reopening, and removes only those
-test-specific files. Later milestones: multiplayer editing, dynamic-object
+test-specific files. It also checks Open Game switching, unsaved-change
+choices, isolated saves, restart/reopen, selected-map Play/Stop, unsupported
+models, and explicit assignment of a compatible untyped map. The same browser
+run creates two generic games through real controls, validates invalid and
+duplicate inputs and cancellation, saves distinct maps via Save/Ctrl+S,
+restarts/reopens them, moves in both generic previews and returns to Astraeum
+without changing its design, timestamps or migration history.
+The isolated two-game phase passed after fixing a hierarchy feedback loop:
+initializing open empty groups queued `toggle` events that rebuilt the tree
+and queued more events. Toggle handling now ignores unchanged or detached
+groups, and empty groups need no lazy population. Regression checks cover
+idle tree stability and collapsing/reopening an empty group.
+Both checks use a disposable `STUDIO_GAMES_PATH` under `studio/data/`; only
+test-specific files are removed. Production defaults to `games/`.
+Later milestones: asset importing, multiplayer editing, dynamic-object
 motion, item and enemy gameplay, generators, and PixelLab integration.
 
-## Verified result
+<details>
+<summary>Previous Astraeum verification result (before New Game)</summary>
 
 `npm run studio:smoke` passed. It seeded a disposable format 1 database (384
 walls, one off-grid), confirmed the browser migration notice, the
@@ -112,3 +237,5 @@ the wall at `x=165`. Stop restored the camera/zoom and left the design
 unchanged, and a wall on the Aries start produced an actionable Play error.
 The standalone Tower Play render is pixel-identical to the pre-change capture,
 and `npm run astraeum:smoke` passed.
+
+</details>

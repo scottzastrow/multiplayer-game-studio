@@ -20,6 +20,36 @@ game remains in `games/astraeum-tower/`.
   to the authored state and editing camera/zoom without persisting play state.
 - Browser verification of a complete edit/save/reopen/play/collision/stop flow
   against a disposable database.
+- Project-scoped SQLite persistence with validated stable IDs, including
+  transactional migration of the existing Astraeum map and its backup history.
+- Open saved project/map pairs supported by the Astraeum model, protect
+  unsaved changes, and use the selected document for Play/Stop. Require
+  explicit consent before identifying an untyped compatible map as Astraeum.
+- New Game beside Open Game: collect a nonblank game name (up to 64 characters),
+  author/credits (up to 128), explicit Generic Grid v1 model and dimensions.
+  Defaults are 640 x 480 pixels; each axis must be a multiple of 32 from
+  64 through 2048, matching the installed public map contract.
+- Allocate stable, independent project/map IDs and collision-safe directories.
+  Reject case/Unicode-normalized duplicate names without overwriting existing
+  projects. Commit project metadata and the map in one SQLite transaction;
+  remove newly allocated files if creation fails.
+- Keep saved maps exclusively in SQLite. Generated game directories hold only
+  code, assets and project metadata, never independently editable map copies.
+- Generic Grid v1 has its own versioned document, primitive asset catalog and
+  runtime adapter: blank terrain, two safe player starts required by the public
+  runtime, basic movement and explicit grid blockers. No Tower art, lighting,
+  collision rules or gameplay. Identity and author are not template/model IDs.
+- Save/discard/cancel protects dirty edits for creation as well as switching.
+  Cancellation and failed creation preserve the current design; successful
+  creation opens the saved project with placement, undo/redo, Save/Ctrl+S,
+  Open Game and model-specific Play/Stop.
+- Show only project-compatible assets. Collapse historical migration details
+  by default; failed migration reports and unresolved-collision review/actions
+  remain visible for Astraeum.
+- Browser acceptance uses disposable database/files and real controls to
+  create two generic games, edit/save different maps, restart/reopen, confirm
+  isolation, move in Play/Stop for both and return to unchanged Astraeum.
+  Cover invalid inputs, duplicate names and cancellation.
 
 ## Object model and placement correction
 
@@ -51,7 +81,9 @@ game remains in `games/astraeum-tower/`.
 
 Multiplayer editing, collaboration, dynamic-object motion, generators,
 PixelLab integration, engine-kit changes or rebuilds, publishing, deployment,
-and changes to `reference/`.
+changes to `reference/`, arbitrary custom model loading or gameplay scripting.
+Asset importing is the following milestone; no asset borrowing or import UI
+is part of this milestone.
 
 ## Constraints
 

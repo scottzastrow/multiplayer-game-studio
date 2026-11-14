@@ -1,37 +1,45 @@
 import { createLocalGame, mountLocalPreview } from "@multiplayer-game/local-preview";
 import { ARTWORK_CREDIT } from "../../games/astraeum-tower/src/catalog.js";
-import {
+import * as towerProject from "../../games/astraeum-tower/src/project.js";
+import * as generic from "../../games/generic-grid-v1/src/project.js";
+import { genericPreview, genericSkin } from "../../games/generic-grid-v1/src/runtime.js";
+const {
+  MAP_CELL_SIZE,
+  artworkReplacementAssets,
+  assignArtworkToCollision,
+  createFloorDocument,
+  keepCollisionBox,
+  planArtworkReplacement
+} = towerProject;
+let {
   ASSET_CATALOG,
   DESIGN_LAYERS,
   FLOOR1_BOUNDS,
-  MAP_CELL_SIZE,
   OBJECT_TYPES,
-  artworkReplacementAssets,
-  assignArtworkToCollision,
   clampTransform,
   collisionRect,
   createDesignObject,
-  createFloorDocument,
   createFloorMap,
   floorDocumentGrid,
   hitTest,
   isUnresolvedCollision,
-  keepCollisionBox,
   objectBounds,
-  planArtworkReplacement,
   playStartProblems,
   snapTransform,
   transformAtPoint,
   validateFloorDocument
-} from "../../games/astraeum-tower/src/project.js";
-import { drawAsset, drawDesign, loadArtwork } from "../../games/astraeum-tower/src/design-render.js";
+} = towerProject;
+import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
+let { drawAsset, drawDesign } = towerRender;
 import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
 import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
+import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
-const MAP_URL = "/api/maps/astraeum-tower-floor-1";
+const mapUrl = ({ projectId, mapId }) => `/api/projects/${encodeURIComponent(projectId)}/maps/${encodeURIComponent(mapId)}`;
 const LAYER_PREFS_KEY = "web-studio.astraeum.layers.v1";
+const layerPrefsKey = model => model === generic.MODEL ? "web-studio.generic-grid-v1.layers.v1" : LAYER_PREFS_KEY;
 const PALETTE_VIEW_KEY = "web-studio.palette-view.v1";
 const PALETTE_VIEWS = Object.freeze({
   large: { label: "Large", thumb: 72 },
@@ -56,6 +64,14 @@ const playHost = $("#play-host");
 
 const state = {
   document: null,
+  identity: { projectId: ASTRAEUM_PROJECT_ID, mapId: ASTRAEUM_FLOOR_1_MAP_ID },
+  saving: false,
+  switching: false,
+  creating: false,
+  model: ASTRAEUM_MODEL,
+  openSelection: null,
+  pendingSave: false,
+  openRequest: 0,
   savedJson: "",
   artwork: null,
   selectedId: null,
@@ -84,13 +100,14 @@ const state = {
   play: { phase: "idle", game: null, mount: null, timer: null, view: null, resizeObserver: null }
 };
 
-function loadLayerPrefs() {
-  const defaults = Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id,
+function loadLayerPrefs(model = ASTRAEUM_MODEL) {
+  const layers = model === generic.MODEL ? generic.DESIGN_LAYERS : towerProject.DESIGN_LAYERS;
+  const defaults = Object.fromEntries(layers.map(layer => [layer.id,
     { visible: true, locked: layer.id === "terrain" }]));
   try {
-    const stored = JSON.parse(localStorage.getItem(LAYER_PREFS_KEY) ?? "null");
+    const stored = JSON.parse(localStorage.getItem(layerPrefsKey(model)) ?? "null");
     if (stored && typeof stored === "object") {
-      for (const layer of DESIGN_LAYERS) {
+      for (const layer of layers) {
         const value = stored[layer.id];
         if (value && typeof value.visible === "boolean" && typeof value.locked === "boolean") {
           defaults[layer.id] = { visible: value.visible, locked: value.locked };
@@ -114,7 +131,7 @@ function loadPaletteView() {
 
 function saveLayerPrefs() {
   try {
-    localStorage.setItem(LAYER_PREFS_KEY, JSON.stringify(state.layers));
+    localStorage.setItem(layerPrefsKey(state.model), JSON.stringify(state.layers));
   } catch {
     // Preferences are optional.
   }
@@ -180,7 +197,10 @@ function refreshChrome({ structure = true } = {}) {
   $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
   $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
   $("#save").disabled = !loaded || !isDirty || isPlaying();
-  $("#play").disabled = !loaded || isPlaying() || !state.artwork;
+  $("#save").disabled ||= state.saving;
+  $("#open-game").disabled = isPlaying() || state.saving || state.switching || !state.artwork;
+  $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
+  $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork;
   $("#undo").disabled = state.undo.length === 0 || isPlaying();
   $("#redo").disabled = state.redo.length === 0 || isPlaying();
   $("#zoom-label").textContent = `${Math.round(state.zoom * 100)}%`;
@@ -283,9 +303,10 @@ function updateHierarchy() {
       `${prefs.locked ? " · locked" : ""}${prefs.visible ? "" : " · hidden"}`;
     details.append(summary);
     details.addEventListener("toggle", () => {
+      if (!details.isConnected || details.open === state.openGroups.has(layer.id)) return;
       if (details.open) state.openGroups.add(layer.id);
       else state.openGroups.delete(layer.id);
-      if (details.open && !details.querySelector(".tree-item")) {
+      if (details.open && members.length && !details.querySelector(".tree-item")) {
         state.hierarchyKey = "";
         updateHierarchy();
       }
@@ -483,9 +504,9 @@ function sceneCanvas() {
   if (scene.document === state.document && scene.key === key && scene.canvas) return scene.canvas;
   if (!scene.canvas) {
     scene.canvas = document.createElement("canvas");
-    scene.canvas.width = FLOOR1_BOUNDS.width;
-    scene.canvas.height = FLOOR1_BOUNDS.height;
   }
+  scene.canvas.width = FLOOR1_BOUNDS.width;
+  scene.canvas.height = FLOOR1_BOUNDS.height;
   const sceneContext = scene.canvas.getContext("2d", { alpha: false });
   sceneContext.imageSmoothingEnabled = false;
   drawDesign(sceneContext, state.artwork, state.document, {
@@ -614,7 +635,7 @@ function overCanvas(clientX, clientY) {
 function placementTransform(assetId, point) {
   let transform = transformAtPoint(assetId, point);
   if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
-  return clampTransform(assetId, transform);
+  return clampTransform(assetId, transform, FLOOR1_BOUNDS);
 }
 
 function placementProblem(assetId, transform) {
@@ -682,7 +703,7 @@ function moveSelectedTo(transform, { snap = false } = {}) {
   const asset = ASSET_CATALOG[object.assetId];
   let next = { x: Math.round(transform.x), y: Math.round(transform.y) };
   if (snap || asset.snap.forced) next = snapTransform(object.assetId, next);
-  next = clampTransform(object.assetId, next);
+  next = clampTransform(object.assetId, next, FLOOR1_BOUNDS);
   if (next.x === object.transform.x && next.y === object.transform.y) {
     refreshChrome({ structure: false });
     return;
@@ -760,7 +781,7 @@ function pointerMove(event) {
       y: Math.round(start.transform.y + point.y - start.point.y)
     };
     if (state.snap || ASSET_CATALOG[assetId].snap.forced) transform = snapTransform(assetId, transform);
-    transform = clampTransform(assetId, transform);
+    transform = clampTransform(assetId, transform, FLOOR1_BOUNDS);
     state.document = replaceObject(start.before, start.id, { transform });
     refreshChrome({ structure: false });
     return;
@@ -949,21 +970,32 @@ function paletteCancel() {
 // ---------------------------------------------------------------- save
 
 async function save() {
-  if (!state.document || isPlaying()) return;
+  if (!state.document || isPlaying() || state.saving) return false;
+  const identity = { ...state.identity };
+  const document = structuredClone(state.document);
+  state.saving = true;
+  refreshChrome({ structure: false });
   try {
-    const response = await fetch(MAP_URL, {
+    const response = await fetch(mapUrl(identity), {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ document: state.document })
+      body: JSON.stringify({ projectId: identity.projectId, model: state.model, document })
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? `Save failed (${response.status}).`);
-    state.document = validateFloorDocument(payload.document);
-    state.savedJson = JSON.stringify(state.document);
-    refreshChrome();
-    setStatus("Floor 1 saved to the local Studio database.");
+    if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
+        payload.model !== state.model || payload.document?.id !== identity.mapId) {
+      throw new Error("The saved design identity did not match the requested project and map.");
+    }
+    state.savedJson = JSON.stringify(validateFloorDocument(payload.document));
+    setStatus("Map saved to the local Studio database.");
+    return true;
   } catch (error) {
     setStatus(`Save failed: ${error.message}`, true);
+    return false;
+  } finally {
+    state.saving = false;
+    refreshChrome();
   }
 }
 
@@ -1009,7 +1041,7 @@ function teardownPlay() {
 }
 
 async function play() {
-  if (isPlaying() || !state.document || !state.artwork) return;
+  if (isPlaying() || state.saving || !state.document || !state.artwork) return;
   $("#play-error").hidden = true;
   let design;
   try {
@@ -1037,7 +1069,7 @@ async function play() {
     $("#stop").hidden = false;
     await nextFrame();
     await nextFrame();
-    play.game = await createLocalGame({
+    play.game = await createLocalGame(state.model === generic.MODEL ? genericPreview(design) : {
       moduleFactory: createTowerGameModule(design),
       settings: towerSettings,
       map: createFloorMap(design),
@@ -1046,7 +1078,8 @@ async function play() {
       viewer: { accountId: "aries", role: "player" }
     });
     if (play.phase !== "starting") throw new Error("Play was cancelled.");
-    play.mount = mountLocalPreview(playHost, play.game, towerSkinFactory(state.artwork, undefined, design), {
+    play.mount = mountLocalPreview(playHost, play.game,
+      state.model === generic.MODEL ? genericSkin(design) : towerSkinFactory(state.artwork, undefined, design), {
       onInputRejected: () => setStatus("The runtime rejected an input.", true)
     });
     // The runtime re-measures only on window resize; forward layout changes too.
@@ -1069,7 +1102,7 @@ async function play() {
     studio.dataset.playState = "playing";
     $("#play-loading").hidden = true;
     playCanvas.focus();
-    setStatus("Playing the edited map (unsaved edits included). Arrows/WASD move Aries. Stop returns to editing.");
+    setStatus(`Playing the edited map (unsaved edits included). Arrows/WASD move ${state.model === generic.MODEL ? "the player" : "Aries"}. Stop returns to editing.`);
   } catch (error) {
     teardownPlay();
     refreshChrome();
@@ -1111,6 +1144,12 @@ function configureEvents() {
   }, { passive: false });
   canvas.addEventListener("contextmenu", event => event.preventDefault());
   window.addEventListener("keydown", event => {
+    if ($("#open-dialog").open || $("#new-dialog").open) return;
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
+      event.preventDefault();
+      save();
+      return;
+    }
     if (ignoredShortcutTarget(event.target)) return;
     if (isPlaying()) {
       if (event.code === "Escape" && state.play.phase === "playing") stop();
@@ -1119,11 +1158,6 @@ function configureEvents() {
     if (event.code === "Space" && event.target === canvas) {
       state.spaceDown = true;
       event.preventDefault();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
-      event.preventDefault();
-      save();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
@@ -1176,6 +1210,27 @@ function configureEvents() {
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.2));
   $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.2));
   $("#save").addEventListener("click", save);
+  $("#open-game").addEventListener("click", showOpenDialog);
+  configureNewGame();
+  $("#open-cancel").addEventListener("click", () => $("#open-dialog").close());
+  $("#switch-cancel").addEventListener("click", () => showSwitchConfirmation(false));
+  $("#open-selected").addEventListener("click", () => {
+    if (!state.openSelection) return;
+    if (state.openSelection.projectId === state.identity.projectId && state.openSelection.mapId === state.identity.mapId && state.document) {
+      $("#open-dialog").close();
+    } else if (state.document && dirty()) {
+      showSwitchConfirmation(true);
+    } else {
+      requestSwitch();
+    }
+  });
+  $("#switch-save").addEventListener("click", () => requestSwitch(true));
+  $("#switch-discard").addEventListener("click", () => requestSwitch());
+  $("#model-confirm").addEventListener("click", () => switchToSelected(state.pendingSave));
+  $("#model-cancel").addEventListener("click", () => showSwitchConfirmation(false));
+  $("#open-dialog").addEventListener("cancel", event => {
+    if (state.switching) event.preventDefault();
+  });
   $("#play").addEventListener("click", play);
   $("#stop").addEventListener("click", stop);
   $("#play-error-close").addEventListener("click", () => {
@@ -1220,35 +1275,261 @@ function describeMigrations(migrations) {
   };
 }
 
-async function openFloor() {
-  const [response, artwork] = await Promise.all([fetch(MAP_URL), loadArtwork()]);
-  state.artwork = artwork;
-  const payload = await response.json().catch(() => ({}));
+function openMessage(message, error = false) {
+  $("#open-message").textContent = message;
+  $("#open-message").classList.toggle("error", error);
+}
+
+function showSwitchConfirmation(show) {
+  $("#open-confirm").hidden = !show;
+  $("#open-model-confirm").hidden = true;
+  $("#open-actions").hidden = show;
+  $("#open-list").inert = show;
+}
+
+async function showOpenDialog() {
+  if (state.saving || state.switching || isPlaying()) return;
+  state.openSelection = null;
+  const requestId = ++state.openRequest;
+  $("#open-selected").disabled = true;
+  $("#open-list").replaceChildren();
+  showSwitchConfirmation(false);
+  openMessage("Loading saved projects…");
+  $("#open-dialog").showModal();
+  try {
+    const response = await fetch("/api/projects");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error ?? `Listing failed (${response.status}).`);
+    if (!$("#open-dialog").open || requestId !== state.openRequest) return;
+    for (const entry of payload.maps) {
+      const label = document.createElement("label");
+      label.className = `open-entry${entry.supported || entry.canAdopt ? "" : " unsupported"}`;
+      label.dataset.projectId = entry.projectId;
+      label.dataset.mapId = entry.mapId;
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "open-map";
+      radio.disabled = !entry.supported && !entry.canAdopt;
+      const text = document.createElement("span");
+      const title = document.createElement("strong");
+      title.textContent = entry.project ? `${entry.project.name} / ${entry.mapId}` : `${entry.projectId} / ${entry.mapId}`;
+      const details = document.createElement("small");
+      details.textContent = entry.supported ? entry.model === generic.MODEL
+        ? `Generic Grid v1 · ${entry.project?.author ?? ""}` : "Astraeum Floor model" : entry.canAdopt
+        ? "Untyped compatible design — explicit Astraeum assignment required"
+        : `Unsupported: ${entry.reason}`;
+      text.append(title, details);
+      label.append(radio, text);
+      radio.addEventListener("change", () => {
+        state.openSelection = { projectId: entry.projectId, mapId: entry.mapId, canAdopt: entry.canAdopt };
+        $("#open-selected").disabled = false;
+        openMessage("");
+      });
+      $("#open-list").append(label);
+    }
+    openMessage(payload.maps.length ? "Select a supported saved map." : "No saved projects or maps yet.");
+  } catch (error) {
+    if ($("#open-dialog").open && requestId === state.openRequest) {
+      openMessage(`Could not list saved projects: ${error.message}`, true);
+    }
+  }
+}
+
+function requestSwitch(saveFirst = false) {
+  if (state.openSelection?.canAdopt) {
+    state.pendingSave = saveFirst;
+    $("#open-confirm").hidden = true;
+    $("#open-actions").hidden = true;
+    $("#open-model-confirm").hidden = false;
+    $("#open-list").inert = true;
+  } else {
+    switchToSelected(saveFirst);
+  }
+}
+
+function newGameValues() {
+  return generic.validateCreation({
+    name: $("#new-name").value, author: $("#new-author").value,
+    model: $("#new-model").value,
+    width: Number($("#new-width").value), height: Number($("#new-height").value)
+  });
+}
+
+function configureNewGame() {
+  $("#new-game").addEventListener("click", () => {
+    if (state.saving || state.switching || state.creating || isPlaying()) return;
+    $("#new-form").reset();
+    $("#new-message").textContent = "";
+    $("#new-confirm").hidden = true;
+    $("#new-create").hidden = false;
+    $("#new-dialog").showModal();
+    $("#new-name").focus();
+  });
+  $("#new-cancel").addEventListener("click", () => $("#new-dialog").close());
+  $("#new-dialog").addEventListener("cancel", event => {
+    if (state.creating) event.preventDefault();
+  });
+  $("#new-form").addEventListener("submit", event => {
+    event.preventDefault();
+    try {
+      newGameValues();
+      $("#new-message").textContent = "";
+      if (state.document && dirty()) {
+        $("#new-confirm").hidden = false;
+        $("#new-create").hidden = true;
+      } else createNewGame();
+    } catch (error) {
+      $("#new-message").textContent = error.message;
+    }
+  });
+  $("#new-save").addEventListener("click", () => createNewGame(true));
+  $("#new-discard").addEventListener("click", () => createNewGame());
+}
+
+async function createNewGame(saveFirst = false) {
+  if (state.creating || state.saving || isPlaying()) return;
+  let values;
+  try {
+    if (!$("#new-form").reportValidity()) return;
+    values = newGameValues();
+  } catch (error) {
+    $("#new-message").textContent = error.message;
+    return;
+  }
+  state.creating = true;
+  $("#new-fields").disabled = true;
+  refreshChrome({ structure: false });
+  try {
+    if (saveFirst && !(await save())) throw new Error("Could not save the current map; it remains open.");
+    const response = await fetch("/api/projects", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(values)
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error ?? `Creation failed (${response.status}).`);
+    if (payload.model !== generic.MODEL || payload.document?.id !== payload.mapId) {
+      throw new Error("The new game response has an invalid identity. Check Open Game before retrying.");
+    }
+    const design = generic.validateFloorDocument(payload.document);
+    applyDesign({ projectId: payload.projectId, mapId: payload.mapId }, payload, design);
+    $("#new-dialog").close();
+    setStatus(`Created ${payload.project.name}. Saved in SQLite; ready to edit.`);
+  } catch (error) {
+    $("#new-message").textContent = `Could not create game: ${error.message}`;
+  } finally {
+    state.creating = false;
+    $("#new-fields").disabled = false;
+    refreshChrome({ structure: false });
+  }
+}
+
+async function fetchDesign(identity, allowTemplate = false) {
+  const response = await fetch(mapUrl(identity));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? `Local map service responded ${response.status}.`);
+  if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
+      (payload.document && (![ASTRAEUM_MODEL, generic.MODEL].includes(payload.model) || payload.document.id !== identity.mapId))) {
+    throw new Error("The loaded design identity or model did not match the requested project and map.");
+  }
+  if (!payload.document && !allowTemplate) throw new Error("The selected saved map no longer exists.");
+  const model = payload.model === generic.MODEL ? generic : towerProject;
+  return { payload, document: model.validateFloorDocument(payload.document ?? createFloorDocument()) };
+}
+
+function applyDesign(identity, payload, design) {
+  state.model = payload.model ?? ASTRAEUM_MODEL;
+  const model = state.model === generic.MODEL ? generic : towerProject;
+  ({
+    ASSET_CATALOG, DESIGN_LAYERS, OBJECT_TYPES, clampTransform, collisionRect, createDesignObject,
+    createFloorMap, floorDocumentGrid, hitTest, isUnresolvedCollision, objectBounds, playStartProblems,
+    snapTransform, transformAtPoint, validateFloorDocument
+  } = model);
+  ({ drawAsset, drawDesign } = state.model === generic.MODEL ? generic : towerRender);
+  FLOOR1_BOUNDS = design.bounds;
+  state.layers = loadLayerPrefs(state.model);
+  state.placeAssetId = null;
+  state.paletteDrag = null;
+  state.pointerMode = null;
+  state.pointerStart = null;
+  state.spaceDown = false;
+  document.body.classList.remove("dragging-asset");
+  state.scene.document = null;
   const migration = describeMigrations(payload.migrations);
+  $("#migration-notice").hidden = !migration;
+  $("#migration-history").open = Boolean(migration?.error);
   if (migration) {
-    $("#migration-notice").hidden = false;
-    $("#migration-notice").textContent = migration.text;
+    $("#migration-text").textContent = migration.text;
     $("#migration-notice").classList.toggle("error", migration.error);
   }
-  if (!response.ok) {
-    throw new Error(`${payload.error ?? `Local map service responded ${response.status}.`} ` +
-      "Nothing was changed; inspect studio/data/studio.sqlite (maps, migrations tables) before editing.");
-  }
-  state.document = validateFloorDocument(payload.document ?? createFloorDocument());
+  state.identity = identity;
+  state.document = design;
   state.savedJson = JSON.stringify(state.document);
+  state.selectedId = null;
+  state.undo = [];
+  state.redo = [];
+  state.tool = "select";
+  state.preview = null;
+  state.hierarchyKey = "";
+  $("#play-error").hidden = true;
+  studio.dataset.playState = "idle";
+  $("#project-name").textContent = identity.projectId === ASTRAEUM_PROJECT_ID && identity.mapId === ASTRAEUM_FLOOR_1_MAP_ID
+    ? "Astraeum Tower · Floor 1" : payload.project ? payload.project.name : `${identity.projectId} · ${identity.mapId}`;
+  $("#project-name").title = payload.project ? `Author/credits: ${payload.project.author}\n${identity.projectId} / ${identity.mapId}\n${state.model}` : state.model;
+  document.title = `Web Studio - ${$("#project-name").textContent}`;
+  canvas.setAttribute("aria-label", `${$("#project-name").textContent} map editor`);
+  $("#palette-credit").textContent = state.model === generic.MODEL
+    ? "Built-in generic shapes - no imported artwork" : "Floor 1 artwork by Anh Nguyen (PixelLab)";
+  configurePalette();
+  centerCamera();
+  refreshChrome();
+  setStatus(payload.document
+    ? migration && !migration.error && payload.migrations[0].createdAt && Date.now() - Date.parse(payload.migrations[0].createdAt) < 60_000
+      ? "Reopened Floor 1 — upgraded to the object format (see Inspector)."
+      : "Reopened the locally saved design."
+    : "Opened the original Floor 1 map (not yet saved).");
+}
+
+async function switchToSelected(saveFirst = false) {
+  if (state.switching || !state.openSelection) return;
+  const { projectId, mapId, canAdopt } = state.openSelection;
+  const identity = { projectId, mapId };
+  state.switching = true;
+  $("#open-dialog").querySelectorAll("button, input").forEach(element => { element.disabled = true; });
+  refreshChrome({ structure: false });
+  try {
+    if (saveFirst && !(await save())) throw new Error("Could not save the current map; it remains open.");
+    if (canAdopt) {
+      const response = await fetch(`${mapUrl(identity)}/model/${ASTRAEUM_MODEL}`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok || result.projectId !== identity.projectId || result.mapId !== identity.mapId ||
+          result.model !== ASTRAEUM_MODEL) {
+        throw new Error(result.error ?? "Could not assign the Astraeum model.");
+      }
+    }
+    const { payload, document: design } = await fetchDesign(identity);
+    applyDesign(identity, payload, design);
+    $("#open-dialog").close();
+  } catch (error) {
+    openMessage(`Could not open map: ${error.message}`, true);
+  } finally {
+    state.switching = false;
+    $("#open-dialog").querySelectorAll("button").forEach(element => { element.disabled = false; });
+    $("#open-list").querySelectorAll("input").forEach(element => {
+      element.disabled = element.closest(".unsupported") !== null;
+    });
+    $("#open-selected").disabled = !state.openSelection;
+    refreshChrome({ structure: false });
+  }
+}
+
+async function openFloor() {
+  state.artwork = await towerRender.loadArtwork();
   configurePalette();
   configurePaletteView();
   configureResolveActions();
   configureEvents();
   await nextFrame();
   resize();
-  centerCamera();
   refreshChrome();
-  setStatus(payload.document
-    ? migration && !migration.error && payload.migrations[0].createdAt && Date.now() - Date.parse(payload.migrations[0].createdAt) < 60_000
-      ? "Reopened Floor 1 — upgraded to the object format (see Inspector)."
-      : "Reopened the locally saved Floor 1 design."
-    : "Opened the original Floor 1 map (not yet saved).");
   if (import.meta.env?.DEV) {
     window.__studioTest = Object.freeze({
       document: () => structuredClone(state.document),
@@ -1263,6 +1544,8 @@ async function openFloor() {
       }
     });
   }
+  const { payload, document: design } = await fetchDesign(state.identity, true);
+  applyDesign(state.identity, payload, design);
 }
 
 openFloor().catch(error => {

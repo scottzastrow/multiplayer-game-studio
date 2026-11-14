@@ -421,7 +421,8 @@ export function validateFloorDocument(document) {
   if (document.formatVersion !== DESIGN_FORMAT_VERSION) {
     fail(`Unsupported Floor 1 design format ${String(document.formatVersion)}.`);
   }
-  if (document.id !== DESIGN_ID || document.name !== DESIGN_NAME || document.cellSize !== MAP_CELL_SIZE) {
+  if (typeof document.id !== "string" || !IDENTIFIER.test(document.id) ||
+      document.name !== DESIGN_NAME || document.cellSize !== MAP_CELL_SIZE) {
     fail("The Floor 1 design identity is invalid.");
   }
   exactKeys(document.bounds, ["width", "height"], "Design bounds");
@@ -461,7 +462,7 @@ export function validateFloorDocument(document) {
   }
   return {
     formatVersion: DESIGN_FORMAT_VERSION,
-    id: DESIGN_ID,
+    id: document.id,
     name: DESIGN_NAME,
     cellSize: MAP_CELL_SIZE,
     bounds: { ...FLOOR1_BOUNDS },

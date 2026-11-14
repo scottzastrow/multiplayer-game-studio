@@ -18,3 +18,26 @@
   actionable errors) and verify through the real Play button.
 - [x] Label unresolved migrated collisions with assign/keep/delete actions and
   add palette thumbnail/list views remembered locally.
+- [x] Add validated stable project/map identity, project-scoped SQLite rows,
+  backups and migration history; migrate the existing Astraeum data and wire
+  the current editor to its explicit identity.
+- [x] Verify disposable database migration, save/reopen, invalid IDs and
+  isolation; run the existing editor smoke.
+- [x] Add Open Game for saved project/map pairs, unsaved-change protection,
+  explicit Astraeum model identification, and selected-document Play/Stop.
+- [x] Verify project switching, isolation, restart/reopen, model confirmation,
+  unsupported records and Play/Stop with disposable data.
+- [x] Add New Game UI, validation, unsaved-change protection and transactional
+  project creation with independent stable IDs and rollback of generated files.
+- [x] Add the explicit Generic Grid v1 document and primitive catalog, blank
+  terrain and two safe player starts; no copied Tower art or gameplay.
+- [x] Select the model-specific editor catalog/renderer and public runtime
+  adapter for created and reopened projects; keep SQLite authoritative.
+- [x] Collapse migration history while retaining visible, actionable
+  Astraeum unresolved-collision warnings.
+- [x] Verify two generic games through actual browser controls: invalid and
+  duplicate inputs, cancellation, separate edits/saves, restart/reopen,
+  isolated Play/Stop and return to unchanged Astraeum.
+- [ ] Following milestone: asset importing with project-specific compatibility
+  and credits. No silent fallback to Tower assets.
+- [ ] T042 remains open (no publication/deployment or kit rebuild).
