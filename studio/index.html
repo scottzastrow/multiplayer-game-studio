@@ -25,6 +25,7 @@
         <div class="file-actions">
           <button id="new-game" class="button secondary" type="button" disabled>New Game</button>
           <button id="open-game" class="button secondary" type="button" disabled>Open Game</button>
+          <button id="worlds-button" class="button secondary" type="button">Worlds</button>
           <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
           <button id="save" class="button secondary" disabled>Save</button>
           <button id="play" class="button primary" disabled>▶ Play</button>
@@ -101,6 +102,35 @@
           </form>
         </dialog>
       </header>
+      <dialog id="world-dialog" aria-labelledby="world-title">
+        <h2 id="world-title">World workspace</h2>
+        <p>World sections are new, independent 2048 × 2048 maps. Existing levels are not moved or connected.</p>
+        <label>World name <input id="world-name" maxlength="64" value="New world"></label>
+        <label>First section grid X <input id="world-grid-x" type="number" step="1" value="0"></label>
+        <label>First section grid Y <input id="world-grid-y" type="number" step="1" value="0"></label>
+        <p>The second section is immediately east of the first.</p>
+        <button id="world-create" class="button primary" type="button">Create world</button>
+        <label>Existing world <select id="world-list"></select></label>
+        <button id="world-open" class="button secondary" type="button" disabled>Open world</button>
+        <p id="world-dialog-status" role="alert"></p>
+        <button id="world-dialog-close" class="button secondary" type="button">Cancel</button>
+      </dialog>
+      <dialog id="world-workspace" aria-labelledby="world-workspace-title">
+        <div class="world-toolbar">
+          <strong id="world-workspace-title"></strong>
+          <button id="world-zoom-out" type="button">−</button>
+          <output id="world-zoom-label"></output>
+          <button id="world-zoom-in" type="button">+</button>
+          <button id="world-undo" type="button">Undo</button>
+          <button id="world-redo" type="button">Redo</button>
+          <button id="world-save" type="button">Save workspace</button>
+          <button id="world-close" type="button">Close workspace</button>
+        </div>
+        <p id="world-play-note">Play is unavailable in the world workspace. Open an independent level to use Play; cross-section Play and runtime streaming are not implemented.</p>
+        <p>Drag an unlocked object within its section to move it. Middle-drag or Space-drag pans; wheel zooms. Painting and fill are not available.</p>
+        <canvas id="world-canvas" tabindex="0" aria-label="World workspace canvas"></canvas>
+        <p id="world-status" role="status" aria-live="polite"></p>
+      </dialog>
       <main class="workspace">
         <aside class="panel hierarchy">
           <section aria-label="Levels in selected game">

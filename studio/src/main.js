@@ -40,6 +40,7 @@ import {
 } from "@multiplayer-game/theme-sdk";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
 import { importedAssetDefinition } from "../project-assets.js";
+import { configureWorldWorkspace } from "./world-workspace.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
@@ -1765,6 +1766,25 @@ const playInputCodes = new Set([
 ]);
 
 function configureEvents() {
+  configureWorldWorkspace(() => {
+    if (!state.document || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy) {
+      setStatus("Open a saved level before using Worlds.", true);
+      return null;
+    }
+    return {
+      projectId: state.identity.projectId, mapId: state.identity.mapId, model: state.model,
+      draw: (ctx, document) => drawDesign(ctx, state.artwork, document, {
+        grid: floorDocumentGrid(document), mode: "editor", visible: visibleLayers()
+      }),
+      hitTest: (document, point) => hitTest(document, point, isSelectable),
+      objectBounds,
+      validate: validateFloorDocument,
+      transform: (object, dx, dy) => {
+        const next = { x: Math.round(object.transform.x + dx), y: Math.round(object.transform.y + dy) };
+        return state.snap || ASSET_CATALOG[object.assetId].snap.forced ? snapTransform(object.assetId, next) : next;
+      }
+    };
+  });
   new ResizeObserver(resize).observe(editorView);
   canvas.addEventListener("pointerdown", pointerDown);
   canvas.addEventListener("pointermove", pointerMove);

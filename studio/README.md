@@ -1,5 +1,37 @@
 # Web Studio map editor
 
+## World workspace foundation
+
+**Worlds** opens a workspace scoped to the current saved game. Create a world
+with two new 2048 × 2048 sections; the second is immediately east of the
+specified integer grid position. Existing levels are not added, resized or
+relocated. Open an existing world from the same dialog. Each section retains
+its own stable ID and local document; section borders and grid coordinates are
+shown on one pan/zoom canvas.
+
+Drag a visible, unlocked object within its section to move it. Middle-drag or
+Space-drag pans; the wheel zooms. A move crossing the section boundary is
+rejected. Undo/Redo applies to workspace moves, and Save writes both sections
+in one revision-checked SQLite transaction. If a save response is lost, retry
+the same save before closing; a conflict leaves edits open. Closing a dirty
+workspace asks before discarding it. The independent level beneath the
+workspace is not changed. Save, history and Close are unavailable during an
+active drag.
+
+This foundation does not include painting, fill or cross-section object moves.
+Play is unavailable while a world workspace is open; use an independent
+level for Play. Runtime section streaming and cross-section Play are not
+implemented. `npm run studio:world:test` uses disposable storage and direct CDP,
+retaining its evidence under `studio/data/`.
+
+The 2026-11-14 disposable verification was segmented: API creation, validation,
+rollback, revision checks, retry and restart passed before an opening timeout;
+opening and movement passed in a continuation before a CDP wheel-event error;
+zoom, pan and exact save/reopen passed in a further continuation. The full
+smoke did not pass end-to-end. After the drag-action review fix, the
+`--reuse-data world-workspace-yzWxps --pending-ui-only` continuation passed
+with evidence in `studio/data/world-workspace-aA8MAL/`.
+
 Run `npm run studio:dev` from the repository root, then open
 `http://127.0.0.1:4173`. This starts the Studio Vite app and its map service;
 the service binds only to `127.0.0.1`. The editor reads the existing Floor 1

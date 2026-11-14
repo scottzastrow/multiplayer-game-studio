@@ -248,3 +248,26 @@ body.is-playing .toolbar { justify-content: flex-start; }
   .tool-group { gap: 4px; padding: 0; }
   .brand { min-width: auto; }
 }
+#world-workspace {
+  width: 96vw;
+  height: 94vh;
+  max-width: none;
+  max-height: none;
+}
+
+#world-workspace[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.world-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+#world-workspace p { margin: 0; }
+#world-canvas { width: 100%; flex: 1; min-height: 100px; background: #14161a; touch-action: none; }
+#world-status.error { color: #ff6670; }
