@@ -70,6 +70,19 @@ uniform Floor 1-sized terrain and an Aries start, without Floor 1's walls,
 props, enemies or layout. Project assets remain available, and Play uses the
 existing model-specific settings and adapter.
 
+On 2026-11-14, the user manually saved an edit, opened another game, and
+returned to find the edit persisted. This did not verify a refresh or restart.
+The pending Levels smoke helper opens the game's designated start through
+**Open Game**, then selects a different requested level through **Levels**;
+its assertions and timeout limits are unchanged.
+
+Automated Levels acceptance remains unverified: attempts in
+`studio/data/levels-smoke-ZTQqYn/` and `studio/data/levels-smoke-0Yb2hw/`
+timed out during startup before acceptance checks. A subsequent diagnostic in
+`studio/data/startup-levels-oCi2Ct/` failed during fixture preparation; the
+startup-only continuation in `studio/data/startup-levels-NPIAbV/` reached
+readiness but recorded no acceptance checks. T042 remains open.
+
 ## Map dimensions and gameplay camera
 
 The Inspector's **Map Width** and **Map Height** controls explicitly expand

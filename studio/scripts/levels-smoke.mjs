@@ -178,8 +178,12 @@ async function openGame(projectId, mapId) {
   const selector = `.open-entry[data-project-id="${projectId}"] input`;
   await click(selector);
   await click("#open-selected");
-  await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(mapId)}`);
+  await waitFor('!document.querySelector("#open-dialog").open');
   await waitFor(`document.querySelector(${JSON.stringify(row(mapId))})`);
+  if ((await design()).id !== mapId) {
+    await selectLevel(mapId);
+    await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(mapId)}`);
+  }
 }
 async function createGame(name) {
   await click("#new-game");
