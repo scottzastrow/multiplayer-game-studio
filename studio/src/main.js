@@ -86,6 +86,7 @@ const editorView = $("#editor-view");
 const playHost = $("#play-host");
 let playerSettingsReturnFocus = null;
 let playerControllerStatusTimer = null;
+let worldWorkspace;
 
 const state = {
   document: null,
@@ -1766,7 +1767,7 @@ const playInputCodes = new Set([
 ]);
 
 function configureEvents() {
-  configureWorldWorkspace(() => {
+  worldWorkspace = configureWorldWorkspace(() => {
     if (!state.document || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy) {
       setStatus("Open a saved level before using Worlds.", true);
       return null;
@@ -1779,6 +1780,14 @@ function configureEvents() {
       hitTest: (document, point) => hitTest(document, point, isSelectable),
       objectBounds,
       validate: validateFloorDocument,
+      assetCatalog: ASSET_CATALOG,
+      createObject: createDesignObject,
+      terrainLayer: () => ({ ...state.layers.terrain }),
+      setTerrainLayer: prefs => {
+        state.layers.terrain = { ...prefs };
+        saveLayerPrefs();
+        refreshChrome();
+      },
       transform: (object, dx, dy) => {
         const next = { x: Math.round(object.transform.x + dx), y: Math.round(object.transform.y + dy) };
         return state.snap || ASSET_CATALOG[object.assetId].snap.forced ? snapTransform(object.assetId, next) : next;
@@ -2609,6 +2618,7 @@ async function openFloor() {
     window.__studioTest = Object.freeze({
       document: () => structuredClone(state.document),
       identity: () => ({ ...state.identity }),
+      worldWorkspace: () => worldWorkspace.inspect(),
       worldToClient(x, y) {
         const rect = canvas.getBoundingClientRect();
         return { x: rect.left + (x - state.cameraX) * state.zoom, y: rect.top + (y - state.cameraY) * state.zoom };

@@ -108,6 +108,8 @@ game remains in `games/astraeum-tower/`.
 
 Level transitions, generation, tile painting, area fill, boundaries,
 procedural scattering, audio and shared libraries remain separate future work.
+The proposed world-workspace increment below scopes tile painting and
+rectangular fill separately; it does not change this original milestone.
 
 Multiplayer editing, collaboration, dynamic-object motion, generators,
 PixelLab integration, engine-kit changes or rebuilds, publishing, deployment,
@@ -188,3 +190,220 @@ or implementation.
   evidence, run affected checks once and stop on failure; no debugger is
   required. Keep all work local and uncommitted, leave T042 open, and preserve
   pending map/camera and onboarding work.
+
+## World-workspace increment
+
+The foundation supports two new adjacent sections, a shared canvas,
+section-local object movement and transactional workspace persistence.
+The terrain-brush increment adds continuous 32px world-cell strokes, including
+negative coordinates and seam crossing, deduplicated drag rasterization,
+replacement/no-op behavior, whole-stroke preflight, Escape cancellation and
+one cross-section Undo/Redo. It reuses each model's catalog/object factory and
+validator and the existing transactional two-section save endpoint. Terrain
+visibility/lock controls share the editor's local layer preferences.
+Rectangular fill, Boundary, cross-section object moves and world Play remain
+deferred; their design and acceptance criteria below are not implementation
+or verification claims.
+
+The focused logic check passed with evidence in
+`studio/data/world-terrain-logic-ldQV1c/diagnostics.json`. The disposable
+direct-CDP terrain flow passed with evidence in
+`studio/data/world-workspace-AvOQBm/diagnostics.json`: it covered rejected
+and cancelled strokes, seam painting, Undo/Redo, no-op repaint, transactional
+save, service restart and exact reopen. T042 remains open.
+
+### Existing boundaries
+
+- SQLite `maps` owns each project-scoped level document; `project_levels` owns
+  the start reference. Level deletion is soft, and backups and migration records
+  are separate. A single-map PUT is transactional but has no revision check
+  and cannot atomically save multiple maps (`studio/server.mjs`).
+- Both supported models store whole-pixel, section-local object transforms,
+  require artwork bounds inside the document, enforce per-document object IDs
+  and terrain-cell uniqueness, and limit a design to 4000 objects
+  (`games/generic-grid-v1/src/project.js`,
+  `games/astraeum-tower/src/project.js`). Assets can have pivots; collision
+  offsets are relative to the object transform.
+- The editor has one document, camera, cached map-sized scene and selection
+  keyed by object ID. `worldPointFromClient` converts canvas input using pan
+  and zoom; a 100-entry history stores immutable document/selection snapshots.
+  Layer visibility and locks are local model preferences. Placing on a hidden
+  or locked layer is rejected. Switching documents clears history
+  (`studio/src/main.js`). The world workspace has a terrain brush; rectangular
+  fill remains deferred.
+- The pinned public SDK map is limited to 2048 pixels per dimension, 4096
+  runtime objects, 4096 collisions and 256 spawns; `createLocalGame` accepts
+  one optional `MapDefinition` at creation. Its declarations do not expose
+  section loading or replacement of a running map. These runtime limits are
+  distinct from Studio's design limit and the current 2 MB single-map request
+  limit.
+
+### Identity, storage and compatibility
+
+- Add explicit project-owned worlds and section membership in SQLite. A world
+  has an immutable stable ID and model; each section has an immutable stable
+  section ID, an integer `(gridX, gridY)` and a reference to exactly one active
+  2048 x 2048 map of that project and model. Unique constraints cover world
+  position and map membership; section IDs do not encode position. Retain map
+  IDs and local object IDs; identify editor objects by `(sectionId, objectId)`.
+  Grid positions and their pixel origins/endpoints must be safe integers;
+  reject arithmetic overflow rather than rounding.
+- Initial scope creates new world sections explicitly, including two adjacent
+  sections. Existing independent levels are not added, resized, translated,
+  connected or rewritten by migration or opening a world. Attaching, moving,
+  detaching or deleting sections and importing existing levels are deferred;
+  no automatic level transitions are implied. Keep existing Levels, start,
+  delete/recover, single-level Save and Play behavior for independent levels.
+  Protect world-owned maps from independent level operations that could break
+  membership; expose an actionable explanation, not silent unlinking.
+- Add world metadata and revision fields in a transactional, additive schema
+  migration without modifying existing map JSON, IDs, timestamps, backups,
+  migration reports or start references. Opening the world loads its membership
+  and saved section documents; creating a world and its sections must itself
+  be all-or-nothing. Project assets remain project-scoped. Workspace state is
+  editor data, not a second map authority or a runtime streaming protocol.
+
+### Coordinates and canvas
+
+- A section at `(gx, gy)` has origin `(gx * 2048, gy * 2048)` and owns the
+  half-open rectangle `[originX, originX + 2048) x [originY, originY + 2048)`.
+  For a finite world point `(x, y)`, use `gx = floor(x / 2048)` and
+  `gy = floor(y / 2048)`, then `localX = x - gx * 2048` and likewise for Y.
+  Thus `-1` maps to section `-1`, local `2047`; `-2048` maps to `-1`, local
+  `0`; `2048` maps to `1`, local `0`. Reverse conversion adds the origin.
+  Do not use truncation toward zero or signed remainder as the local coordinate.
+  Pointer coordinates may be fractional; authored transforms remain whole
+  pixels and respect each model's snap rules.
+- Use one world-space camera and canvas. Convert the pointer to world space
+  once, resolve section and local coordinates, and translate each section's
+  rendering, grid, overlays and hit tests by its origin. Cache/invalidate
+  scenes per section and render only visible sections; never allocate a canvas
+  covering the entire world. Keep per-model draw ordering, artwork and
+  selection geometry consistent. Show section boundaries and loading/error
+  states distinctly from authored terrain. No panning or zooming discontinuity
+  occurs at the shared edge.
+- The terrain brush supports cell-sized strokes and existing editing within
+  a section; rectangular fill remains future work. A single object, artwork
+  bounds and collision must remain wholly inside its owning section; reject
+  placement or movement that would
+  straddle an edge instead of clamping, splitting or relocating it. Cross-edge
+  object moves, multi-section selection/group transforms and seamless
+  cross-section autotiling/decorations are deferred. In particular Astraeum's
+  renderer derives Wang tiles and decorations from a section-local grid:
+  show its existing section-edge appearance rather than claim seamless
+  neighboring-wall rendering or alter single-level artwork.
+
+### Brush, fill, locks and atomic history
+
+- Add a 32-pixel grid-aligned terrain brush and rectangular fill using
+  compatible single-cell terrain assets. Rasterize the entire pointer path in
+  world grid cells so fast movement cannot leave holes; deduplicate revisited
+  cells. A rectangle includes both endpoint cells, regardless of drag
+  direction. At each cell convert its world origin to the owner section and
+  local cell. Replacing an existing terrain tile is explicit tool behavior:
+  replace that tile, never add a duplicate; an identical tile is a no-op.
+  Preserve unrelated objects, layer order, asset references and valid IDs.
+- Preview the complete proposed operation without mutating documents. At
+  pointer completion validate every affected section, target layer, cell,
+  replacement, ID, asset, model and capacity before applying anything.
+  A locked or hidden target layer, invalid cell, capacity failure, failed
+  load or missing section rejects the entire gesture with an actionable
+  section-specific reason; do not skip cells, clip at a boundary, auto-create
+  sections, or commit a partial stroke. Pointer cancellation also changes
+  nothing. Existing local layer lock/visibility preferences apply throughout
+  the workspace and are not collaboration or server locks.
+- A gesture may proceed only with every touched section fully loaded and
+  validated against the current membership; an unloaded known section may be
+  explicitly loaded and retried. Missing, deleted, unsupported, or failed-to-
+  load sections remain visibly unavailable, never blank writable land. Keep
+  dirty sections and history pinned in memory; do not evict them silently.
+  Block the gesture if the required bounded working set cannot be loaded.
+- Commit one immutable workspace command containing before/after documents
+  and selection for every affected section. One Undo or Redo restores all of
+  them together, even across a save; restoring a history command is not a new
+  brush operation and is not blocked by a later local layer-lock change.
+  A no-op or rejected gesture adds no history entry; a new committed edit
+  clears Redo. Preserve the existing 100-command bound and never silently
+  discard dirty documents when history is trimmed. World switching and closing
+  must offer save/discard/cancel for the whole dirty workspace and retain the
+  original documents, history and view on cancel or failure.
+
+### Capacity, saving and concurrency
+
+- Preflight the resulting 4000-object limit separately for each model document,
+  including existing terrain and all other objects. A 2048 x 2048 section
+  has 64 x 64 = 4096 terrain cells, so filling every empty cell as individual
+  objects already exceeds that limit; fail the whole operation rather than
+  silently truncate or change the format. Account for replacements before
+  counting. Apply existing model validation, per-section serialized-size
+  limits and applicable runtime map limits without relaxing or bypassing them;
+  drafts may retain the existing saveable-but-not-playable behavior.
+- Save all dirty section documents and relevant world metadata through one
+  bounded workspace request and one SQLite transaction, not sequential
+  single-map PUTs. Validate each payload and identity, project/model,
+  membership, active status, section bounds and every expected revision
+  inside the transaction before writing; enforce a per-document 2 MB limit
+  and an explicit aggregate request/section bound. Use monotonic revisions,
+  not timestamps, and make every existing single-map write and level mutation
+  that can affect a world member participate in the same revision/conflict
+  scheme. Migrate existing revisions without rewriting document bytes.
+- Concurrent changes, deletion, membership changes, validation errors,
+  request-limit failures and SQLite errors roll back every write; preserve
+  dirty documents and history, identify the conflict and require an explicit
+  reload/reconciliation rather than overwrite. Mark all saved baselines clean
+  only after a confirmed commit. Use a client-generated operation ID and a
+  transactionally stored receipt so an interrupted or lost response can be
+  reconciled/retried idempotently; never assume either success or failure.
+  Disable conflicting editor actions during the save and protect unsaved work
+  across service restart or failed reopen.
+
+### Studio/public API boundary
+
+Studio can implement the workspace, persistence, coordinate math, rendering,
+tools and history locally while continuing to validate each supported section
+and to use the installed public map validator for playable individual maps.
+World Play is unavailable in this increment. Open an independent level to
+use Play; the workspace does not walk across the seam or merge two sections
+into an oversized `MapDefinition`.
+
+The actual public-contract gap is a supported multi-section runtime map/
+streaming and transition interface: the pinned map contract cannot represent
+the combined 4096 x 2048 area as one map, and local preview exposes no running
+map replacement API. This blocks an Engine-supported seamless multi-section
+preview, not the Studio-only workspace. Future multiplayer also needs an
+explicit authoritative loading, movement/collision and client synchronization
+contract; that is a separate Engine design, not something established by
+editor loading. Game-owned custom behavior may be investigated separately;
+do not infer that every possible custom simulation requires an Engine change.
+Do not edit private Engine internals or rebuild the installed kit.
+
+### Acceptance criteria for a future implementation
+
+- Create and reopen a world with adjacent `(0, 0)` and `(1, 0)` sections, plus
+  negative-position cases. Assert exact conversions at `-2049`, `-2048`, `-1`,
+  `0`, `2047` and `2048` on both axes, round trips, unique identities/positions
+  and safe-integer overflow rejection. Existing independent level bytes, IDs,
+  bounds, locations, start and backup history remain unchanged.
+- In one canvas, pan/zoom, render and hit-test both sections using local
+  artwork, including duplicate local object IDs and asset pivots. A seam-crossing
+  stroke and rectangles dragged in both directions edit the exact expected
+  32-pixel cells in both sections, including negative coordinates, with no gaps
+  or duplicate terrain; replacement and no-op behavior are verified.
+- One Undo and one Redo restore both section documents and selection exactly;
+  save, Undo, Redo and save again preserve correct dirty state. Cancelled or
+  invalid gestures create no history; locked/hidden layers, missing/unloaded/
+  deleted sections, failed loads and object-boundary crossings cause no
+  partial changes and show actionable errors. Loading or retrying never loses
+  dirty content. Check per-section capacity, including 4096-cell fill rejection,
+  replacement counts and runtime/play validation.
+- Inject failure on the second section, stale revisions from a separate
+  single-map writer, deleted or changed membership, oversized payload,
+  SQLite failure and lost save response. Verify all-or-nothing persisted
+  documents, retained dirty state/history and idempotent reconciliation.
+  Restart the service and reopen: both committed documents and membership are
+  exact; rejected or rolled-back saves leave both prior documents intact.
+- Verify independent-level workflows and Play/Stop remain unchanged. Use
+  disposable storage and actual editor controls for future
+  focused verification; this design is not a claim that those checks ran.
+  Runtime streaming, multiplayer, deployment and kit rebuild remain out of
+  scope. T042 stays open.

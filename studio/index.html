@@ -118,6 +118,11 @@
       <dialog id="world-workspace" aria-labelledby="world-workspace-title">
         <div class="world-toolbar">
           <strong id="world-workspace-title"></strong>
+          <button id="world-select-tool" type="button" aria-pressed="true">Select / Move</button>
+          <button id="world-brush-tool" type="button" aria-pressed="false">Terrain brush</button>
+          <label>Terrain <select id="world-brush-asset" aria-label="Terrain brush asset"></select></label>
+          <label><input id="world-terrain-visible" type="checkbox"> Show terrain</label>
+          <label><input id="world-terrain-locked" type="checkbox"> Lock terrain</label>
           <button id="world-zoom-out" type="button">−</button>
           <output id="world-zoom-label"></output>
           <button id="world-zoom-in" type="button">+</button>
@@ -127,7 +132,8 @@
           <button id="world-close" type="button">Close workspace</button>
         </div>
         <p id="world-play-note">Play is unavailable in the world workspace. Open an independent level to use Play; cross-section Play and runtime streaming are not implemented.</p>
-        <p>Drag an unlocked object within its section to move it. Middle-drag or Space-drag pans; wheel zooms. Painting and fill are not available.</p>
+        <p>Drag an unlocked object within its section to move it. Middle-drag or Space-drag pans; wheel zooms. Rectangular fill is not available.</p>
+        <p>Terrain brush: drag to replace 32px cells across sections. Escape cancels the stroke. Space-drag or middle-drag pans.</p>
         <canvas id="world-canvas" tabindex="0" aria-label="World workspace canvas"></canvas>
         <p id="world-status" role="status" aria-live="polite"></p>
       </dialog>

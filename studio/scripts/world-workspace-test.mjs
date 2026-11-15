@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { worldToSection, sectionToWorld, sectionOrigin } from "../world-coordinates.js";
+import * as generic from "../../games/generic-grid-v1/src/project.js";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const dataRoot = resolve(root, "studio", "data");
@@ -15,9 +16,11 @@ const directory = await mkdtemp(resolve(dataRoot, "world-workspace-"));
 const database = resolve(directory, "world.sqlite");
 const reuseArgument = process.argv.indexOf("--reuse-data");
 const pendingOnly = process.argv.includes("--pending-ui-only");
+const terrainOnly = process.argv.includes("--terrain-only");
 const reusedDirectory = reuseArgument >= 0
   ? resolve(dataRoot, process.argv[reuseArgument + 1] ?? "") : null;
 if (pendingOnly && !reusedDirectory) throw new Error("--pending-ui-only requires --reuse-data.");
+if (terrainOnly && (pendingOnly || reusedDirectory)) throw new Error("--terrain-only requires fresh disposable data.");
 if (reusedDirectory) {
   const relativeSource = relative(dataRoot, reusedDirectory);
   if (!relativeSource || relativeSource.startsWith("..")) throw new Error("Reuse data must be a retained directory under studio/data.");
@@ -66,9 +69,11 @@ function service() {
     STUDIO_GAMES_PATH: relative(root, resolve(directory, "games"))
   });
 }
-async function ready(address, child) {
+async function ready(address, child, allowSuccessfulExit = false) {
   for (let i = 0; i < 150; i++) {
-    if (child.exitCode !== null) throw new Error(`Process exited: ${child.output}`);
+    if (child.exitCode !== null && !(allowSuccessfulExit && child.exitCode === 0 && child.signalCode === null)) {
+      throw new Error(`Process exited: ${child.output}`);
+    }
     try { const response = await fetch(address); if (response.ok) return response; } catch {}
     await delay(100);
   }
@@ -124,7 +129,7 @@ async function click(selector) {
 }
 
 try {
-  if (!pendingOnly) {
+  if (!pendingOnly && !terrainOnly) {
     for (const x of [-2049, -2048, -1, 0, 2047, 2048]) {
       const coordinate = worldToSection(x, x);
       assert.equal(coordinate.gridX, Math.floor(x / 2048));
@@ -141,7 +146,36 @@ try {
   let original;
   let address;
   let saved;
-  if (reusedDirectory) {
+  if (terrainOnly) {
+    const created = await request("/api/projects", "POST", {
+      name: "Terrain fixture", author: "Disposable brush verification", width: 2048, height: 2048, model: generic.MODEL
+    });
+    assert.equal(created.status, 201);
+    ({ projectId, mapId } = created.body);
+    initialLevel = (await request(`/api/projects/${projectId}/maps/${mapId}`)).body.document;
+    const creation = await request(`/api/projects/${projectId}/worlds`, "POST", {
+      name: "Terrain seam", sourceMapId: mapId,
+      positions: [{ gridX: -1, gridY: 0 }, { gridX: 0, gridY: 0 }]
+    });
+    assert.equal(creation.status, 201);
+    const fixture = creation.body;
+    fixture.sections[0].document.objects.push(
+      generic.createDesignObject("existing-tile", "generic-tile", { x: 2016, y: 320 }, 37),
+      generic.createDesignObject("terrain-brush-1", "generic-marker", { x: 2016, y: 320 }, 7));
+    fixture.sections[1].document.objects.push(
+      generic.createDesignObject("existing-tile", "generic-tile", { x: 0, y: 320 }, 37),
+      generic.createDesignObject("unrelated-block", "generic-block", { x: 0, y: 320 }, 7));
+    const seeded = await request(`/api/projects/${projectId}/worlds/${fixture.worldId}`, "PUT", {
+      operationId: "seed-terrain", revision: fixture.revision,
+      sections: fixture.sections.map(item => ({
+        sectionId: item.sectionId, revision: item.revision, document: item.document
+      }))
+    });
+    assert.equal(seeded.status, 200);
+    original = seeded.body;
+    saved = seeded;
+    evidence.push({ terrainBaseline: original, independentLevel: initialLevel });
+  } else if (reusedDirectory) {
     const db = new DatabaseSync(database, { readOnly: true });
     const fixture = db.prepare(`SELECT p.project_id AS projectId, pl.starting_map_id AS mapId, w.world_id AS worldId
       FROM projects p JOIN project_levels pl ON pl.project_id = p.project_id
@@ -225,7 +259,7 @@ try {
     "--headless=new", "--disable-gpu", `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${resolve(directory, "chrome")}`, "--window-size=1600,1000", "about:blank"
   ]);
-  const version = await (await ready(`http://127.0.0.1:${debugPort}/json/version`, chrome)).json();
+  const version = await (await ready(`http://127.0.0.1:${debugPort}/json/version`, chrome, true)).json();
   socket = new WebSocket(version.webSocketDebuggerUrl);
   await new Promise((ok, fail) => { socket.addEventListener("open", ok, { once: true }); socket.addEventListener("error", fail, { once: true }); });
   socket.addEventListener("message", ({ data }) => {
@@ -235,13 +269,15 @@ try {
       browserErrors.push(message.params.args.map(item => item.value ?? item.description ?? "").join(" "));
     }
     if (message.method === "Network.requestWillBeSent") {
-      networkRequests.set(message.params.requestId, message.params.request.url);
+      networkRequests.set(message.params.requestId, {
+        url: message.params.request.url, method: message.params.request.method, postData: message.params.request.postData
+      });
     }
     if (message.method === "Network.responseReceived" && message.params.response.url.includes("/api/")) {
       network.push({ url: message.params.response.url, status: message.params.response.status });
     }
     if (message.method === "Network.loadingFailed") {
-      network.push({ url: networkRequests.get(message.params.requestId), error: message.params.errorText,
+      network.push({ url: networkRequests.get(message.params.requestId)?.url, error: message.params.errorText,
         canceled: message.params.canceled });
     }
     const call = pending.get(message.id);
@@ -277,12 +313,165 @@ try {
   await click("#world-open");
   if (pendingOnly) await waitFor('document.querySelector("#world-workspace").open');
   else await waitFor('document.querySelector("#world-workspace").open && document.querySelector("#world-status").textContent.includes("opened")');
-  if (!pendingOnly) assert.match(await evaluate('document.querySelector("#world-play-note").textContent'), /Play is unavailable/);
+  if (!pendingOnly && !terrainOnly) assert.match(await evaluate('document.querySelector("#world-play-note").textContent'), /Play is unavailable/);
   const canvas = await evaluate(`(() => { const r = document.querySelector("#world-canvas").getBoundingClientRect();
     const c = document.querySelector("#world-canvas");
     return {x:r.x,y:r.y,width:r.width,height:r.height,clientWidth:c.clientWidth,clientHeight:c.clientHeight}; })()`);
   assert.ok(canvas.width > 1024 && canvas.height > 300);
-  if (pendingOnly) {
+  if (terrainOnly) {
+    const inspect = () => evaluate("window.__studioTest.worldWorkspace()");
+    const docs = value => value.world.sections.map(item => item.document);
+    const baselineDocuments = original.sections.map(item => item.document);
+    const client = (x, y) => ({ x: canvas.x + (x + 2048) * 0.25, y: canvas.y + y * 0.25 });
+    const drag = async (start, end, retrace = false) => {
+      const a = client(start.x, start.y), b = client(end.x, end.y);
+      await mouse("mousePressed", a.x, a.y);
+      await mouse("mouseMoved", b.x, b.y);
+      if (retrace) {
+        await mouse("mouseMoved", a.x, a.y);
+        await mouse("mouseMoved", b.x, b.y);
+      }
+      const preview = await inspect();
+      assert.deepEqual(docs(preview), baselineDocuments, "the complete preview cannot mutate section documents");
+      assert.equal(preview.gesture, "brush");
+      assert.equal(await evaluate('document.querySelector("#world-save").disabled'), true);
+      await mouse("mouseReleased", b.x, b.y);
+    };
+    const assertUnchanged = async message => {
+      const state = await inspect();
+      assert.deepEqual(docs(state), baselineDocuments, message);
+      assert.equal(state.undoCount, 0);
+      assert.equal(state.redoCount, 0);
+      assert.equal(state.dirty, false);
+    };
+    assert.deepEqual(docs(await inspect()), baselineDocuments, "workspace loads exact fixture documents");
+    const selected = client(-1008, 1040);
+    await mouse("mousePressed", selected.x, selected.y);
+    await mouse("mouseReleased", selected.x, selected.y);
+    const initialSelection = (await inspect()).selection;
+    assert.deepEqual(initialSelection, { sectionId: original.sections[0].sectionId, objectId: "player-start" });
+    await click("#world-brush-tool");
+    assert.equal(await evaluate('document.querySelector("#world-brush-asset").value'), "generic-tile");
+    assert.equal(await evaluate('document.querySelector("#world-terrain-locked").checked'), true);
+    const start = { x: -81, y: 337 }, end = { x: 80, y: 337 };
+    await drag(start, end);
+    assert.match(await evaluate('document.querySelector("#world-status").textContent'), /rejected.*locked/);
+    await assertUnchanged("locked terrain rejects the whole seam stroke");
+    await click("#world-terrain-locked");
+    await click("#world-terrain-visible");
+    await drag(start, end);
+    assert.match(await evaluate('document.querySelector("#world-status").textContent'), /rejected.*hidden/);
+    await assertUnchanged("hidden terrain rejects the whole seam stroke");
+    await click("#world-terrain-visible");
+
+    const cancelStart = client(-81, 369), cancelEnd = client(80, 369);
+    await mouse("mousePressed", cancelStart.x, cancelStart.y);
+    await mouse("mouseMoved", cancelEnd.x, cancelEnd.y);
+    assert.deepEqual(docs(await inspect()), baselineDocuments);
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await mouse("mouseReleased", cancelEnd.x, cancelEnd.y);
+    assert.match(await evaluate('document.querySelector("#world-status").textContent'), /cancelled/);
+    assert.equal(await evaluate('document.querySelector("#world-workspace").open'), true);
+    await assertUnchanged("Escape cancels without closing the workspace or adding history");
+    await drag({ x: 1984, y: 337 }, { x: 2096, y: 337 });
+    assert.match(await evaluate('document.querySelector("#world-status").textContent'), /rejected.*Section \(1, 0\).*missing/);
+    await assertUnchanged("missing adjacent section leaves both loaded documents unchanged");
+
+    const expected = structuredClone(baselineDocuments);
+    expected[0].objects.push(
+      generic.createDesignObject("terrain-brush-2", "generic-tile", { x: 1952, y: 320 }, 38),
+      generic.createDesignObject("terrain-brush-3", "generic-tile", { x: 1984, y: 320 }, 39));
+    expected[1].objects.push(
+      generic.createDesignObject("terrain-brush-1", "generic-tile", { x: 32, y: 320 }, 38),
+      generic.createDesignObject("terrain-brush-2", "generic-tile", { x: 64, y: 320 }, 39));
+    evidence.push({ terrainExpected: expected });
+    await drag(start, end, true);
+    let state = await inspect();
+    evidence.push({ terrainActualAfterStroke: state });
+    assert.deepEqual(docs(state), expected, "fast retraced seam stroke paints exactly six gap-free cells");
+    assert.deepEqual(state.selection, initialSelection);
+    assert.equal(state.undoCount, 1, "the whole cross-section stroke is one command");
+    assert.equal(state.dirty, true);
+    for (const document of docs(state)) {
+      const terrain = document.objects.filter(object => object.type === "terrain-tile");
+      assert.equal(terrain.length, 3);
+      assert.equal(new Set(terrain.map(object => `${object.transform.x},${object.transform.y}`)).size, 3);
+    }
+    const painted = await cdp("Page.captureScreenshot");
+    await writeFile(resolve(directory, "terrain-painted.png"), Buffer.from(painted.data, "base64"));
+
+    await click("#world-terrain-locked");
+    await click("#world-undo");
+    state = await inspect();
+    assert.deepEqual(docs(state), baselineDocuments, "one Undo restores both sections even while terrain is locked");
+    assert.deepEqual(state.selection, initialSelection);
+    assert.equal(state.dirty, false);
+    assert.equal(state.undoCount, 0);
+    assert.equal(state.redoCount, 1);
+    await click("#world-redo");
+    state = await inspect();
+    assert.deepEqual(docs(state), expected, "one Redo restores both complete painted documents");
+    assert.equal(state.undoCount, 1);
+    assert.deepEqual(state.selection, initialSelection);
+    await click("#world-terrain-locked");
+    const a = client(start.x, start.y), b = client(end.x, end.y);
+    await mouse("mousePressed", a.x, a.y);
+    await mouse("mouseMoved", b.x, b.y);
+    await mouse("mouseReleased", b.x, b.y);
+    assert.match(await evaluate('document.querySelector("#world-status").textContent'), /unchanged/);
+    state = await inspect();
+    assert.deepEqual(docs(state), expected);
+    assert.equal(state.undoCount, 1, "identical repaint does not stack terrain or add history");
+    await click("#world-save");
+    await waitFor('document.querySelector("#world-status").textContent.includes("saved transactionally")');
+    state = await inspect();
+    assert.deepEqual(docs(state), expected);
+    assert.equal(state.dirty, false);
+    const putRequests = [...networkRequests.values()].filter(item => item.url === webUrl + address && item.method === "PUT");
+    assert.equal(putRequests.length, 1, "UI submits both dirty sections in one workspace PUT");
+    const submitted = JSON.parse(putRequests[0].postData);
+    assert.deepEqual(submitted.sections.map(item => item.document), expected);
+    assert.deepEqual(submitted.sections.map(item => item.sectionId), original.sections.map(item => item.sectionId));
+    assert.equal(state.world.revision, original.revision + 1);
+    for (let index = 0; index < 2; index++) assert.equal(state.world.sections[index].revision, original.sections[index].revision + 1);
+    const db = new DatabaseSync(database, { readOnly: true });
+    const receipt = db.prepare("SELECT result_json FROM world_save_receipts WHERE operation_id = ?").get(submitted.operationId);
+    assert.ok(receipt, "the transaction records the exact save receipt");
+    assert.deepEqual(JSON.parse(receipt.result_json).sections.map(item => item.document), expected);
+    const stored = db.prepare(`SELECT m.document_json FROM world_sections s JOIN maps m
+      ON m.project_id = s.project_id AND m.map_id = s.map_id
+      WHERE s.project_id = ? AND s.world_id = ? ORDER BY s.grid_x`).all(projectId, original.worldId);
+    db.close();
+    assert.deepEqual(stored.map(item => JSON.parse(item.document_json)), expected);
+    evidence.push({ transactionalPut: submitted, savedWorkspace: state, sqliteDocuments: expected });
+    await click("#world-undo");
+    assert.deepEqual(docs(await inspect()), baselineDocuments);
+    assert.equal((await inspect()).dirty, true, "Undo after save retains history and becomes dirty");
+    await click("#world-redo");
+    assert.deepEqual(docs(await inspect()), expected);
+    assert.equal((await inspect()).dirty, false, "Redo to the saved baseline becomes clean");
+    await click("#world-close");
+    await stop(server);
+    server = service();
+    await ready(`${api}/api/projects`, server);
+    await click("#worlds-button");
+    await waitFor(`document.querySelector("#world-dialog").open &&
+      document.querySelector("#world-list").value === ${JSON.stringify(original.worldId)} &&
+      !document.querySelector("#world-open").disabled`);
+    await click("#world-open");
+    await waitFor('document.querySelector("#world-workspace").open && document.querySelector("#world-status").textContent.includes("opened")');
+    const reopened = await inspect();
+    evidence.push({ terrainReopened: reopened });
+    assert.deepEqual(docs(reopened), expected, "UI reopen after owned service restart restores both exact documents");
+    assert.equal(reopened.dirty, false);
+    assert.equal(reopened.undoCount, 0);
+    assert.deepEqual(await evaluate("window.__studioTest.document()"), initialLevel);
+    assert.deepEqual((await request(`/api/projects/${projectId}/maps/${mapId}`)).body.document, initialLevel);
+    assert.deepEqual(exceptions, []);
+    assert.deepEqual(browserErrors, []);
+    console.log("Disposable direct-CDP terrain paint/save/reopen flow passed.");
+  } else if (pendingOnly) {
     const storedDocuments = () => {
       const db = new DatabaseSync(database, { readOnly: true });
       try {
@@ -514,16 +703,22 @@ try {
         openRect: (() => { const r = document.querySelector("#world-open")?.getBoundingClientRect();
           return r && {x:r.x,y:r.y,width:r.width,height:r.height}; })(),
         title: document.querySelector("#world-workspace-title")?.textContent,
-        trace: window.__worldWorkspaceTrace
+        trace: window.__worldWorkspaceTrace,
+        worldWorkspace: window.__studioTest?.worldWorkspace?.()
       })`) });
       const screenshot = await cdp("Page.captureScreenshot");
       await writeFile(resolve(directory, "final.png"), Buffer.from(screenshot.data, "base64"));
     } catch (error) { evidence.push({ diagnosticsError: error.message }); }
+    try { await cdp("Browser.close", {}, true); }
+    catch (error) { evidence.push({ browserCloseError: error.message }); }
     socket.close();
   }
   for (const child of [...children].reverse()) await stop(child);
   await writeFile(resolve(directory, "diagnostics.json"), JSON.stringify({
-    failure, evidence, exceptions, browserErrors, network: network.filter(item => item.url || item.error)
+    failure, evidence, exceptions, browserErrors, network: network.filter(item => item.url || item.error),
+    ports: { apiPort, webPort, debugPort },
+    processes: children.map(child => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode })),
+    ...(terrainOnly ? { requests: [...networkRequests.values()] } : {})
   }, null, 2));
   for (const [index, child] of children.entries()) await writeFile(resolve(directory, `process-${index}.log`), child.output);
   console.log(`World workspace evidence: ${directory}`);

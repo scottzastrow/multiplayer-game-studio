@@ -1,4 +1,5 @@
 import { sectionOrigin, worldToSection } from "../world-coordinates.js";
+import { extendTerrainStroke, isTerrainBrushAsset, planTerrainStroke, TERRAIN_CELL_SIZE } from "../world-terrain.js";
 
 export function configureWorldWorkspace(getEditor) {
   const $ = selector => document.querySelector(selector);
@@ -17,6 +18,7 @@ export function configureWorldWorkspace(getEditor) {
   let pending = null;
   let undo = [];
   let redo = [];
+  let tool = "select";
   const scenes = new Map();
   const url = (projectId, id = "") => `/api/projects/${encodeURIComponent(projectId)}/worlds${id ? `/${encodeURIComponent(id)}` : ""}`;
   const documents = () => world.sections.map(section => section.document);
@@ -43,6 +45,13 @@ export function configureWorldWorkspace(getEditor) {
     $("#world-undo").disabled = busy || Boolean(pointer) || Boolean(pending) || !undo.length;
     $("#world-redo").disabled = busy || Boolean(pointer) || Boolean(pending) || !redo.length;
     $("#world-close").disabled = busy || Boolean(pointer);
+    for (const id of ["world-zoom-in", "world-zoom-out", "world-select-tool", "world-brush-tool", "world-brush-asset",
+      "world-terrain-visible", "world-terrain-locked"]) {
+      $(`#${id}`).disabled = busy || Boolean(pointer) || Boolean(pending);
+    }
+    $("#world-brush-tool").disabled ||= !$("#world-brush-asset").value;
+    $("#world-select-tool").setAttribute("aria-pressed", String(tool === "select"));
+    $("#world-brush-tool").setAttribute("aria-pressed", String(tool === "brush"));
     draw();
   }
   function draw() {
@@ -76,6 +85,16 @@ export function configureWorldWorkspace(getEditor) {
         scenes.set(section.sectionId, scene);
       }
       context.drawImage(scene.image, origin.x, origin.y);
+      context.strokeStyle = "#ffffff18";
+      context.lineWidth = 1 / camera.zoom;
+      context.beginPath();
+      for (let offset = 0; offset <= 2048; offset += TERRAIN_CELL_SIZE) {
+        context.moveTo(origin.x + offset, origin.y);
+        context.lineTo(origin.x + offset, origin.y + 2048);
+        context.moveTo(origin.x, origin.y + offset);
+        context.lineTo(origin.x + 2048, origin.y + offset);
+      }
+      context.stroke();
       context.strokeStyle = "#ffd166";
       context.lineWidth = 3 / camera.zoom;
       context.strokeRect(origin.x, origin.y, 2048, 2048);
@@ -84,6 +103,15 @@ export function configureWorldWorkspace(getEditor) {
       context.fillStyle = "#fff";
       context.font = `${16 / camera.zoom}px sans-serif`;
       context.fillText(`Section (${section.gridX}, ${section.gridY})`, origin.x + 16 / camera.zoom, origin.y + 30 / camera.zoom);
+    }
+    if (pointer?.mode === "brush") {
+      context.fillStyle = pointer.stroke.error ? "#ff667060" : "#66ccff60";
+      context.strokeStyle = pointer.stroke.error ? "#ff6670" : "#66ccff";
+      context.lineWidth = 1 / camera.zoom;
+      for (const cell of pointer.stroke.cells.values()) {
+        context.fillRect(cell.x, cell.y, TERRAIN_CELL_SIZE, TERRAIN_CELL_SIZE);
+        context.strokeRect(cell.x, cell.y, TERRAIN_CELL_SIZE, TERRAIN_CELL_SIZE);
+      }
     }
     if (selection) {
       const section = world.sections.find(item => item.sectionId === selection.sectionId);
@@ -118,6 +146,7 @@ export function configureWorldWorkspace(getEditor) {
     status("Workspace history restored.");
   }
   function setZoom(value, x = canvas.clientWidth / 2, y = canvas.clientHeight / 2) {
+    if (pointer || busy || pending) return;
     const worldX = camera.x + x / camera.zoom;
     const worldY = camera.y + y / camera.zoom;
     camera.zoom = Math.max(0.1, Math.min(4, value));
@@ -132,12 +161,18 @@ export function configureWorldWorkspace(getEditor) {
       pointer = { mode: "pan", x: event.clientX, y: event.clientY, camera: { ...camera } };
     } else if (event.button === 0) {
       const worldPoint = point(event);
-      const local = worldToSection(worldPoint.x, worldPoint.y);
-      const section = world.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
-      const object = section && editor.hitTest(section.document, { x: local.x, y: local.y });
-      selection = object ? { sectionId: section.sectionId, objectId: object.id } : null;
-      pointer = object ? { mode: "move", section, object, start: worldPoint, before: snapshot(), invalid: null } : null;
-      update();
+      if (tool === "brush") {
+        pointer = { mode: "brush", before: snapshot(), assetId: $("#world-brush-asset").value,
+          stroke: { cells: new Map(), last: null, error: null } };
+        extendTerrainStroke(pointer.stroke, worldPoint);
+      } else {
+        const local = worldToSection(worldPoint.x, worldPoint.y);
+        const section = world.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
+        const object = section && editor.hitTest(section.document, { x: local.x, y: local.y });
+        selection = object ? { sectionId: section.sectionId, objectId: object.id } : null;
+        pointer = object ? { mode: "move", section, object, start: worldPoint, before: snapshot(), invalid: null } : null;
+        update();
+      }
     }
     if (pointer) {
       canvas.setPointerCapture(event.pointerId);
@@ -147,6 +182,12 @@ export function configureWorldWorkspace(getEditor) {
   });
   canvas.addEventListener("pointermove", event => {
     if (!pointer) return;
+    if (pointer.mode === "brush") {
+      for (const sample of event.getCoalescedEvents?.() ?? []) extendTerrainStroke(pointer.stroke, point(sample));
+      extendTerrainStroke(pointer.stroke, point(event));
+      update();
+      return;
+    }
     if (pointer.mode === "pan") {
       camera.x = pointer.camera.x - (event.clientX - pointer.x) / camera.zoom;
       camera.y = pointer.camera.y - (event.clientY - pointer.y) / camera.zoom;
@@ -168,6 +209,27 @@ export function configureWorldWorkspace(getEditor) {
   });
   function finish(cancelled) {
     if (!pointer) return;
+    if (pointer.mode === "brush") {
+      if (cancelled) status("Terrain stroke cancelled; no sections changed.");
+      else {
+        try {
+          if (pointer.stroke.error) throw new Error(pointer.stroke.error);
+          const updates = planTerrainStroke(world.sections, pointer.stroke.cells.values(), {
+            assetId: pointer.assetId, assetCatalog: editor.assetCatalog, layerState: editor.terrainLayer(),
+            createObject: editor.createObject, validate: editor.validate
+          });
+          if (updates.length) {
+            undo.push(pointer.before);
+            if (undo.length > 100) undo.shift();
+            redo = [];
+            for (const update of updates) {
+              world.sections.find(section => section.sectionId === update.sectionId).document = update.document;
+            }
+            status(`Terrain stroke applied to ${updates.length} section(s).`);
+          } else status("Terrain stroke unchanged (identical cells).");
+        } catch (error) { status(`Terrain stroke rejected: ${error.message}`, true); }
+      }
+    }
     if (pointer.mode === "move") {
       if (cancelled || pointer.invalid) {
         restore(pointer.before);
@@ -182,14 +244,23 @@ export function configureWorldWorkspace(getEditor) {
     pointer = null;
     update();
   }
-  canvas.addEventListener("pointerup", () => finish(false));
+  canvas.addEventListener("pointerup", event => {
+    if (pointer?.mode === "brush") extendTerrainStroke(pointer.stroke, point(event));
+    finish(false);
+  });
   canvas.addEventListener("pointercancel", () => finish(true));
+  canvas.addEventListener("lostpointercapture", () => finish(true));
   canvas.addEventListener("wheel", event => {
     event.preventDefault();
     const rect = canvas.getBoundingClientRect();
     setZoom(camera.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX - rect.left, event.clientY - rect.top);
   }, { passive: false });
   workspace.addEventListener("keydown", event => {
+    if (event.code === "Escape" && pointer?.mode === "brush") {
+      event.preventDefault();
+      finish(true);
+      return;
+    }
     if (event.code === "Space" && event.target === canvas) { space = true; event.preventDefault(); }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") { event.preventDefault(); save(); }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") { event.preventDefault(); applyHistory(event.shiftKey ? redo : undo, event.shiftKey ? undo : redo); }
@@ -202,6 +273,15 @@ export function configureWorldWorkspace(getEditor) {
   $("#world-zoom-out").addEventListener("click", () => setZoom(camera.zoom / 1.2));
   $("#world-undo").addEventListener("click", () => applyHistory(undo, redo));
   $("#world-redo").addEventListener("click", () => applyHistory(redo, undo));
+  $("#world-select-tool").addEventListener("click", () => { tool = "select"; update(); });
+  $("#world-brush-tool").addEventListener("click", () => { tool = "brush"; update(); });
+  for (const id of ["world-terrain-visible", "world-terrain-locked"]) {
+    $(`#${id}`).addEventListener("change", () => {
+      editor.setTerrainLayer({ visible: $("#world-terrain-visible").checked, locked: $("#world-terrain-locked").checked });
+      scenes.clear();
+      update();
+    });
+  }
   async function save() {
     if (!world || busy || pointer || (!dirty() && !pending)) return;
     if (!pending) pending = { operationId: `save-${crypto.randomUUID()}`, revision: world.revision,
@@ -231,7 +311,11 @@ export function configureWorldWorkspace(getEditor) {
     scenes.clear();
   }
   $("#world-close").addEventListener("click", close);
-  workspace.addEventListener("cancel", event => { event.preventDefault(); close(); });
+  workspace.addEventListener("cancel", event => {
+    event.preventDefault();
+    if (pointer?.mode === "brush") finish(true);
+    else close();
+  });
   new ResizeObserver(() => draw()).observe(canvas);
   function openWorld(result) {
     if (result.projectId !== editor.projectId || result.model !== editor.model || result.sections.length !== 2) {
@@ -247,6 +331,11 @@ export function configureWorldWorkspace(getEditor) {
     undo = [];
     redo = [];
     pending = null;
+    tool = "select";
+    $("#world-brush-asset").replaceChildren(...Object.entries(editor.assetCatalog)
+      .filter(([, asset]) => isTerrainBrushAsset(asset)).map(([id, asset]) => new Option(asset.label, id)));
+    $("#world-terrain-visible").checked = editor.terrainLayer().visible;
+    $("#world-terrain-locked").checked = editor.terrainLayer().locked;
     scenes.clear();
     const first = sectionOrigin(world.sections[0].gridX, world.sections[0].gridY);
     camera = { x: first.x, y: first.y, zoom: 0.25 };
@@ -288,5 +377,11 @@ export function configureWorldWorkspace(getEditor) {
     try { openWorld(await request(url(editor.projectId, $("#world-list").value))); }
     catch (error) { $("#world-dialog-status").textContent = error.message; }
     finally { $("#world-open").disabled = !$("#world-list").value; }
+  });
+  return Object.freeze({
+    inspect: () => world && ({
+      world: structuredClone(world), selection: structuredClone(selection), camera: { ...camera },
+      dirty: Boolean(dirty()), undoCount: undo.length, redoCount: redo.length, gesture: pointer?.mode ?? null
+    })
   });
 }
