@@ -54,8 +54,8 @@
         </dialog>
         <dialog id="open-dialog" aria-labelledby="open-dialog-title">
           <h2 id="open-dialog-title">Open Game</h2>
-          <p>Saved projects and maps with an explicit supported model (Astraeum Floor or Generic Grid v1).</p>
-          <div id="open-list" class="open-list" role="radiogroup" aria-label="Saved projects and maps"></div>
+          <p>Open a saved game at its designated starting level. Use the Levels dropdown to open another level. Unsupported games cannot be opened; untyped compatible Astraeum games require explicit model assignment.</p>
+          <div id="open-list" class="open-list" role="radiogroup" aria-label="Saved games"></div>
           <p id="open-message" role="status" aria-live="polite"></p>
           <div id="open-confirm" hidden>
             <p>There are unsaved changes in the current map. Save them before switching, discard them, or cancel.</p>
@@ -66,14 +66,14 @@
             </div>
           </div>
           <div id="open-model-confirm" hidden>
-            <p>This map has no recorded game model, but its document matches the Astraeum Floor format. Opening it as Astraeum will record that choice and use the Astraeum editor and Tower Play behavior. Do this only for an Astraeum design.</p>
+            <p>This game's starting level has no recorded model, but its document matches the Astraeum Floor format. Opening it as Astraeum will record that choice and use the Astraeum editor and Tower Play behavior. Do this only for an Astraeum design.</p>
             <div class="dialog-actions">
               <button id="model-confirm" class="button primary" type="button">Assign Astraeum and Open</button>
               <button id="model-cancel" class="button secondary" type="button">Cancel switch</button>
             </div>
           </div>
           <div id="open-actions" class="dialog-actions">
-            <button id="open-selected" class="button primary" type="button" disabled>Open selected</button>
+            <button id="open-selected" class="button primary" type="button" disabled>Open game</button>
             <button id="open-cancel" class="button secondary" type="button">Cancel</button>
           </div>
         </dialog>

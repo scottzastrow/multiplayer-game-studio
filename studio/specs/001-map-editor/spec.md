@@ -22,9 +22,10 @@ game remains in `games/astraeum-tower/`.
   against a disposable database.
 - Project-scoped SQLite persistence with validated stable IDs, including
   transactional migration of the existing Astraeum map and its backup history.
-- Open saved project/map pairs supported by the Astraeum model, protect
-  unsaved changes, and use the selected document for Play/Stop. Require
-  explicit consent before identifying an untyped compatible map as Astraeum.
+- Open Game lists each saved project once and opens its designated starting
+  level; use Levels to switch to another level. Protect unsaved changes and
+  use the selected document for Play/Stop. Require explicit consent before
+  identifying an untyped compatible starting level as Astraeum.
 - New Game beside Open Game: collect a nonblank game name (up to 64 characters),
   author/credits (up to 128), and explicit Generic Grid v1 model. New games
   have a fixed 2048 x 2048 pixel world; there are no editable dimension fields,

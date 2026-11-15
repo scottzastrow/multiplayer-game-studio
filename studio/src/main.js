@@ -2026,43 +2026,60 @@ async function showOpenDialog() {
   $("#open-selected").disabled = true;
   $("#open-list").replaceChildren();
   showSwitchConfirmation(false);
-  openMessage("Loading saved projects…");
+  openMessage("Loading saved games…");
   $("#open-dialog").showModal();
   try {
     const response = await fetch("/api/projects");
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? `Listing failed (${response.status}).`);
     if (!$("#open-dialog").open || requestId !== state.openRequest) return;
+    const projects = new Map();
     for (const entry of payload.maps) {
+      if (!projects.has(entry.projectId)) {
+        projects.set(entry.projectId, { projectId: entry.projectId, project: entry.project, levels: [] });
+      }
+      projects.get(entry.projectId).levels.push(entry);
+    }
+    for (const project of projects.values()) {
+      const { projectId, levels } = project;
+      const starting = levels.find(level => level.starting);
+      const activeLevelCount = levels.length;
+      const disabledReason = !starting ? "No active starting level is designated."
+        : !starting.supported && !starting.canAdopt ? `Unsupported starting level: ${starting.reason}`
+          : null;
+      const supported = starting?.supported === true;
+      const canAdopt = starting?.canAdopt === true;
       const label = document.createElement("label");
-      label.className = `open-entry${entry.supported || entry.canAdopt ? "" : " unsupported"}`;
-      label.dataset.projectId = entry.projectId;
-      label.dataset.mapId = entry.mapId;
+      label.className = `open-entry${supported || canAdopt ? "" : " unsupported"}`;
+      label.dataset.projectId = projectId;
       const radio = document.createElement("input");
       radio.type = "radio";
-      radio.name = "open-map";
-      radio.disabled = !entry.supported && !entry.canAdopt;
+      radio.name = "open-project";
+      radio.disabled = !supported && !canAdopt;
       const text = document.createElement("span");
       const title = document.createElement("strong");
-      title.textContent = `${entry.project?.name ?? entry.projectId} / ${entry.name ?? entry.mapId}${entry.starting ? " (Start)" : ""}`;
+      title.textContent = project.project?.name ?? projectId;
       const details = document.createElement("small");
-      details.textContent = entry.supported ? entry.model === generic.MODEL
-        ? `Generic Grid v1 · ${entry.project?.author ?? ""}` : "Astraeum Floor model" : entry.canAdopt
-        ? "Untyped compatible design — explicit Astraeum assignment required"
-        : `Unsupported: ${entry.reason}`;
+      const count = `${activeLevelCount} active ${activeLevelCount === 1 ? "level" : "levels"}`;
+      const author = project.project?.author ? ` · ${project.project.author}` : "";
+      details.textContent = supported
+        ? `${count} · ${starting.model === generic.MODEL ? "Generic Grid v1" : "Astraeum Floor model"}${author}`
+        : canAdopt
+          ? `${count} · Untyped compatible starting level — explicit Astraeum assignment required${author}`
+          : `${count} · ${disabledReason}`;
       text.append(title, details);
       label.append(radio, text);
       radio.addEventListener("change", () => {
-        state.openSelection = { projectId: entry.projectId, mapId: entry.mapId, canAdopt: entry.canAdopt };
+        state.openSelection = { projectId, mapId: starting.mapId, canAdopt };
         $("#open-selected").disabled = false;
         openMessage("");
       });
       $("#open-list").append(label);
     }
-    openMessage(payload.maps.length ? "Select a supported saved map." : "No saved projects or maps yet.");
+    openMessage(projects.size ? "Select a supported saved game." : "No saved games yet.");
   } catch (error) {
     if ($("#open-dialog").open && requestId === state.openRequest) {
-      openMessage(`Could not list saved projects: ${error.message}`, true);
+      openMessage(`Could not list saved games: ${error.message}`, true);
     }
   }
 }

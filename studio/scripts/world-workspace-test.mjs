@@ -267,7 +267,7 @@ try {
     }
   })()`);
   await click("#open-game");
-  await click(`.open-entry[data-project-id="${projectId}"][data-map-id="${mapId}"] input`);
+  await click(`.open-entry[data-project-id="${projectId}"] input`);
   await click("#open-selected");
   await waitFor(`window.__studioTest.identity().projectId === ${JSON.stringify(projectId)} && !document.querySelector("#open-dialog").open`);
   await click("#worlds-button");

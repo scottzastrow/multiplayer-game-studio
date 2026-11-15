@@ -175,7 +175,7 @@ async function selectLevel(id) {
 }
 async function openGame(projectId, mapId) {
   await click("#open-game");
-  const selector = `.open-entry[data-project-id="${projectId}"][data-map-id="${mapId}"] input`;
+  const selector = `.open-entry[data-project-id="${projectId}"] input`;
   await click(selector);
   await click("#open-selected");
   await waitFor(`!document.querySelector("#open-dialog").open && window.__studioTest.document().id === ${JSON.stringify(mapId)}`);
@@ -203,8 +203,7 @@ async function operation(action, name) {
 }
 async function placeMarker() {
   await click('.asset-card[data-asset-id="generic-marker"]');
-  const { x, y } = await evaluate("window.__studioTest.worldToClient(80, 80)");
-  await clickAt(x, y);
+  await click("#map-canvas");
   await waitFor('document.querySelector("#save-state").textContent.includes("Unsaved")');
   await click("#select-tool");
 }
@@ -528,6 +527,42 @@ async function mapSettingsChecks() {
 }
 
 async function dropdownChecks() {
+  const firstGame = await createGame("Open Game grouping");
+  const originalStart = await design();
+  const designatedStart = await operation("add", "Designated start");
+  await click("#level-start");
+  await waitFor(`document.querySelector(${JSON.stringify(row(designatedStart.id))}).textContent.includes("(Start)")`);
+  const secondGame = await createGame("Separate game");
+
+  await click("#open-game");
+  await waitFor(`document.querySelector('.open-entry[data-project-id="${firstGame.projectId}"]') &&
+    document.querySelector('.open-entry[data-project-id="${secondGame.projectId}"]')`);
+  const projectEntries = await evaluate(`Array.from(document.querySelectorAll("#open-list .open-entry")).map(entry => ({
+    projectId: entry.dataset.projectId, text: entry.textContent
+  }))`);
+  assert.equal(projectEntries.filter(entry => entry.projectId === firstGame.projectId).length, 1,
+    "two levels in one game produce one Open Game entry");
+  assert.equal(projectEntries.filter(entry => entry.projectId === secondGame.projectId).length, 1,
+    "a separate game produces a separate Open Game entry");
+  const firstEntryText = projectEntries.find(entry => entry.projectId === firstGame.projectId).text;
+  assert.match(firstEntryText, /Open Game grouping/);
+  assert.match(firstEntryText, /2 active levels/);
+  assert.doesNotMatch(firstEntryText, /Designated start/);
+
+  await click(`.open-entry[data-project-id="${firstGame.projectId}"] input`);
+  await click("#open-selected");
+  await waitFor(`!document.querySelector("#open-dialog").open &&
+    window.__studioTest.document().id === ${JSON.stringify(designatedStart.id)}`);
+  await waitFor(`document.querySelector(${JSON.stringify(row(originalStart.id))})`);
+  assert.equal(await evaluate('document.querySelector("#level-select").options.length'), 2,
+    "other levels remain available in the Levels dropdown");
+  assert.equal((await (await fetch(`http://127.0.0.1:${apiPort}/api/projects/${firstGame.projectId}/levels`))
+    .json()).startingMapId, designatedStart.id, "opening does not change the designated start metadata");
+  await selectLevel(originalStart.id);
+  await waitFor(`window.__studioTest.document().id === ${JSON.stringify(originalStart.id)} &&
+    !document.querySelector("#open-dialog").open`);
+  assert.deepEqual(await design(), originalStart, "the Levels dropdown still opens another level unchanged");
+
   await createGame("Level dropdown");
   const first = await design();
   assert.equal(await evaluate('document.querySelector("#level-select").labels[0].textContent'), "Current level");
@@ -581,7 +616,7 @@ async function dropdownChecks() {
   await waitFor('!document.querySelector("#level-select").disabled');
   assert.equal(await evaluate('document.querySelector("#level-select").value'), first.id);
   assert.deepEqual(exceptions, []);
-  console.log("Levels dropdown passed via disposable direct CDP: labelled keyboard selection, current/start labels, unsaved cancellation, selected-level actions, separate recovery and Play/Stop disabled states.");
+  console.log("Open Game and Levels passed via disposable direct CDP: one entry per project, designated-start opening, level switching, unsaved cancellation, selected-level actions, recovery and Play/Stop disabled states.");
 }
 
 async function draftRecoveryChecks() {

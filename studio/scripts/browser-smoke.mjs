@@ -1209,7 +1209,7 @@ try {
   }
   async function selectSaved(projectId, mapId) {
     await clickButton("#open-game");
-    const selector = `.open-entry[data-project-id="${projectId}"][data-map-id="${mapId}"] input`;
+    const selector = `.open-entry[data-project-id="${projectId}"] input`;
     await waitFor(`document.querySelector(${JSON.stringify(selector)}) !== null`);
     await clickSelector(selector);
     await clickButton("#open-selected");
@@ -1542,7 +1542,7 @@ try {
   await reloadPage();
   await waitFor(`window.__studioTest !== undefined && document.querySelector("#map-canvas").dataset.layerCounts !== undefined`);
   await clickButton("#open-game");
-  const firstEntrySelector = `.open-entry[data-project-id="${firstEntry.projectId}"][data-map-id="${firstEntry.mapId}"] input`;
+  const firstEntrySelector = `.open-entry[data-project-id="${firstEntry.projectId}"] input`;
   await waitFor(`document.querySelector(${JSON.stringify(firstEntrySelector)}) !== null`);
   await clickSelector(firstEntrySelector);
   await clickButton("#open-selected");
