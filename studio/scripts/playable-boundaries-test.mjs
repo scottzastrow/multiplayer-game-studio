@@ -107,6 +107,8 @@ try {
   const afterExpansion = defaultBoundaryCells([section(0, 0), section(0, 1)]);
   assert.equal(beforeExpansion.size, 4096);
   assert.equal(afterExpansion.size, 8192, "adding a section expands the implicit default boundary");
+  assert.deepEqual(defaultBoundaryCells([section(0, 0)]), beforeExpansion,
+    "removing the other section restores the default boundary to the remaining union");
 
   const smallRoot = section(0, 0, 160, 160);
   const gridResult = createGridRectangleBoundary({ x: 1, y: 1 }, { x: 2, y: 2 }, [smallRoot]);
@@ -135,7 +137,7 @@ try {
   const document = generic.createDocument("boundary-test-map", "Boundary test");
   const sections = [{ sectionId: "root", mapId: document.id, gridX: 0, gridY: 0, document }];
   const editor = {
-    state: { sections, identity: { mapId: document.id }, activeSectionId: "root", document,
+    state: { sections, archivedSections: [], identity: { mapId: document.id }, activeSectionId: "root", document,
       selectedIds: new Set(), undo: [], redo: [], boundaryDraft: null, fillPreview: null,
       pointerMode: null, scene: {} },
     HISTORY_LIMIT: 100,
@@ -146,6 +148,8 @@ try {
     isSelectable: () => true,
     setSelection: ids => { editor.state.selectedIds = new Set(ids); },
     activeSection: () => editor.state.sections.find(item => item.sectionId === editor.state.activeSectionId),
+    allSections: () => [...editor.state.sections, ...editor.state.archivedSections],
+    rootSection: () => editor.allSections().find(item => item.mapId === editor.state.identity.mapId),
     boundarySections: () => editor.state.sections.map(({ gridX, gridY, document: design }) => ({ gridX, gridY, document: design })),
     refreshChrome() {},
     refreshAfterOperation() {},
@@ -153,7 +157,7 @@ try {
     setStatus() {}
   };
   editor.validateFloorDocument = value => generic.validateFloorDocument(value);
-  const historyController = ["pushSectionUndo", "restoreHistory", "undo", "redo",
+  const historyController = ["pushSectionUndo", "restoreHistory", "undo", "redo", "applyHistory",
     "commitToolPreview", "applyBoundary", "resetBoundary", "cancelBoundaryPreview"].map(functionSource).join("\n");
   const editorBoundary = createGridRectangleBoundary({ x: 30, y: 30 }, { x: 33, y: 33 }, [
     { gridX: 0, gridY: 0, document }

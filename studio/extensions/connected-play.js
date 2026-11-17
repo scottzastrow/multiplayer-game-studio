@@ -16,7 +16,7 @@ import {
 const CELL = MAP_CELL_SIZE;
 const metadata = Object.freeze({ id: "studio-connected-movement", version: "1.0.0", stateSchemaVersion: 1 });
 
-export function createConnectedPreview(sourceSections, { mapId, model, assetCatalog }) {
+export function createConnectedPreview(sourceSections, { mapId, model, assetCatalog, rootDocument }) {
   if (![generic.MODEL, ASTRAEUM_MODEL].includes(model)) throw new Error("Unsupported connected Play model.");
   const isTower = model === ASTRAEUM_MODEL;
   const project = isTower ? tower : generic;
@@ -24,7 +24,8 @@ export function createConnectedPreview(sourceSections, { mapId, model, assetCata
     sectionId, mapId, gridX, gridY, origin: sectionOrigin(gridX, gridY),
     document: project.validateFloorDocument(structuredClone(document), assetCatalog)
   }));
-  const root = sections.find(section => section.mapId === mapId);
+  const root = sections.find(section => section.mapId === mapId) ??
+    (rootDocument?.id === mapId ? { document: project.validateFloorDocument(structuredClone(rootDocument), assetCatalog) } : null);
   if (!root) throw new Error("The selected level's root section is missing. Reopen the level before Play.");
   const requiredStarts = isTower ? ["spawn-aries"] : ["generic-player", "generic-player-2"];
   for (const assetId of requiredStarts) {

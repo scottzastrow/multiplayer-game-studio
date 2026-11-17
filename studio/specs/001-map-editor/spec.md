@@ -435,6 +435,13 @@ internals or rebuild the installed kit.
   New sections have an empty object array (no terrain, walls, props or starts),
   without clearing any saved contents or changing the editor camera. Independent levels are
   never merged or relocated.
+- Remove Section reviews the selected section's name, position and object
+  count before confirmation. At least one remains, other sections never move,
+  and removal is one Undo/Redo action. Save retains archived documents rather
+  than purging them; history does not survive reopening. The archive is limited
+  to 16 sections. Add and Remove drafts may be combined before Save. Warn
+  about starts and custom boundaries; reject removal if the
+  custom boundary includes the removed area rather than reshaping it.
 - Section maps retain their own map IDs and section-local object coordinates.
   The editor uses the existing main canvas, palette, hierarchy, Inspector,
   layers, tools and history. Object selection identity is `(sectionId,
@@ -464,7 +471,7 @@ internals or rebuild the installed kit.
 - The default playable boundary is the union of saved sections, not their
   bounding rectangle; exposed outer edges block movement, shared seams stay
   open, and holes remain blocked. Adding a section expands the implicit
-  default. Custom grid masks or closed polygon outlines preview before Apply,
+  default; removing one contracts the union. Custom grid masks or closed polygon outlines preview before Apply,
   reject self-intersections and missing-section areas, and support Escape,
   Undo/Redo and Reset as single history operations. A custom root-level
   boundary remains unchanged when sections are added. Boundary data is
@@ -472,7 +479,8 @@ internals or rebuild the installed kit.
   independent.
 - SQLite migration is additive. `level_sections` and its revision/receipt
   records associate section maps with their owning level; the original map row
-  remains the `(0,0)` section. Section saves validate membership and revisions
+  remains the level identity and boundary owner even if its `(0,0)` section is
+  archived. Section saves validate membership and revisions
   and update all documents in one transaction. Each level is bounded to 16
   sections and each saved section retains the 2 MB document limit.
 - Existing level documents, metadata, starting-level references, assets,
@@ -483,6 +491,8 @@ internals or rebuild the installed kit.
   connected-world APIs. Single-section custom boundaries remain enforced
   through public rectangle collisions. Excluded/missing authored starts are
   explained, never repositioned or replaced.
+  When the original section is archived, even one remaining section uses the
+  connected movement-only preview with the retained root document.
   Do not equate runtime adapter checks with main-editor UI acceptance.
 
 Focused disposable checks include `npm run studio:sections:test` and

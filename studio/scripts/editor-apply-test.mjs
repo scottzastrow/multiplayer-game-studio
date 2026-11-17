@@ -164,11 +164,12 @@ function editor(model) {
     ...browser, towerProject, generic, towerRender, ...boundaries, ...terrain, ...fill, ...coordinates, ...identity,
     RUNTIME_MAP_CELL_SIZE: 32, RUNTIME_MAX_MAP_DIMENSION: 2048,
     ARTWORK_CREDIT: "", structuredClone, TextEncoder, console,
+    crypto: { randomUUID: () => "fixture-save-id" },
     localStorage: { getItem() { return null; }, setItem() {} },
     ResizeObserver: class { observe() {} }
   });
   runInContext(`${main}
-    globalThis.testEditor = { state, configureEvents, configurePalette, refreshChrome, activateAssetCatalog, render, play, stop };
+    globalThis.testEditor = { state, configureEvents, configurePalette, refreshChrome, activateAssetCatalog, render, play, stop, save };
   `, sandbox);
   const api = sandbox.testEditor;
   const { state } = api;
@@ -287,6 +288,7 @@ for (const model of [generic, towerProject]) {
   assert.equal(state.document.name, dirty.name);
   const original = e.documents();
   const positions = JSON.stringify(state.sections.map(s => [s.gridX, s.gridY]));
+  const existingSectionIds = state.sections.map(section => section.sectionId);
   const view = [state.cameraX, state.cameraY, state.zoom];
   const requests = [];
   e.sandbox.fetch = async (address, options) => {
@@ -334,21 +336,383 @@ for (const model of [generic, towerProject]) {
   state.saving = false;
   e.refreshChrome();
   await $("#section-confirm").clickAsync();
-  assert.equal(requests.length, 1, "Confirm uses the existing section POST exactly once");
-  assert.equal(requests[0].address, "/api/projects/apply-project/levels/apply-map/sections");
-  assert.equal(requests[0].method, "POST");
-  assert.deepEqual(JSON.parse(requests[0].body), { gridX: 1, gridY: -1, revision: 0 });
-  assert.equal(JSON.stringify(state.sections.slice(0, 2).map(s => s.document)), original);
-  assert.equal(JSON.stringify(state.sections.slice(0, 2).map(s => [s.gridX, s.gridY])), positions);
-  assert.equal(state.sections[1].document.name, dirty.name, "response cannot overwrite unsaved content");
-  assert.notEqual(state.sections[1].savedJson, JSON.stringify(state.sections[1].document));
-  assert.equal(state.sections[2].document.objects.length, 0);
+  const newSection = () => state.sections.find(section => section.isNew);
+  const addedSectionId = newSection().sectionId;
+  const addedSectionMapId = newSection().mapId;
+  assert.equal(requests.length, 0, "Confirm changes only the draft; persistence waits for Save");
+  assert.equal(state.sections.length, 3);
+  assert.equal(state.sectionRevision, 0, "draft addition does not advance the persisted baseline");
+  assert.equal(newSection().isNew, true);
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  assert.equal(JSON.stringify(state.sections.filter(s => existingSectionIds.includes(s.sectionId)).map(s => s.document)), original);
+  assert.equal(JSON.stringify(state.sections.filter(s => existingSectionIds.includes(s.sectionId))
+    .map(s => [s.gridX, s.gridY])), positions);
+  assert.equal(state.sections.find(section => section.sectionId === "east").document.name, dirty.name,
+    "response cannot overwrite unsaved content");
+  assert.notEqual(state.sections.find(section => section.sectionId === "east").savedJson,
+    JSON.stringify(state.sections.find(section => section.sectionId === "east").document));
+  assert.equal(newSection().document.objects.length, 0);
+  assert.equal(state.undo.length, 1);
+  $("#undo").click();
+  assert.equal(state.sections.length, 2, "Undo removes a newly added draft section");
+  assert.equal($("#save-state").classList.contains("dirty"), true, "Undo preserves unrelated unsaved edits");
+  $("#redo").click();
+  assert.equal(state.sections.length, 3, "Redo restores the draft section");
+  assert.equal(newSection().document.objects.length, 0);
   assert.deepEqual([state.cameraX, state.cameraY, state.zoom], view);
   assert.equal($("#section-placement").hidden, true);
   assert.equal(state.sectionPlacementDirection, null);
   assert.equal(side("north").disabled, true, "the newly occupied side becomes unavailable");
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    requests.push({ address, ...options });
+    const body = JSON.parse(options.body);
+    const saved = body.sections.map(item => ({
+      ...state.sections.find(section => section.sectionId === item.sectionId),
+      ...item, revision: item.revision + 1
+    }));
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 1, sections: saved, archivedSections: [] }) };
+  };
+  assert.equal(await e.save(), true);
+  assert.equal(requests.length, 1, "Save sends one atomic section request");
+  assert.equal(requests[0].method, "PUT");
+  const submitted = JSON.parse(requests[0].body);
+  const submittedAddition = submitted.sections.find(section => section.sectionId === addedSectionId);
+  assert.deepEqual({ sectionId: submittedAddition.sectionId, mapId: submittedAddition.mapId,
+    gridX: submittedAddition.gridX, gridY: submittedAddition.gridY, revision: submittedAddition.revision },
+  { sectionId: addedSectionId, mapId: addedSectionMapId, gridX: 1, gridY: -1, revision: 0 });
+  assert.equal(submitted.sections.find(section => section.sectionId === "east").document.name, dirty.name,
+    "Save includes unrelated unsaved edits");
+  assert.equal(state.sections.find(section => section.sectionId === addedSectionId).isNew, false);
+  assert.equal($("#save-state").classList.contains("saved"), true);
+  $("#undo").click();
+  assert.equal(state.archivedSections.at(-1).sectionId, addedSectionId,
+    "Undo after Save archives the section instead of deleting persisted content");
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  $("#redo").click();
+  assert.equal($("#save-state").classList.contains("saved"), true);
 }
-console.log("Direct Add Section wiring: selected anchor, disabled occupied sides, direction preview, Cancel, explicit Confirm POST, empty creation and unsaved content preservation passed in both models (browser I/O fixture).");
+console.log("Direct Add Section wiring: selected anchor, direction preview, Cancel, draft-only Confirm, empty creation, Undo/Redo, atomic Save and post-save archive history passed in both models (browser I/O fixture).");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  assert.equal($("#section-remove").disabled, true, "the only section cannot be removed");
+  const east = structuredClone(state.document);
+  east.id = "east-map";
+  east.name = "East room";
+  east.objects.push(model === generic
+    ? generic.createDesignObject("start", "generic-player", { x: 128, y: 128 }, 0)
+    : towerProject.createDesignObject("start", "spawn-aries", { x: 144, y: 144 }, 0));
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0,
+    document: east, savedJson: JSON.stringify(east), revision: 0 });
+  state.sections[0].document = state.document = { ...state.document, name: "Unsaved root" };
+  e.refreshChrome();
+  $("#section-select").dispatch("change", { target: { value: "east" } });
+  const before = e.documents();
+  const view = [state.cameraX, state.cameraY, state.zoom];
+  $("#section-remove").click();
+  assert.match($("#section-removal-details").textContent, /East room.*\(1, 0\).*1 object/);
+  assert.match($("#section-removal-warning").textContent, /player start.*not be moved/);
+  $("#section-remove-cancel").click();
+  assert.equal(e.documents(), before);
+  assert.equal(state.undo.length, 0);
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  assert.equal(state.sections.length, 1);
+  assert.equal(state.sections[0].document.name, "Unsaved root");
+  assert.equal(state.archivedSections[0].document, east);
+  assert.deepEqual([state.cameraX, state.cameraY, state.zoom], view);
+  assert.equal(state.undo.length, 1);
+  assert.equal($("#section-add").disabled, false, "Add Section remains available for an unsaved membership draft");
+  runInContext(`globalThis.originalRefreshChrome = refreshChrome;
+    globalThis.refreshCount = 0;
+    refreshChrome = (...args) => {
+      if (++globalThis.refreshCount === 2) throw new Error("Injected history refresh failure");
+      return globalThis.originalRefreshChrome(...args);
+    };`, e.sandbox);
+  $("#undo").click();
+  assert.equal(state.sections.length, 1, "failed Undo restores membership");
+  assert.equal(state.archivedSections[0].document, east);
+  assert.equal(state.undo.length, 1, "failed Undo retains its history entry");
+  assert.equal(state.redo.length, 0, "failed Undo does not create Redo");
+  runInContext("refreshChrome = globalThis.originalRefreshChrome", e.sandbox);
+  $("#undo").click();
+  assert.equal(e.documents(), before);
+  assert.equal(state.activeSectionId, "east");
+  assert.equal(state.archivedSections.length, 0);
+  $("#redo").click();
+  assert.equal(state.archivedSections[0].document, east);
+  $("#undo").click();
+  const boundary = boundaries.createGridRectangleBoundary({ x: 64, y: 0 }, { x: 66, y: 2 },
+    state.sections).boundary;
+  state.sections[0].document = { ...state.sections[0].document, playableBoundary: boundary };
+  e.refreshChrome();
+  $("#section-remove").click();
+  assert.match($("#section-removal-warning").textContent, /custom boundary includes this section/);
+  assert.equal($("#section-remove-confirm").disabled, true);
+  $("#section-remove-cancel").click();
+  const unaffected = boundaries.createGridRectangleBoundary({ x: 1, y: 1 }, { x: 3, y: 3 },
+    state.sections).boundary;
+  state.sections[0].document = { ...state.sections[0].document, playableBoundary: unaffected };
+  e.refreshChrome();
+  $("#section-remove").click();
+  assert.match($("#section-removal-warning").textContent, /preserved unchanged/);
+  $("#section-remove-confirm").click();
+  assert.equal(JSON.stringify(state.sections[0].document.playableBoundary), JSON.stringify(unaffected));
+  $("#undo").click();
+  delete state.sections[0].document.playableBoundary;
+  state.archivedSections = Array.from({ length: 16 }, (_, index) => ({
+    sectionId: `archived-${index}`, mapId: `archived-map-${index}`, gridX: index + 10, gridY: 0,
+    document: structuredClone(east), savedJson: JSON.stringify(east), savedArchived: true
+  }));
+  e.refreshChrome();
+  assert.equal($("#section-remove").disabled, true, "archive capacity prevents destructive removal");
+  assert.match($("#section-remove").title, /16-section retained archive limit/);
+  state.archivedSections = [];
+  $("#section-select").dispatch("change", { target: { value: "root" } });
+  e.refreshChrome();
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  assert.equal(state.sections[0].sectionId, "east", "the original section can be removed");
+  assert.equal(state.archivedSections[0].sectionId, "root");
+  assert.equal(state.archivedSections[0].document.name, "Unsaved root");
+  assert.equal($("#play-limitation").hidden, false, "an archived root uses the limited connected preview");
+  let previewArgs;
+  e.sandbox.createConnectedPreview = (sections, options) => {
+    previewArgs = { sections, options };
+    throw new Error("Stop after routing assertion");
+  };
+  await e.play();
+  assert.equal(previewArgs.sections.length, 1);
+  assert.equal(previewArgs.sections[0].sectionId, "east");
+  assert.equal(previewArgs.options.rootDocument, state.archivedSections[0].document);
+  $("#undo").click();
+  assert.equal(state.activeSectionId, "root");
+  assert.equal(state.sections.find(section => section.sectionId === "root").document.name, "Unsaved root");
+}
+console.log("Remove Section controls: confirmation, starts/boundary warnings, cancellation, both section identities, history and unsaved edits passed in both models (browser I/O fixture).");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  state.sections[0].revision = 0;
+  const east = structuredClone(state.document);
+  east.id = "east-map";
+  east.name = "Unsaved east";
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0,
+    document: east, savedJson: JSON.stringify({ ...east, name: "Saved east" }), revision: 0 });
+  e.refreshChrome();
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  const before = [...state.sections, ...state.archivedSections];
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    const body = JSON.parse(options.body);
+    const stored = items => items.map(item => ({
+      ...before.find(section => section.sectionId === item.sectionId),
+      document: item.document, revision: item.revision + 1
+    }));
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 1, sections: stored(body.sections), archivedSections: stored(body.archivedSections) }) };
+  };
+  assert.equal(await e.save(), true);
+  assert.equal(state.archivedSections[0].document.name, "Apply fixture");
+  assert.equal(state.sections[0].document.name, "Unsaved east");
+  assert.equal($("#save-state").classList.contains("saved"), true);
+  $("#undo").click();
+  assert.equal(state.sections.length, 2, "undo after save restores the removed section");
+  assert.equal($("#save-state").classList.contains("dirty"), true, "undoing saved removal marks membership dirty");
+  $("#redo").click();
+  assert.equal(state.sections.length, 1);
+  assert.equal($("#save-state").classList.contains("saved"), true, "redo returns to the saved membership");
+  assert.equal($("#section-add").disabled, false, "Add Section is available after a saved removal");
+  $("#section-add").click();
+  $('[data-direction="west"]').click();
+  await $("#section-confirm").clickAsync();
+  assert.equal(state.sections.length, 2, "Add Section may reuse the saved removal's position");
+  assert.equal(state.sections.find(section => section.isNew).gridX, 0);
+  assert.equal(state.sections.find(section => section.isNew).gridY, 0);
+  $("#undo").click();
+  assert.equal(state.sections.length, 1, "Undo removes the unpersisted section draft");
+  assert.equal(state.archivedSections[0].sectionId, "root");
+  assert.equal($("#save-state").classList.contains("saved"), true,
+    "undoing an unsaved addition returns to the persisted removal state");
+  $("#redo").click();
+  assert.equal(state.sections.length, 2, "Redo restores the unsaved section without evicting the archived root");
+  assert.equal(state.archivedSections[0].sectionId, "root");
+}
+console.log("Remove Section save and Add Section draft Undo/Redo preserve archived content in both models.");
+
+{
+  const e = editor(generic);
+  const { state, $ } = e;
+  state.sections[0].revision = 0;
+  const east = { ...structuredClone(state.document), id: "east-map" };
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0,
+    document: east, savedJson: JSON.stringify(east), revision: 0 });
+  e.refreshChrome();
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  const original = [...state.sections, ...state.archivedSections];
+  const requests = [];
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) throw new Error("lost response");
+    const saved = items => items.map(item => ({ ...original.find(section => section.sectionId === item.sectionId),
+      document: item.document, revision: item.revision + 1 }));
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 1, sections: saved(requests[1].sections), archivedSections: saved(requests[1].archivedSections) }) };
+  };
+  assert.equal(await e.save(), false);
+  assert.ok(state.pendingSectionSave, "an uncertain save retains its operation for retry");
+  assert.equal($("#section-add").disabled, true);
+  $("#undo").click();
+  assert.equal(state.sections.length, 2);
+  assert.equal(await e.save(), false, "confirming the earlier save does not discard the later undo");
+  assert.deepEqual(requests[1], requests[0], "the same operation and original payload are retried");
+  assert.equal(state.pendingSectionSave, null);
+  assert.equal(state.sections.length, 2);
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  assert.equal(state.sections.find(section => section.sectionId === "root").savedArchived, true);
+}
+console.log("Lost-save response retries the same operation and preserves later undo as unsaved membership.");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  state.sections[0].revision = 0;
+  $("#section-add").click();
+  $('[data-direction="north"]').click();
+  await $("#section-confirm").clickAsync();
+  const added = state.sections.find(section => section.isNew);
+  const requests = [];
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (requests.length === 1) throw new Error("lost response");
+    const saved = body.sections.map(item => ({
+      ...state.sections.find(section => section.sectionId === item.sectionId),
+      document: item.document, revision: item.revision + 1
+    }));
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 1, sections: saved, archivedSections: [] }) };
+  };
+  assert.equal(await e.save(), false);
+  $("#undo").click();
+  assert.equal(state.sections.length, 2, "uncertain addition cannot disappear before reconciliation");
+  assert.equal(state.undo.length, 1, "rejected Undo keeps its history");
+  $("#section-select").dispatch("change", { target: { value: added.sectionId } });
+  $("#section-remove").click();
+  assert.equal($("#section-remove-confirm").disabled, true);
+  assert.match($("#section-removal-warning").textContent, /Retry the pending save/);
+  $("#section-remove-cancel").click();
+  assert.equal(await e.save(), true);
+  assert.deepEqual(requests[1], requests[0]);
+  $("#undo").click();
+  assert.equal(state.archivedSections[0].sectionId, added.sectionId,
+    "Undo after reconciliation preserves the saved section in the archive");
+}
+
+{
+  const e = editor(generic);
+  const { state, $ } = e;
+  const east = { ...structuredClone(state.document), id: "east-map" };
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0,
+    document: east, savedJson: JSON.stringify(east), revision: 0 });
+  e.refreshChrome();
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  $("#undo").click();
+  state.archivedSections = Array.from({ length: 16 }, (_, index) => ({
+    sectionId: `archive-${index}`, mapId: `archive-map-${index}`, gridX: index + 10, gridY: 0,
+    document: structuredClone(east), savedJson: JSON.stringify(east), savedArchived: true
+  }));
+  e.refreshChrome();
+  $("#redo").click();
+  assert.equal(state.sections.length, 2);
+  assert.equal(state.archivedSections.length, 16, "Redo cannot overflow or discard retained archive contents");
+  assert.equal(state.redo.length, 1, "rejected Redo retains its history entry");
+}
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  state.sectionRevision = 7;
+  state.sections[0].revision = 2;
+  const east = { ...structuredClone(state.document), id: "east-map", name: "Unrelated unsaved edit" };
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0, revision: 3,
+    document: east, savedJson: JSON.stringify({ ...east, name: "Saved east" }) });
+  e.refreshChrome();
+  $("#section-remove").click();
+  $("#section-remove-confirm").click();
+  assert.equal(state.sectionRevision, 7, "local removal does not advance the server baseline");
+  const draft = JSON.stringify({ active: state.sections, archived: state.archivedSections });
+  let submitted;
+  e.sandbox.fetch = async (address, options = {}) => {
+    assert.equal(options.method, "PUT");
+    submitted = JSON.parse(options.body);
+    return { ok: false, status: 409, json: async () => ({
+      error: "Level sections changed since they were opened. Reopen before saving."
+    }) };
+  };
+  assert.equal(await e.save(), false);
+  assert.equal(submitted.revision, 7);
+  assert.deepEqual(submitted.sections.map(section => section.revision), [3]);
+  assert.deepEqual(submitted.archivedSections.map(section => section.revision), [2]);
+  assert.equal(JSON.stringify({ active: state.sections, archived: state.archivedSections }), draft,
+    "a real conflict retains the complete local draft and membership");
+  assert.equal(state.sectionRevision, 7);
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  $("#undo").click();
+  let undoRequest;
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    undoRequest = JSON.parse(options.body);
+    const saved = undoRequest.sections.map(item => ({
+      ...state.sections.find(section => section.sectionId === item.sectionId),
+      document: item.document, revision: item.revision + 1
+    }));
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 8, sections: saved, archivedSections: [] }) };
+  };
+  assert.equal(await e.save(), true);
+  assert.equal(undoRequest.revision, 7);
+  assert.equal(undoRequest.sections.length, 2);
+  assert.equal(undoRequest.archivedSections.length, 0);
+  assert.equal(state.sections.find(section => section.sectionId === "east").document.name, "Unrelated unsaved edit");
+}
+console.log("Removal baseline, conflict draft preservation and undo-before-save passed in both models.");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  const baselineRevision = state.sectionRevision;
+  $("#section-add").click();
+  $('[data-direction="north"]').click();
+  await $("#section-confirm").clickAsync();
+  const draft = JSON.stringify({ sections: state.sections, archivedSections: state.archivedSections });
+  const history = [...state.undo];
+  e.sandbox.fetch = async (address, options = {}) => options.method === "PUT"
+    ? { ok: false, status: 409, json: async () => ({ error: "Concurrent level update." }) }
+    : { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+  assert.equal(await e.save(), false);
+  assert.equal(state.sectionRevision, baselineRevision);
+  assert.equal(JSON.stringify({ sections: state.sections, archivedSections: state.archivedSections }), draft,
+    "failed Add Save retains every draft document and membership");
+  assert.equal(state.undo.length, history.length, "failed Add Save retains history depth");
+  assert.equal(state.undo[0], history[0], "failed Add Save retains the original history entry");
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  $("#undo").click();
+  assert.equal(state.sections.length, 1, "Undo remains available after a failed Save");
+  $("#redo").click();
+  assert.equal(state.sections.length, 2, "Redo remains available after a failed Save");
+  assert.ok(state.sections.some(section => section.isNew), "Redo restores the failed-save addition as a draft");
+}
+console.log("Failed Add Save retains the draft and Undo/Redo history in both models.");
 
 for (const model of [generic, towerProject]) {
   for (const size of [1, 2, 4, 8]) {

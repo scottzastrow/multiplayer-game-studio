@@ -118,6 +118,7 @@ const state = {
   model: ASTRAEUM_MODEL,
   openSelection: null,
   pendingSave: false,
+  pendingSectionSave: null,
   openRequest: 0,
   importedAssets: [],
   assetCatalog: towerProject.ASSET_CATALOG,
@@ -126,9 +127,11 @@ const state = {
   selectedId: null,
   selectedIds: new Set(),
   sections: [],
+  archivedSections: [],
   activeSectionId: null,
   sectionRevision: 0,
   sectionPlacementDirection: null,
+  sectionRemovalId: null,
   sectionBaseline: "",
   boundaryDraft: null,
   boundaryMode: "grid",
@@ -495,17 +498,24 @@ function cancelMapSizeDraft() {
 }
 
 const activeSection = () => state.sections.find(section => section.sectionId === state.activeSectionId) ?? null;
+const allSections = () => [...state.sections, ...state.archivedSections];
+const rootSection = () => allSections().find(section => section.mapId === state.identity.mapId);
+const usesConnectedPreview = () => state.sections.length > 0 && (state.sections.length > 1 ||
+  !state.sections.some(section => section.mapId === state.identity.mapId));
 const sectionDocuments = () => state.sections.map(section => section.document);
 function boundarySections() {
   return state.sections.map(({ gridX, gridY, document }) => ({ gridX, gridY, document }));
 }
 function levelBoundary() {
-  const root = state.sections.find(section => section.mapId === state.identity.mapId) ?? state.sections[0];
+  const root = rootSection();
   return root?.document.playableBoundary ?? null;
 }
 function dirty() {
+  if (state.pendingSectionSave) return true;
   return state.sections.length
-    ? state.sections.some(section => JSON.stringify(section.document) !== section.savedJson)
+    ? allSections().some(section => section.isNew ||
+      JSON.stringify(section.document) !== section.savedJson ||
+      Boolean(section.savedArchived) !== state.archivedSections.includes(section))
     : JSON.stringify(state.document) !== state.savedJson;
 }
 
@@ -521,7 +531,7 @@ function setStatus(message, isError = false) {
 // ---------------------------------------------------------------- history
 
 function pushUndo(before) {
-  const documents = state.sections.map(section => ({
+  const documents = allSections().map(section => ({
     sectionId: section.sectionId,
     document: section.sectionId === state.activeSectionId ? before : section.document
   }));
@@ -531,15 +541,61 @@ function pushUndo(before) {
 }
 
 function restoreHistory(entry) {
+  if (entry.membership?.kind === "draft-add") {
+    const { sectionId, present } = entry.membership;
+    const activeIndex = state.sections.findIndex(section => section.sectionId === sectionId);
+    const archivedIndex = state.archivedSections.findIndex(section => section.sectionId === sectionId);
+    const section = activeIndex >= 0 ? state.sections[activeIndex]
+      : archivedIndex >= 0 ? state.archivedSections[archivedIndex] : entry.membership.section;
+    if (present) {
+      if (state.sections.some(item => item.sectionId !== sectionId &&
+          item.gridX === section.gridX && item.gridY === section.gridY)) {
+        throw new Error("The section position is occupied. Remove the occupying section before undoing.");
+      }
+      if (archivedIndex >= 0) state.archivedSections.splice(archivedIndex, 1);
+      if (activeIndex < 0) state.sections.push(section);
+      state.sections.sort((a, b) => a.gridY - b.gridY || a.gridX - b.gridX);
+    } else {
+      if (state.sections.length <= 1) throw new Error("A level must retain at least one section.");
+      if (activeIndex < 0) throw new Error("The section is no longer available in this history state.");
+      if (section.isNew && state.pendingSectionSave?.sections.some(item => item.sectionId === sectionId)) {
+        throw new Error("Retry the pending save before removing this newly added section.");
+      }
+      if (!section.isNew && archivedIndex < 0 && state.archivedSections.length >= 16) {
+        throw new Error("The retained archive is full. Save or recover archived sections before undoing this addition.");
+      }
+      state.sections.splice(activeIndex, 1);
+      if (!section.isNew && archivedIndex < 0) state.archivedSections.push(section);
+    }
+  } else if (entry.membership) {
+    const { sectionId, restore } = entry.membership;
+    const source = restore ? state.archivedSections : state.sections;
+    const target = restore ? state.sections : state.archivedSections;
+    const index = source.findIndex(section => section.sectionId === sectionId);
+    if (index < 0) throw new Error("The section is no longer available in this history state.");
+    const section = source[index];
+    if (restore && state.sections.some(item => item.gridX === section.gridX && item.gridY === section.gridY)) {
+      throw new Error("The section position is occupied. Remove the occupying section before undoing.");
+    }
+    if (!restore && state.sections.length <= 1) throw new Error("A level must retain at least one section.");
+    if (!restore && state.archivedSections.length >= 16) {
+      throw new Error("The retained archive is full. History was not changed.");
+    }
+    source.splice(index, 1);
+    target.push(section);
+    state.sections.sort((a, b) => a.gridY - b.gridY || a.gridX - b.gridX);
+  }
   for (const saved of entry.documents ?? []) {
-    const section = state.sections.find(item => item.sectionId === saved.sectionId);
+    const section = allSections().find(item => item.sectionId === saved.sectionId);
     if (section) section.document = saved.document;
   }
-  state.activeSectionId = entry.sectionId ?? state.activeSectionId;
-  state.document = activeSection()?.document ?? state.document;
+  state.activeSectionId = state.sections.some(section => section.sectionId === entry.sectionId)
+    ? entry.sectionId : state.sections[0].sectionId;
+  state.document = activeSection().document;
   setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
     isSelectable(state.document.objects.find(object => object.id === id))));
   state.scene.document = null;
+  state.hierarchyKey = "";
   refreshChrome();
 }
 
@@ -556,21 +612,50 @@ function replaceObject(document, id, patch) {
 }
 
 function undo() {
-  if (!state.undo.length || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
-  state.redo.push({ documents: state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })),
-    selection: [...state.selectedIds], sectionId: state.activeSectionId });
-  const entry = state.undo.pop();
-  restoreHistory(entry);
-  setStatus("Undone.");
+  if (!state.undo.length || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy ||
+      state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  applyHistory(state.undo, state.redo, "Undone.");
 }
 
 function redo() {
-  if (!state.redo.length || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
-  state.undo.push({ documents: state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })),
-    selection: [...state.selectedIds], sectionId: state.activeSectionId });
-  const entry = state.redo.pop();
-  restoreHistory(entry);
-  setStatus("Redone.");
+  if (!state.redo.length || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy ||
+      state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  applyHistory(state.redo, state.undo, "Redone.");
+}
+
+function applyHistory(from, to, message) {
+  const entry = from.at(-1);
+  const membership = entry.membership?.kind === "draft-add"
+    ? { ...entry.membership, present: !entry.membership.present,
+      section: allSections().find(section => section.sectionId === entry.membership.sectionId) ??
+        entry.membership.section }
+    : entry.membership ? { ...entry.membership, restore: !entry.membership.restore } : null;
+  const previous = { sections: [...state.sections], archivedSections: [...state.archivedSections],
+    documents: allSections().map(section => ({ section, document: section.document })),
+    sectionId: state.activeSectionId, selection: [...state.selectedIds], from: [...from], to: [...to] };
+  const inverse = { documents: allSections().map(section => ({ sectionId: section.sectionId, document: section.document })),
+    selection: [...state.selectedIds], sectionId: state.activeSectionId,
+    ...(membership ? { membership } : {}) };
+  try {
+    restoreHistory(entry);
+    from.pop();
+    to.push(inverse);
+    refreshChrome();
+    setStatus(message);
+  } catch (error) {
+    state.sections = previous.sections;
+    state.archivedSections = previous.archivedSections;
+    from.splice(0, from.length, ...previous.from);
+    to.splice(0, to.length, ...previous.to);
+    for (const saved of previous.documents) saved.section.document = saved.document;
+    state.activeSectionId = previous.sectionId;
+    state.document = activeSection().document;
+    setSelection(previous.selection);
+    state.scene.document = null;
+    state.hierarchyKey = "";
+    setStatus(`History could not be restored: ${error.message}`, true);
+    refreshAfterOperation();
+  }
 }
 
 // ---------------------------------------------------------------- chrome
@@ -591,10 +676,10 @@ function refreshChrome({ structure = true } = {}) {
   const pendingGesture = Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
   for (const id of ["open-game", "new-game", "import-assets", "save"]) $(`#${id}`).disabled ||= pendingGesture;
   $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork || pendingGesture;
-  $("#play").title = state.sections.length > 1
+  $("#play").title = usesConnectedPreview()
     ? "Play all sections of this level (movement, camera and collision only)."
     : pendingGesture ? "Apply or cancel the current edit before Play." : "Play this level.";
-  $("#play-limitation").hidden = state.sections.length <= 1;
+  $("#play-limitation").hidden = !usesConnectedPreview();
   for (const id of ["save", "play", "open-game", "new-game", "import-assets"]) {
     $(`#${id}`).disabled ||= state.levelBusy || state.switching;
   }
@@ -610,8 +695,8 @@ function refreshChrome({ structure = true } = {}) {
   }
   $("#level-select").disabled = levelDisabled;
   $("#level-recovery").inert = levelDisabled;
-  $("#undo").disabled = state.undo.length === 0 || isPlaying() || pendingGesture;
-  $("#redo").disabled = state.redo.length === 0 || isPlaying() || pendingGesture;
+  $("#undo").disabled = state.undo.length === 0 || levelDisabled;
+  $("#redo").disabled = state.redo.length === 0 || levelDisabled;
   $("#duplicate-selection").disabled = !loaded || !selectedObjects().length || isPlaying() ||
     state.saving || state.switching || state.creating || state.levelBusy || pendingGesture;
   $("#clear-level-contents").disabled = !loaded || isPlaying() || state.saving ||
@@ -662,9 +747,19 @@ function refreshChrome({ structure = true } = {}) {
     : levelBoundary() ? "Custom boundary is active; Reset restores the section union."
       : "Default boundary is the union of existing sections.";
   $("#section-select").disabled = levelDisabled;
-  $("#section-add").disabled = levelDisabled || !state.persisted || state.sections.length >= 16;
+  $("#section-add").disabled = levelDisabled || !state.persisted || state.sections.length >= 16 || Boolean(state.pendingSectionSave);
   $("#section-add").title = !state.persisted ? "Save this initial level before adding sections."
+    : state.pendingSectionSave ? "Retry the pending save before adding another section."
     : state.sections.length >= 16 ? "This level reached the 16-section limit." : "Choose a side of the selected section.";
+  const archiveFull = state.archivedSections.length >= 16 && !activeSection()?.isNew;
+  $("#section-remove").disabled = levelDisabled || state.sections.length <= 1 || archiveFull;
+  $("#section-remove").title = state.sections.length <= 1 ? "A level must retain at least one section."
+    : archiveFull ? "The level has reached its 16-section retained archive limit."
+    : "Review removal of the selected section.";
+  $("#section-remove-confirm").disabled = levelDisabled || !state.sectionRemovalId ||
+    state.sectionRemovalId !== state.activeSectionId || Boolean(sectionRemovalProblem(activeSection()));
+  $("#section-remove-cancel").disabled = levelDisabled;
+  if (state.sectionRemovalId && !$("#section-removal").hidden) updateSectionRemoval();
   $("#section-cancel").disabled = levelDisabled;
   updateSectionPicker(levelDisabled);
   canvas.classList.toggle("selecting", state.tool === "select");
@@ -1410,13 +1505,13 @@ function applyBoundary() {
         draft.before.some(saved => state.sections.find(section => section.sectionId === saved.sectionId)?.document !== saved.document))) {
       throw new Error("The level changed after this gesture began. Cancel and preview again.");
     }
-    const root = state.sections.find(section => section.mapId === state.identity.mapId);
+    const root = rootSection();
     if (!root) throw new Error("The level boundary owner is missing from its section set.");
     validatePlayableBoundaryForSections(draft.boundary, boundarySections());
     const next = validateFloorDocument({ ...root.document, playableBoundary: draft.boundary });
     const changed = JSON.stringify(root.document.playableBoundary ?? null) !== JSON.stringify(next.playableBoundary);
     commitToolPreview(changed ? [{ sectionId: root.sectionId, document: next }] : [],
-      state.sections.map(({ sectionId, document }) => ({ sectionId, document })));
+      allSections().map(({ sectionId, document }) => ({ sectionId, document })));
     setStatus(changed ? "Playable boundary applied as one undoable edit. Save the level to persist it."
       : "Playable boundary unchanged; no history entry was added.");
   } catch (error) {
@@ -1428,14 +1523,14 @@ function applyBoundary() {
 
 function resetBoundary() {
   if (state.boundaryDraft || isPlaying() || state.saving) return;
-  const root = state.sections.find(section => section.mapId === state.identity.mapId) ?? state.sections[0];
+  const root = rootSection();
   if (!root?.document.playableBoundary) {
     setStatus("The default section boundary is already active.");
     return;
   }
   const { playableBoundary: _removed, ...document } = root.document;
   const next = validateFloorDocument(document);
-  pushSectionUndo(state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })));
+  pushSectionUndo(allSections().map(section => ({ sectionId: section.sectionId, document: section.document })));
   root.document = next;
   state.document = activeSection()?.document ?? state.document;
   state.boundaryDraft = null;
@@ -2172,7 +2267,7 @@ function pushSectionUndo(documents) {
 
 function commitToolPreview(updates, before) {
   const previous = {
-    documents: state.sections.map(({ sectionId, document }) => ({ sectionId, document })),
+    documents: allSections().map(({ sectionId, document }) => ({ sectionId, document })),
     undo: [...state.undo], redo: [...state.redo], tool: state.tool,
     boundaryDraft: state.boundaryDraft, fillPreview: state.fillPreview
   };
@@ -2181,7 +2276,7 @@ function commitToolPreview(updates, before) {
   try {
     if (updates.length) pushSectionUndo(before);
     for (const update of updates) {
-      state.sections.find(section => section.sectionId === update.sectionId).document = update.document;
+      allSections().find(section => section.sectionId === update.sectionId).document = update.document;
     }
     state.document = activeSection().document;
     if (state.boundaryDraft) state.tool = "select";
@@ -2195,7 +2290,7 @@ function commitToolPreview(updates, before) {
       redraw: fillDiagnostics.lastRedraw });
   } catch (error) {
     for (const saved of previous.documents) {
-      const section = state.sections.find(section => section.sectionId === saved.sectionId);
+      const section = allSections().find(section => section.sectionId === saved.sectionId);
       section.document = saved.document;
       if (section.scene) section.scene.document = null;
     }
@@ -2523,19 +2618,28 @@ async function save() {
     state.saving = true;
     const identity = { ...state.identity };
     const sections = state.sections.map(section => ({ sectionId: section.sectionId, revision: section.revision,
+      ...(section.isNew ? { mapId: section.mapId, gridX: section.gridX, gridY: section.gridY } : {}),
+      document: validateFloorDocument(structuredClone(section.document)) }));
+    const archivedSections = state.archivedSections.map(section => ({ sectionId: section.sectionId, revision: section.revision,
       document: validateFloorDocument(structuredClone(section.document)) }));
     refreshChrome({ structure: false });
     const initialSave = !state.persisted && sections.length === 1;
     const address = initialSave ? mapUrl(identity)
       : mapUrl(identity).replace(/\/maps\/[^/]+$/, `/levels/${encodeURIComponent(identity.mapId)}/sections`);
+    const request = initialSave
+      ? { projectId: identity.projectId, model: state.model, document: sections[0].document }
+      : state.pendingSectionSave ?? { operationId: `save-${crypto.randomUUID()}`, revision: state.sectionRevision, sections, archivedSections };
+    if (!initialSave) state.pendingSectionSave = request;
     const response = await fetch(address, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(initialSave ? { projectId: identity.projectId, model: state.model, document: sections[0].document }
-        : { operationId: `save-${crypto.randomUUID()}`, revision: state.sectionRevision, sections })
+      body: JSON.stringify(request)
     });
     let payload = await response.json();
-    if (!response.ok) throw new Error(payload.error ?? `Save failed (${response.status}).`);
+    if (!response.ok) {
+      if (response.status < 500) state.pendingSectionSave = null;
+      throw new Error(payload.error ?? `Save failed (${response.status}).`);
+    }
     if (initialSave) {
       if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
           payload.model !== state.model || payload.document?.id !== identity.mapId) {
@@ -2546,25 +2650,46 @@ async function save() {
     }
     if (payload.projectId !== identity.projectId || payload.levelMapId !== identity.mapId ||
         payload.model !== state.model || !Array.isArray(payload.sections) ||
-        !payload.sections.some(section => section.mapId === identity.mapId)) {
+        ![...payload.sections, ...(payload.archivedSections ?? [])].some(section => section.mapId === identity.mapId)) {
       throw new Error("The saved level section identities did not match the requested level.");
     }
-    state.sections = payload.sections.map(section => ({
-      ...section, document: validateFloorDocument(section.document)
-    }));
+    const saved = [...payload.sections.map(section => ({ ...section, savedArchived: false })),
+      ...(payload.archivedSections ?? []).map(section => ({ ...section, savedArchived: true }))];
+    const local = allSections();
+    if (saved.length !== local.length || local.some(section =>
+      saved.filter(item => item.sectionId === section.sectionId && item.mapId === section.mapId).length !== 1)) {
+      throw new Error("The saved section membership did not match the editor. Retry the pending save.");
+    }
+    const submitted = initialSave ? sections : [...request.sections, ...request.archivedSections];
+    for (const section of local) {
+      const persisted = saved.find(item => item.sectionId === section.sectionId);
+      const document = validateFloorDocument(persisted.document);
+      const sent = submitted.find(item => item.sectionId === section.sectionId);
+      section.revision = persisted.revision;
+      section.savedArchived = persisted.savedArchived;
+      section.isNew = false;
+      section.savedJson = JSON.stringify(document);
+      if (sent && JSON.stringify(section.document) === JSON.stringify(sent.document)) section.document = document;
+    }
+    state.pendingSectionSave = null;
     state.sectionRevision = payload.revision;
-    state.activeSectionId = state.sections.find(section => section.mapId === identity.mapId).sectionId;
+    state.activeSectionId = state.sections.find(section => section.sectionId === state.activeSectionId)?.sectionId ??
+      state.sections[0].sectionId;
     state.document = activeSection().document;
-    for (const section of state.sections) section.savedJson = JSON.stringify(section.document);
     state.sectionBaseline = JSON.stringify(sectionDocuments());
     state.savedJson = JSON.stringify(state.document);
     updateSectionPicker();
     state.persisted = true;
     await refreshLevels();
+    if (dirty()) {
+      setStatus("The previous save was confirmed. Later edits remain unsaved; save again before switching.");
+      return false;
+    }
     setStatus("Map saved to the local Studio database.");
     return true;
   } catch (error) {
-    setStatus(`Save failed: ${error.message}`, true);
+    setStatus(`Save failed: ${error.message}${state.pendingSectionSave
+      ? " Retry Save to reconcile the same operation before switching." : ""}`, true);
     return false;
   } finally {
     state.saving = false;
@@ -2626,10 +2751,11 @@ async function play() {
   let design;
   let connected;
   try {
-    if (state.sections.length > 1) {
+    if (usesConnectedPreview()) {
       connected = createConnectedPreview(state.sections.map(section => ({
         ...section, document: section.sectionId === state.activeSectionId ? state.document : section.document
-      })), { mapId: state.identity.mapId, model: state.model, assetCatalog: ASSET_CATALOG });
+      })), { mapId: state.identity.mapId, model: state.model, assetCatalog: ASSET_CATALOG,
+        rootDocument: rootSection()?.document });
     } else {
       design = validateFloorDocument(structuredClone(state.document));
       const problems = playStartProblems(design);
@@ -2751,6 +2877,7 @@ const playInputCodes = new Set([
 
 function configureEvents() {
   $("#section-add").addEventListener("click", () => {
+    closeSectionRemoval();
     state.sectionPlacementDirection = null;
     $("#section-placement").hidden = false;
     updateSectionPicker();
@@ -2762,6 +2889,12 @@ function configureEvents() {
     $("#section-add").focus();
   });
   $("#section-confirm").addEventListener("click", () => addSection(state.sectionPlacementDirection));
+  $("#section-remove").addEventListener("click", showSectionRemoval);
+  $("#section-remove-cancel").addEventListener("click", () => {
+    closeSectionRemoval();
+    $("#section-remove").focus();
+  });
+  $("#section-remove-confirm").addEventListener("click", removeSection);
   $("#section-select").addEventListener("change", event => {
     activateSection(state.sections.find(section => section.sectionId === event.target.value));
   });
@@ -3515,15 +3648,16 @@ async function fetchDesign(identity, allowTemplate = false) {
       }
       const positions = new Set();
       const ids = new Set();
-      for (const section of result.sections) {
+      for (const section of [...result.sections, ...(result.archivedSections ?? [])]) {
         const key = `${section.gridX},${section.gridY}`;
-        if (positions.has(key) || ids.has(section.sectionId) || section.document?.id !== section.mapId) {
+        if ((result.sections.includes(section) && positions.has(key)) ||
+            ids.has(section.sectionId) || section.document?.id !== section.mapId) {
           throw new Error("The loaded level contains duplicate section identities or positions.");
         }
-        positions.add(key);
+        if (result.sections.includes(section)) positions.add(key);
         ids.add(section.sectionId);
       }
-      if (!result.sections.some(section => section.mapId === identity.mapId)) {
+      if (![...result.sections, ...(result.archivedSections ?? [])].some(section => section.mapId === identity.mapId)) {
         throw new Error("The loaded level section set does not include its original map.");
       }
       sectionData = result;
@@ -3535,12 +3669,16 @@ async function fetchDesign(identity, allowTemplate = false) {
   }] };
   sectionData.sections = sectionData.sections.map(section => ({
     ...section, document: model.validateFloorDocument(section.document, assets.catalog),
-    savedJson: JSON.stringify(model.validateFloorDocument(section.document, assets.catalog))
+    savedJson: JSON.stringify(model.validateFloorDocument(section.document, assets.catalog)), savedArchived: false
   }));
-  const rootSection = sectionData.sections.find(section => section.mapId === identity.mapId);
-  if (!rootSection) throw new Error("The level boundary owner is missing from its section set.");
-  if (rootSection.document.playableBoundary) {
-    validatePlayableBoundaryForSections(rootSection.document.playableBoundary, sectionData.sections);
+  sectionData.archivedSections = (sectionData.archivedSections ?? []).map(section => ({
+    ...section, document: model.validateFloorDocument(section.document, assets.catalog),
+    savedJson: JSON.stringify(model.validateFloorDocument(section.document, assets.catalog)), savedArchived: true
+  }));
+  const root = [...sectionData.sections, ...sectionData.archivedSections].find(section => section.mapId === identity.mapId);
+  if (!root) throw new Error("The level boundary owner is missing from its section set.");
+  if (root.document.playableBoundary) {
+    validatePlayableBoundaryForSections(root.document.playableBoundary, sectionData.sections);
   }
   return { payload, assets, document, sectionData };
 }
@@ -3659,10 +3797,113 @@ function updateSectionPicker(disabled = false) {
     : "Select an available side. Nothing is created until you confirm.";
 }
 
+function sectionRemovalProblem(section) {
+  if (!section || state.sections.length <= 1) return "A level must retain at least one section.";
+  if (section.isNew && state.pendingSectionSave?.sections.some(item => item.sectionId === section.sectionId)) {
+    return "Retry the pending save before removing this newly added section.";
+  }
+  if (!section.isNew && state.archivedSections.length >= 16) {
+    return "The level has reached its 16-section retained archive limit.";
+  }
+  if (!levelBoundary()) return "";
+  try {
+    validatePlayableBoundaryForSections(levelBoundary(),
+      state.sections.filter(item => item.sectionId !== section.sectionId));
+    return "";
+  } catch (error) {
+    return `The custom boundary includes this section. Edit or reset the boundary before removal; it will not be reshaped. (${error.message})`;
+  }
+}
+
+function closeSectionRemoval() {
+  state.sectionRemovalId = null;
+  $("#section-removal").hidden = true;
+}
+
+function showSectionRemoval() {
+  const section = activeSection();
+  if (!section || state.sections.length <= 1) return;
+  state.sectionRemovalId = section.sectionId;
+  $("#section-placement").hidden = true;
+  state.sectionPlacementDirection = null;
+  $("#section-removal").hidden = false;
+  updateSectionRemoval();
+  refreshChrome({ structure: false });
+  (sectionRemovalProblem(section) ? $("#section-remove-cancel") : $("#section-remove-confirm")).focus();
+}
+
+function updateSectionRemoval() {
+  const section = activeSection();
+  if (!section || section.sectionId !== state.sectionRemovalId) {
+    closeSectionRemoval();
+    return;
+  }
+  const starts = section.document.objects.filter(object =>
+    ["spawn-aries", "generic-player", "generic-player-2"].includes(object.assetId)).length;
+  const otherSpawns = section.document.objects.filter(object => object.type === "spawn").length - starts;
+  $("#section-removal-details").textContent =
+    `Section ${state.sections.indexOf(section) + 1}: ${section.document.name} — position (${section.gridX}, ${section.gridY}), ${section.document.objects.length} object(s).`;
+  const problem = sectionRemovalProblem(section);
+  $("#section-removal-warning").textContent = [
+    starts ? `This section contains ${starts} player start(s); they will not be moved.` : "",
+    otherSpawns ? `This section also contains ${otherSpawns} other spawn(s).` : "",
+    problem || (levelBoundary() ? "A custom boundary is present and will be preserved unchanged." : ""),
+    section.isNew
+      ? "Removal is undoable. Save to persist the current draft."
+      : "Removal is undoable. Save to persist it; the removed content is retained."
+  ].filter(Boolean).join(" ");
+}
+
+function removeSection() {
+  const section = activeSection();
+  if (!section || state.sectionRemovalId !== section.sectionId || state.saving || state.switching ||
+      state.creating || state.levelBusy || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  const problem = sectionRemovalProblem(section);
+  if (problem) {
+    $("#section-removal-warning").textContent = problem;
+    return;
+  }
+  const previous = { sections: [...state.sections], archivedSections: [...state.archivedSections],
+    undo: [...state.undo], redo: [...state.redo], selection: [...state.selectedIds] };
+  const removeNewSection = Boolean(section.isNew);
+  state.undo.push({ documents: allSections().map(item => ({ sectionId: item.sectionId, document: item.document })),
+    selection: [...state.selectedIds], sectionId: section.sectionId,
+    membership: removeNewSection
+      ? { kind: "draft-add", sectionId: section.sectionId, present: true, section }
+      : { sectionId: section.sectionId, restore: true } });
+  if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
+  state.redo.length = 0;
+  try {
+    state.sections = state.sections.filter(item => item !== section);
+    if (!removeNewSection) state.archivedSections.push(section);
+    state.activeSectionId = state.sections[0].sectionId;
+    state.document = activeSection().document;
+    setSelection([]);
+    state.scene.document = null;
+    state.hierarchyKey = "";
+    refreshChrome();
+    closeSectionRemoval();
+    setStatus("Section removed as one undoable edit. Save to persist; its content is retained.");
+  } catch (error) {
+    state.sections = previous.sections;
+    state.archivedSections = previous.archivedSections;
+    state.undo = previous.undo;
+    state.redo = previous.redo;
+    state.activeSectionId = section.sectionId;
+    state.document = section.document;
+    setSelection(previous.selection);
+    state.scene.document = null;
+    state.hierarchyKey = "";
+    setStatus(`Section removal failed: ${error.message}`, true);
+    refreshAfterOperation();
+  }
+}
+
 function activateSection(section) {
   if (!section || section.sectionId === state.activeSectionId) return;
   if (activeSection()) activeSection().document = state.document;
   state.sectionPlacementDirection = null;
+  closeSectionRemoval();
   state.activeSectionId = section.sectionId;
   state.document = section.document;
   state.preview = null;
@@ -3677,38 +3918,37 @@ async function addSection(directionName) {
   const direction = SECTION_DIRECTIONS[directionName];
   try {
     if (state.fillPreview || state.boundaryDraft || state.pointerMode) throw new Error("Finish or cancel the current edit before adding a section.");
+    if (state.pendingSectionSave) throw new Error("Retry the pending save before adding another section.");
     if (!direction || !activeSection()) throw new Error("Choose a side of an existing section.");
     const gridX = activeSection().gridX + direction.x, gridY = activeSection().gridY + direction.y;
     sectionOrigin(gridX, gridY);
     if (state.sections.some(section => section.gridX === gridX && section.gridY === gridY)) {
       throw new Error("That side is occupied by an existing section.");
     }
-    state.levelBusy = true;
-    refreshChrome({ structure: false });
-    $("#section-status").textContent = "Adding section…";
-    const response = await fetch(`/api/projects/${encodeURIComponent(state.identity.projectId)}/levels/${encodeURIComponent(state.identity.mapId)}/sections`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ gridX, gridY, revision: state.sectionRevision })
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? `Could not add section (${response.status}).`);
-    const localSections = new Map(state.sections.map(section => [section.sectionId, section]));
-    state.sections = result.sections.map(section => {
-      const local = localSections.get(section.sectionId);
-      return local ? { ...section, document: local.document, savedJson: local.savedJson, scene: local.scene } :
-        { ...section, savedJson: JSON.stringify(section.document) };
-    });
-    state.sectionRevision = result.revision;
+    const mapId = `map-${crypto.randomUUID()}`;
+    const sectionId = `section-${crypto.randomUUID()}`;
+    const name = `${activeSection().document.name} section`.slice(0, 64);
+    const document = state.model === generic.MODEL
+      ? generic.createDocument(mapId, name) : towerProject.createBlankDocument(mapId, name);
+    document.objects = [];
+    const section = { sectionId, mapId, gridX, gridY, revision: 0, document,
+      savedJson: "", savedArchived: false, isNew: true };
+    state.undo.push({ documents: allSections().map(item => ({ sectionId: item.sectionId, document: item.document })),
+      selection: [...state.selectedIds], sectionId: state.activeSectionId,
+      membership: { kind: "draft-add", sectionId, present: false, section } });
+    if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
+    state.redo.length = 0;
+    state.sections.push(section);
+    state.sections.sort((a, b) => a.gridY - b.gridY || a.gridX - b.gridX);
     state.document = activeSection().document;
     $("#section-placement").hidden = true;
     state.sectionPlacementDirection = null;
-    $("#section-status").textContent = `Added an empty section to the ${directionName}. Pan and zoom are unchanged.`;
+    $("#section-status").textContent = `Added an empty section to the ${directionName} as an unsaved draft. Save to persist. Pan and zoom are unchanged.`;
     $("#section-status").classList.remove("error");
   } catch (error) {
     $("#section-status").textContent = error.message;
     $("#section-status").classList.add("error");
   } finally {
-    state.levelBusy = false;
     refreshAfterOperation();
   }
 }
@@ -3731,8 +3971,11 @@ function installDesign(identity, payload, design, assets, sectionData) {
   state.levels = [];
   state.startingMapId = null;
   state.sections = sectionData.sections;
+  state.archivedSections = sectionData.archivedSections ?? [];
+  state.pendingSectionSave = null;
   state.fillPreview = null;
   state.sectionPlacementDirection = null;
+  closeSectionRemoval();
   state.boundaryDraft = null;
   state.boundaryMode = "grid";
   state.fillSettings = { gapX: 0, gapY: 0, overlap: "skip", borderAssetId: null, collision: false };

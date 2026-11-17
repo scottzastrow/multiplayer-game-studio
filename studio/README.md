@@ -8,7 +8,11 @@ visual **North/East/South/West** preview (occupied sides are disabled). New
 sections contain no terrain, objects or starts; saved section contents are
 never cleared. Adding a section does not change the viewport. Sections share the main canvas, palette,
 hierarchy, Inspector, tools and history while retaining section-local map
-documents. The **Tool** dropdown contains **Select**, **Paint**,
+documents. **Remove Section** reviews the selected section before confirmation;
+removal is undoable, retains its content on Save, and never moves the other
+sections. Player starts and custom boundaries are flagged rather than moved or
+reshaped. See the development guide for archive and recovery limits.
+The **Tool** dropdown contains **Select**, **Paint**,
 **Rectangle Fill** and **Boundary**, with contextual settings instead of a row
 of fill buttons. Boundary previews either a grid area or closed polygon and
 edits the playable region independently of optional decorative fill borders.
@@ -18,7 +22,9 @@ preview and an optional separately selected border in the tool settings.
 Object moves remain section-local. Multi-section Play uses kit 0.3.0's public
 connected-world runtime for the selected level's complete section set and
 authored player start. It previews keyboard movement, camera and collision
-only; single-section gameplay remains unchanged. Stop restores the editor
+only; single-section gameplay remains unchanged when the original section is
+present. If it is removed, the remaining section also uses the connected
+movement-only preview. Stop restores the editor
 view and selection without saving movement. Focused checks pass, but the one
 browser acceptance attempt was blocked during startup; see the development
 guide for exact evidence and remaining gates. Existing World-workspace records are

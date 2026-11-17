@@ -129,9 +129,10 @@
               <label for="section-select">Selected section</label>
               <select id="section-select" disabled></select>
               <button id="section-add" class="button secondary" type="button" disabled>Add Section</button>
+              <button id="section-remove" class="button danger" type="button" disabled>Remove Section</button>
             </div>
             <div id="section-placement" hidden>
-              <p>Choose an empty side of the selected section, then confirm. New sections have no contents.</p>
+              <p>Choose an empty side of the selected section, then confirm to add an empty draft section. Save to persist it.</p>
               <div class="section-compass" role="group" aria-label="New section placement preview">
                 <button data-direction="north" type="button">North</button>
                 <button data-direction="west" type="button">West</button>
@@ -142,6 +143,12 @@
               <p id="section-placement-preview" role="status" aria-live="polite"></p>
               <button id="section-confirm" class="button" type="button" disabled>Confirm Add Section</button>
               <button id="section-cancel" class="button secondary" type="button">Cancel</button>
+            </div>
+            <div id="section-removal" hidden>
+              <p id="section-removal-details"></p>
+              <p id="section-removal-warning" role="status"></p>
+              <button id="section-remove-confirm" class="button danger" type="button">Confirm Remove Section</button>
+              <button id="section-remove-cancel" class="button secondary" type="button">Cancel</button>
             </div>
             <p id="section-summary"></p>
             <p id="section-status" role="status" aria-live="polite"></p>

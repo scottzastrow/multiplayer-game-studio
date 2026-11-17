@@ -96,6 +96,32 @@ for (const model of [generic.MODEL, ASTRAEUM_MODEL]) {
   }
 }
 
+for (const model of [generic.MODEL, ASTRAEUM_MODEL]) {
+  const project = model === generic.MODEL ? generic : tower;
+  const [root, neighbor] = connectedFixture(model);
+  neighbor.gridX = -1;
+  const primaryId = model === generic.MODEL ? "generic-player" : "spawn-aries";
+  neighbor.document.objects.push(project.createDesignObject("neighbor-start", primaryId,
+    model === generic.MODEL ? { x: 64, y: 1024 } : { x: 80, y: 1040 },
+    neighbor.document.objects.length));
+  const rootBefore = structuredClone(root.document);
+  const neighborBefore = structuredClone(neighbor.document);
+  const preview = createConnectedPreview([neighbor], {
+    mapId: root.mapId, rootDocument: root.document, model, assetCatalog: project.ASSET_CATALOG
+  });
+  assert.equal(preview.options.world.sections.length, 1);
+  assert.equal(preview.options.world.id, root.mapId);
+  const game = await createLocalGame(preview.options);
+  try {
+    const start = game.snapshot.player.position.x;
+    game.sendInput("player", { type: "move", x: 1, y: 0 });
+    for (let tick = 0; tick < 4; tick++) game.step();
+    assert.equal(game.snapshot.player.position.x, start + 16);
+  } finally { game.dispose(); }
+  assert.deepEqual(root.document, rootBefore);
+  assert.deepEqual(neighbor.document, neighborBefore);
+}
+
 const sections = connectedFixture(ASTRAEUM_MODEL);
 const isolated = structuredClone(sections);
 isolated[0].document.playableBoundary = createGridRectangleBoundary(

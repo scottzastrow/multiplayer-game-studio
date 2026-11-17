@@ -100,9 +100,32 @@ registry access, and whether an owned Vite process is holding native files.
   Selecting a side only previews its grid coordinates; changing the selected
   section clears that choice. Occupied sides are disabled. New sections have no terrain, walls,
   props, items or starts; previously saved section contents are not cleared.
-  Adding one does not change pan or zoom. Save an initial unsaved template
-  before adding sections. Sections are one
+  Confirm adds only an empty editor draft; it marks the level unsaved and is
+  undoable/redone as one action. It does not write SQLite or advance the saved
+  level revision. Adding one does not change pan or zoom. Save an initial
+  unsaved template before adding sections. Sections are one
   continuous editable level, not independent stages.
+- **Remove Section** reviews the selected section's name, grid position and
+  object count before Confirm or Cancel. It warns about player starts and
+  custom boundaries, never moves starts or reshapes a boundary, and requires
+  editing or resetting a custom boundary first if it includes the section
+  being removed. At least one section must remain. Removal is one Undo/Redo
+  action, including after Save in the same editor session; other sections and
+  their unsaved edits retain their positions and contents. Additions, removals,
+  archived membership and document edits remain draft-only until Save commits
+  the entire level atomically. Reopening retains archived documents but does
+  not restore editor history.
+  Up to 16 removed sections may be retained per level; removal of a saved
+  section is disabled at that limit rather than purging content. Adding a section never evicts
+  archived content; if restoring a saved addition would exceed the archive
+  limit, Undo is refused with the history entry retained. Add and Remove drafts
+  can be combined before Save. If a Save response is lost, retry Save to
+  reconcile the same operation; edits made meanwhile remain unsaved. A newly
+  added section included in that uncertain save cannot be removed or undone
+  until the retry resolves it. The default boundary
+  follows the remaining section union. If the original section is removed,
+  the remaining section(s) use the existing connected movement-only preview;
+  the original document remains the level's boundary owner in the archive.
 - Place items from the model-specific palette. **Import Assets** accepts PNG
   images and PixelLab ZIP exports into that project's asset catalog. Imported
   art preserves source bytes and credits and is visual-only: it does not gain
@@ -126,7 +149,8 @@ registry access, and whether an owned Vite process is holding native files.
   Game Controller for Astraeum and exposes the level's saved gameplay camera
   zoom. Input mode is local preview behavior; camera zoom is saved with the
   level. Editor pan/zoom is independent.
-- **Save** or Ctrl+S writes the selected design to SQLite. **Play** previews the
+- **Save** or Ctrl+S writes the complete current level draft, including section
+  membership and documents, atomically to SQLite. **Play** previews the
   current selected level, including unsaved edits; **Stop** returns to the
   editor without saving simulated movement. Multi-section levels use kit
   0.3.0's public `createLocalGame({ world })` with every selected-level section,
@@ -1511,6 +1535,48 @@ page reload/readiness condition; no retained evidence directory was reported.
 These failures do not constitute browser acceptance. The recorded section and
 World test process IDs had exited and their recorded ports had no listeners;
 cleanup of the other attempts was not independently confirmed.
+
+### Remove Section (2026-11-17)
+
+**User's manual confirmation:** the Add/Remove Section explicit-Save workflow
+works. This is separate from the automated fixture coverage below.
+
+The user also observed that empty sections cannot be traversed until floor is
+painted. Adapter inspection confirms a narrower Astraeum rule: connected Play
+converts `floorDocumentGrid` blocked cells into collisions. Within each
+section's original Floor 1 footprint, cells without floor are blocked; cells
+outside that footprint are open unless otherwise blocked. Generic connected
+Play does not apply this floor grid. This describes existing adapter behavior,
+not a change to gameplay.
+
+Focused disposable persistence checks cover both models, original and other
+section removal, exact retained documents and positions, Save/restart/reopen,
+undo-compatible restoration, idempotent retry, stale revisions, injected
+rollback, custom-boundary rejection, occupied-position conflicts and legacy
+World isolation. The main-editor browser-I/O fixture checks the actual
+confirmation controls, player-start and boundary warnings, Cancel, one-step
+Undo/Redo including after Save, preserved unsaved changes and lost-response
+reconciliation. Connected runtime and existing single-map contract checks
+cover the archived-root routing and existing behavior; boundary checks cover
+the default union and custom boundary. No native browser was launched, so
+these do not establish browser UI acceptance. T042 remains open.
+
+Review fixed uncertain-save reconciliation for an undone new section and
+rejects history operations that would overflow the archive. Direct single-map
+writes and level renames now advance the section revision, so stale section
+saves cannot overwrite them. A combined Save also permits a new section to
+remain when its saved anchor is removed. After these review changes,
+`npm run studio:apply:test` and `npm run studio:persistence:test` passed.
+
+The running API can still be the pre-removal version after Vite updates the
+editor: it does not return `archivedSections` and rejects a removal save by
+comparing only active-section counts. A disposable reproduction used equal
+baseline and submitted revisions (1), with two persisted sections versus
+one active and one archived in the request; the old service returned 409.
+The current service accepts the active/archive union while still rejecting
+genuine stale revisions. A live dirty draft must not be reloaded or discarded
+to resolve this mismatch; restarting the Studio launcher also stops Vite.
+Coordinate draft preservation and an API restart before retrying.
 
 ## 6. Enhancement tracking and Git
 

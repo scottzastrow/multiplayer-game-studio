@@ -15,6 +15,7 @@ import {
 } from "../../games/astraeum-tower/src/project.js";
 import { ASTRAEUM_PROJECT_ID as projectId, ASTRAEUM_FLOOR_1_MAP_ID as mapId, ASTRAEUM_MODEL as model } from "../project-identity.js";
 import * as generic from "../../games/generic-grid-v1/src/project.js";
+import { createGridRectangleBoundary } from "../playable-boundaries.js";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const dataDir = resolve(root, "studio", "data");
@@ -262,6 +263,29 @@ try {
   assert.notEqual(one.mapId, two.mapId);
   assert.deepEqual(two.document.bounds, generic.DEFAULT_DIMENSIONS);
   assert.deepEqual(generic.playStartProblems(two.document), [], "fixed dimensions include two safe starts");
+  const twoSectionsAddress = `${origin}/api/projects/${two.projectId}/levels/${two.mapId}/sections`;
+  const twoBaseline = (await request(twoSectionsAddress)).body;
+  const directEdit = { ...two.document, name: "Concurrent map write" };
+  assert.equal((await request(url(origin, two.projectId, two.mapId), "PUT",
+    { projectId: two.projectId, model: generic.MODEL, document: directEdit })).status, 200);
+  const staleTwo = { operationId: "stale-after-direct-write", revision: twoBaseline.revision,
+    sections: twoBaseline.sections.map(section => ({ sectionId: section.sectionId,
+      revision: section.revision, document: section.document })), archivedSections: [] };
+  assert.equal((await request(twoSectionsAddress, "PUT", staleTwo)).status, 409,
+    "a direct map write invalidates an earlier section-save baseline");
+  assert.equal((await request(twoSectionsAddress)).body.sections[0].document.name, directEdit.name);
+  assert.equal((await request(url(origin, two.projectId, two.mapId), "PUT",
+    { projectId: two.projectId, model: generic.MODEL, document: two.document })).status, 200);
+  const beforeRename = (await request(twoSectionsAddress)).body;
+  assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels`, "POST",
+    { action: "rename", mapId: two.mapId, name: "Renamed concurrently" })).status, 200);
+  assert.equal((await request(twoSectionsAddress, "PUT", { ...staleTwo,
+    operationId: "stale-after-rename", revision: beforeRename.revision,
+    sections: beforeRename.sections.map(section => ({ sectionId: section.sectionId,
+      revision: section.revision, document: section.document })) })).status, 409,
+  "renaming invalidates an earlier section-save baseline");
+  assert.equal((await request(url(origin, two.projectId, two.mapId), "PUT",
+    { projectId: two.projectId, model: generic.MODEL, document: two.document })).status, 200);
   generic.createDocument("maximum-map", "Maximum map", { width: 2048, height: 2048 });
   const edited = structuredClone(one.document);
   edited.objects.push(generic.createDesignObject("block-1", "generic-block", { x: 64, y: 64 }, 0));
@@ -475,6 +499,164 @@ try {
   assert.deepEqual((await request(`${origin}${sectionsPath}`)).body, preservedGenericSections);
   assert.deepEqual((await request(`${origin}${worldPath}`)).body, preservedWorld);
   assert.deepEqual((await request(url(origin, two.projectId, two.mapId))).body.document, two.document);
+
+  for (const [owner, levelId, initialSource] of [
+    [one.projectId, one.mapId, preservedGenericSections],
+    [projectId, mapId, towerReopened]
+  ]) {
+    const sectionAddress = `${origin}/api/projects/${owner}/levels/${levelId}/sections`;
+    let source = initialSource;
+    const toSave = (section, document = section.document) =>
+      ({ sectionId: section.sectionId, revision: section.revision, document });
+    const undoDraft = source.sections.map((section, index) => toSave(section,
+      { ...section.document, name: index === 0 ? "Unsaved edit after undo" : section.document.name }));
+    const undoSave = { operationId: `undo-before-save-${levelId}`, revision: source.revision,
+      sections: undoDraft, archivedSections: [] };
+    const undoResult = await request(sectionAddress, "PUT", undoSave);
+    assert.equal(undoResult.status, 200, "remove then undo saves the unchanged membership and unrelated edit");
+    assert.equal(undoResult.body.revision, source.revision + 1);
+    assert.equal(undoResult.body.sections[0].document.name, "Unsaved edit after undo");
+    source = undoResult.body;
+    const concurrentDraft = { operationId: `concurrent-draft-${levelId}`, revision: source.revision,
+      sections: source.sections.map(section => toSave(section)), archivedSections: [] };
+    const concurrentWrite = { operationId: `concurrent-writer-${levelId}`, revision: source.revision,
+      sections: source.sections.map((section, index) => toSave(section,
+        index === 0 ? { ...section.document, name: "Concurrent writer" } : section.document)),
+      archivedSections: [] };
+    const concurrentResult = await request(sectionAddress, "PUT", concurrentWrite);
+    assert.equal(concurrentResult.status, 200);
+    const rejected = await request(sectionAddress, "PUT", concurrentDraft);
+    assert.equal(rejected.status, 409, "a concurrent write is rejected even with unchanged membership");
+    assert.deepEqual((await request(sectionAddress)).body, concurrentResult.body);
+    assert.equal(concurrentDraft.sections[0].document.name, "Unsaved edit after undo",
+      "the rejected request leaves the client draft unchanged");
+    source = concurrentResult.body;
+    const rootSection = source.sections.find(section => section.mapId === levelId);
+    const neighbor = source.sections.find(section => section.mapId !== levelId);
+    const modifiedRoot = { ...rootSection.document, name: "Unsaved root kept on removal" };
+    const modifiedNeighbor = { ...neighbor.document, name: "Unsaved neighbor kept on removal" };
+    const active = source.sections.filter(section => section.sectionId !== rootSection.sectionId)
+      .map(section => toSave(section, section.sectionId === neighbor.sectionId ? modifiedNeighbor : section.document));
+    const occupied = new Set([...source.sections, ...source.archivedSections]
+      .map(section => `${section.gridX},${section.gridY}`));
+    const newPosition = [[neighbor.gridX + 1, neighbor.gridY], [neighbor.gridX, neighbor.gridY + 1],
+      [neighbor.gridX, neighbor.gridY - 1], [neighbor.gridX - 1, neighbor.gridY]]
+      .find(([x, y]) => !occupied.has(`${x},${y}`));
+    assert.ok(newPosition, "the fixture has an empty adjacent section position");
+    const newMapId = `map-draft-${levelId}`;
+    const newDocument = { ...neighbor.document, id: newMapId, name: "Saved draft section", objects: [] };
+    const addedSection = { sectionId: `section-draft-${levelId}`, mapId: newMapId,
+      gridX: newPosition[0], gridY: newPosition[1], revision: 0, document: newDocument };
+    active.push(addedSection);
+    const removeRoot = { operationId: `remove-root-${levelId}`, revision: source.revision,
+      sections: active, archivedSections: [toSave(rootSection, modifiedRoot)] };
+    const failureDb = new DatabaseSync(creationPath);
+    failureDb.exec(`CREATE TRIGGER reject_archive BEFORE INSERT ON level_section_archives
+      BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END`);
+    assert.equal((await request(sectionAddress, "PUT", removeRoot)).status, 500);
+    assert.deepEqual((await request(sectionAddress)).body, source, "failed archival rolls back every document and membership");
+    const failedAdditionDb = new DatabaseSync(creationPath, { readOnly: true });
+    assert.equal(failedAdditionDb.prepare("SELECT 1 FROM maps WHERE project_id = ? AND map_id = ?")
+      .get(owner, newMapId), undefined, "failed atomic Add leaves no orphan map row");
+    failedAdditionDb.close();
+    failureDb.exec("DROP TRIGGER reject_archive");
+    failureDb.close();
+    const removed = await request(sectionAddress, "PUT", removeRoot);
+    assert.equal(removed.status, 200);
+    assert.equal(removed.body.revision, source.revision + 1, "membership changes use and advance the baseline revision");
+    assert.deepEqual(removed.body.sections.find(section => section.sectionId === addedSection.sectionId).document,
+      newDocument, "Add, Remove and document edits persist in one atomic save");
+    assert.equal(removed.body.sections.find(section => section.sectionId === addedSection.sectionId).revision, 1);
+    assert.deepEqual(removed.body.sections.map(section => [section.gridX, section.gridY]),
+      [...source.sections.filter(section => section.sectionId !== rootSection.sectionId), addedSection]
+        .map(section => [section.gridX, section.gridY]));
+    assert.deepEqual(removed.body.archivedSections.find(section => section.sectionId === rootSection.sectionId).document, modifiedRoot);
+    assert.deepEqual(removed.body.sections.find(section => section.sectionId === neighbor.sectionId).document, modifiedNeighbor);
+    assert.deepEqual((await request(sectionAddress, "PUT", removeRoot)).body, removed.body, "removal retries are idempotent");
+    assert.equal((await request(sectionAddress, "PUT", { ...removeRoot, operationId: `stale-${levelId}` })).status, 409);
+    const levelList = (await request(`${origin}/api/projects/${owner}/levels`)).body.levels;
+    assert.equal(levelList.some(level => level.mapId === neighbor.mapId), false);
+    await stop();
+    origin = await start(creationPath);
+    const addressAfterRestart = `${origin}/api/projects/${owner}/levels/${levelId}/sections`;
+    assert.deepEqual((await request(addressAfterRestart)).body, removed.body, "removed content and active membership survive restart");
+    const restore = { operationId: `restore-root-${levelId}`, revision: removed.body.revision,
+      sections: [...removed.body.sections, ...removed.body.archivedSections].map(section => toSave(section)),
+      archivedSections: [] };
+    const restored = await request(addressAfterRestart, "PUT", restore);
+    assert.equal(restored.status, 200);
+    assert.deepEqual(restored.body.sections.find(section => section.sectionId === rootSection.sectionId).document, modifiedRoot);
+    assert.deepEqual(restored.body.sections.find(section => section.sectionId === neighbor.sectionId).document, modifiedNeighbor);
+    const restoredPositions = restored.body.sections.map(section => [section.gridX, section.gridY])
+      .sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    const expectedPositions = [...removed.body.sections, ...removed.body.archivedSections]
+      .map(section => [section.gridX, section.gridY]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    assert.deepEqual(restoredPositions, expectedPositions,
+      "restoration preserves exact positions including the added section");
+    const noActive = { operationId: `remove-all-${levelId}`, revision: restored.body.revision,
+      sections: [], archivedSections: restored.body.sections.map(section => toSave(section)) };
+    assert.notEqual((await request(addressAfterRestart, "PUT", noActive)).status, 200);
+    const rootNow = restored.body.sections.find(section => section.mapId === levelId);
+    const otherNow = restored.body.sections.find(section => section.mapId !== levelId);
+    const boundary = createGridRectangleBoundary(
+      { x: otherNow.gridX * 64, y: otherNow.gridY * 64 },
+      { x: otherNow.gridX * 64 + 1, y: otherNow.gridY * 64 + 1 }, restored.body.sections).boundary;
+    const boundaryRemoval = { operationId: `boundary-remove-${levelId}`, revision: restored.body.revision,
+      sections: restored.body.sections.filter(section => section.sectionId !== otherNow.sectionId)
+        .map(section => toSave(section, section.sectionId === rootNow.sectionId
+          ? { ...section.document, playableBoundary: boundary } : section.document)),
+      archivedSections: [toSave(otherNow)] };
+    assert.notEqual((await request(addressAfterRestart, "PUT", boundaryRemoval)).status, 200,
+      "a custom boundary cannot silently extend into a removed section");
+    assert.deepEqual((await request(addressAfterRestart)).body, restored.body);
+    const removeNeighbor = { operationId: `remove-neighbor-${levelId}`, revision: restored.body.revision,
+      sections: restored.body.sections.filter(section => section.sectionId !== otherNow.sectionId).map(section => toSave(section)),
+      archivedSections: [toSave(otherNow)] };
+    const neighborRemoved = await request(addressAfterRestart, "PUT", removeNeighbor);
+    assert.equal(neighborRemoved.status, 200);
+    assert.deepEqual(neighborRemoved.body.archivedSections[0].document, modifiedNeighbor);
+    assert.equal((await request(url(origin, owner, otherNow.mapId))).status, 409,
+      "an archived section is not exposed as an independent map");
+    const replacement = await request(addressAfterRestart, "POST", {
+      gridX: otherNow.gridX, gridY: otherNow.gridY, revision: neighborRemoved.body.revision
+    });
+    assert.equal(replacement.status, 201, "Add Section may reuse an archived position after saving");
+    const conflictingRestore = { operationId: `conflicting-restore-${levelId}`, revision: replacement.body.revision,
+      sections: [...replacement.body.sections, ...replacement.body.archivedSections].map(section => toSave(section)),
+      archivedSections: [] };
+    assert.equal((await request(addressAfterRestart, "PUT", conflictingRestore)).status, 409,
+      "restoring into an occupied position fails atomically");
+    const overArchiveLimit = { operationId: `archive-limit-${levelId}`, revision: replacement.body.revision,
+      sections: replacement.body.sections.map(section => toSave(section)),
+      archivedSections: Array(17).fill(toSave(replacement.body.archivedSections[0])) };
+    assert.equal((await request(addressAfterRestart, "PUT", overArchiveLimit)).status, 400,
+      "the archive limit is enforced without dropping any retained document");
+    assert.deepEqual((await request(addressAfterRestart)).body, replacement.body);
+    assert.deepEqual((await request(`${origin}${worldPath}`)).body, preservedWorld);
+  }
+  const replacementAddress = `${origin}/api/projects/${two.projectId}/levels/${two.mapId}/sections`;
+  const replaceRootBaseline = (await request(replacementAddress)).body;
+  const replacementMap = "map-unsaved-replacement";
+  const replaceRoot = { operationId: "replace-root-in-one-save", revision: replaceRootBaseline.revision,
+    sections: [{ sectionId: "section-unsaved-replacement", mapId: replacementMap, gridX: 1, gridY: 0,
+      revision: 0, document: { ...two.document, id: replacementMap, objects: [] } }],
+    archivedSections: replaceRootBaseline.sections.map(section => ({ sectionId: section.sectionId,
+      revision: section.revision, document: section.document })) };
+  const replacedRoot = await request(replacementAddress, "PUT", replaceRoot);
+  assert.equal(replacedRoot.status, 200, "a draft addition can remain after its saved anchor is removed");
+  assert.deepEqual(replacedRoot.body.archivedSections[0].document, two.document);
+  assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels`, "POST",
+    { action: "rename", mapId: two.mapId, name: "Archived root renamed" })).status, 200);
+  const staleArchivedRoot = { operationId: "stale-after-archived-root-rename", revision: replacedRoot.body.revision,
+    sections: replacedRoot.body.sections.map(section => ({ sectionId: section.sectionId,
+      revision: section.revision, document: section.document })),
+    archivedSections: replacedRoot.body.archivedSections.map(section => ({ sectionId: section.sectionId,
+      revision: section.revision, document: section.document })) };
+  assert.equal((await request(replacementAddress, "PUT", staleArchivedRoot)).status, 409);
+  const afterArchivedRename = (await request(replacementAddress)).body;
+  assert.equal(afterArchivedRename.archivedSections[0].document.name, "Archived root renamed");
+  assert.equal(afterArchivedRename.archivedSections[0].revision,
+    replacedRoot.body.archivedSections[0].revision + 1);
   await stop();
 
   const badPath = resolve(testDir, "unknown.sqlite");
