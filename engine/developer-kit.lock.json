@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0",
-  "archiveSha256": "dd5a978c54dc951dd48d767379482f8a28dbbdb0318866c73a7527459281218d",
-  "engineRevision": "2717a9bc86c2b8db0865a2e37cffa609b0f8a208",
+  "version": "0.3.0",
+  "archiveSha256": "afd63a865a23b60183d7be89c15811f68438a0186638caa509fb541bc3492517",
+  "engineRevision": "dca3ffc4561c14e0e83968afceabf0e85cddc565",
   "engineSourceState": "committed",
   "packages": [
     {
@@ -30,8 +30,8 @@
       "file": "packages/fflate-0.8.3.tgz"
     }
   ],
-  "localDirectory": "engine/kits/0.2.0-2717a9bc86c2",
-  "dependencyDirectory": "engine/kits/dependencies-0.2.0-2717a9bc86c2",
+  "localDirectory": "engine/kits/0.3.0-dca3ffc4561c",
+  "dependencyDirectory": "engine/kits/dependencies-0.3.0-dca3ffc4561c",
   "companion": {
     "repository": "scottzastrow/multiplayer-game-themes",
     "revision": "778319f578b25081420e3334e1e68fa4de7540ec",
@@ -48,8 +48,8 @@
   },
   "reusedTooling": {
     "kitVersion": "0.2.0",
-    "kitManifestSha256": "19e5d610d3347fe46504b39e6e0e9657f4630588d53d104b4baa993bbb3d1e75",
-    "inventorySha256": "520b279f702935f3134d7edf91eef95d73aaba86e9e8343625b812555fee702e",
+    "kitManifestSha256": "a1eef21ed8798a4b93a86997845fb3071885a3f88080fb0b67bce2cb92fb7f3b",
+    "inventorySha256": "3c62cbd20dadd4c65967aa985d331b174fd19c9c245180776a79acdbef16880f",
     "verification": "Reused files checked against the prior kit inventory; companion checkout unavailable."
   }
 }

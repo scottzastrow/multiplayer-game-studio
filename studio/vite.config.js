@@ -1,9 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
 const studioRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(studioRoot, "..");
-const kit = new URL("../engine/kits/dependencies-0.2.0-2717a9bc86c2/node_modules/", import.meta.url);
+const receipt = JSON.parse(readFileSync(resolve(repositoryRoot, "engine", "developer-kit.lock.json"), "utf8"));
+const kitDependencies = resolve(process.env.STUDIO_KIT_DEPENDENCIES ??
+  resolve(repositoryRoot, receipt.dependencyDirectory, "node_modules"));
 const apiPort = Number(process.env.STUDIO_API_PORT ?? 4179);
 
 export default {
@@ -21,11 +24,11 @@ export default {
     alias: [
       {
         find: "@multiplayer-game/local-preview",
-        replacement: fileURLToPath(new URL("@multiplayer-game/local-preview/dist/index.js", kit))
+        replacement: resolve(kitDependencies, "@multiplayer-game", "local-preview", "dist", "index.js")
       },
       {
         find: "@multiplayer-game/theme-sdk",
-        replacement: fileURLToPath(new URL("@multiplayer-game/theme-sdk/dist/index.js", kit))
+        replacement: resolve(kitDependencies, "@multiplayer-game", "theme-sdk", "dist", "index.js")
       }
     ]
   }

@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
-const kit = new URL("../../engine/kits/dependencies-0.2.0-2717a9bc86c2/node_modules/", import.meta.url);
+const receipt = JSON.parse(readFileSync(new URL("../../engine/developer-kit.lock.json", import.meta.url), "utf8"));
+const kit = new URL(`../../${receipt.dependencyDirectory}/node_modules/`, import.meta.url);
 
 export default {
   root,
