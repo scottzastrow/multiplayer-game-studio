@@ -179,8 +179,14 @@
                     <option value="8">8 × 8</option>
                   </select>
                 </label>
+                <label>Density (%)
+                  <input id="paint-density" type="number" min="1" max="100" step="1" value="100">
+                </label>
+                <label>Minimum spacing (world px gap between same-layer footprints)
+                  <input id="paint-spacing" type="number" min="0" max="2048" step="1" value="0">
+                </label>
                 <p id="paint-support" role="status"></p>
-                <p>Continuous brushes replace grid cells with non-unique 32 × 32 terrain only. Other assets keep single-click or palette-drag placement; brush size does not repeat them.</p>
+                <p>Density changes placement probability, never artwork scale. Static brushes preserve footprints and collision defaults. Characters, spawns and gameplay objects remain single-place.</p>
               </fieldset>
               <fieldset id="fill-options" hidden>
                 <legend>Rectangle Fill</legend>

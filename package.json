@@ -17,6 +17,7 @@
     "studio:connected-play:test": "node studio/scripts/connected-play-test.mjs",
     "studio:boundaries:test": "node studio/scripts/playable-boundaries-test.mjs",
     "studio:apply:test": "node studio/scripts/editor-apply-test.mjs",
+    "studio:paint:test": "node studio/scripts/paint-test.mjs",
     "studio:sections:smoke": "node studio/scripts/sections-smoke.mjs",
     "studio:levels:smoke": "node studio/scripts/levels-smoke.mjs",
     "studio:world:test": "node studio/scripts/world-workspace-test.mjs",

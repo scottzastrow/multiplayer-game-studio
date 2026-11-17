@@ -8,6 +8,7 @@ import * as generic from "../../games/generic-grid-v1/src/project.js";
 import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
 import * as boundaries from "../playable-boundaries.js";
 import * as terrain from "../world-terrain.js";
+import * as paint from "../world-paint.js";
 import * as fill from "../world-fill.js";
 import * as coordinates from "../world-coordinates.js";
 import * as identity from "../project-identity.js";
@@ -161,7 +162,7 @@ function browserFixture() {
 function editor(model) {
   const browser = browserFixture();
   const sandbox = createContext({
-    ...browser, towerProject, generic, towerRender, ...boundaries, ...terrain, ...fill, ...coordinates, ...identity,
+    ...browser, towerProject, generic, towerRender, ...boundaries, ...terrain, ...paint, ...fill, ...coordinates, ...identity,
     RUNTIME_MAP_CELL_SIZE: 32, RUNTIME_MAX_MAP_DIMENSION: 2048,
     ARTWORK_CREDIT: "", structuredClone, TextEncoder, console,
     crypto: { randomUUID: () => "fixture-save-id" },
@@ -791,17 +792,128 @@ for (const model of [generic, towerProject]) {
     wallCard.dispatch("pointerdown", { button: 0, clientX: 0, clientY: 0, pointerId: 2 });
     wallCard.dispatch("pointerup", { clientX: 0, clientY: 0, pointerId: 2 });
     assert.equal($("#paint-asset-name").textContent, model.ASSET_CATALOG[wall].label);
-    assert.equal($("#paint-brush-size").disabled, true);
-    assert.match($("#paint-support").textContent, /not terrain/);
+    assert.equal($("#paint-brush-size").disabled, false);
+    assert.match($("#paint-support").textContent, /Asset footprint: 32 x 32/);
     e.drag([[640, 640], [800, 640]]);
     assert.equal(state.sections.reduce((sum, section) => sum +
-      section.document.objects.filter(object => object.type === "wall").length, 0), 1,
-    "non-terrain Paint keeps single placement and ignores brush size");
+      section.document.objects.filter(object => object.type === "wall").length, 0), (size + 5) * size,
+    "explicit static walls repeat at their actual footprint using the selected brush size");
     e.tool("select");
     assert.equal($("#paint-options").hidden, true);
   }
 }
 console.log("Paint: all four brush sizes, selected thumbnails, cursor footprints, cross-section strokes, locks, hidden/missing rejection and one-action Undo/Redo passed in both models.");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  const id = model === generic ? "generic-marker" : "prop-barrel";
+  state.paintSeed = 77;
+  const east = structuredClone(state.document);
+  east.id = "east-map";
+  state.sections.push({ sectionId: "east", mapId: east.id, gridX: 1, gridY: 0,
+    document: east, revision: 0, savedJson: JSON.stringify(east) });
+  const card = $(`.asset-card[data-asset-id="${id}"]`);
+  card.dispatch("pointerdown", { button: 0, clientX: 0, clientY: 0, pointerId: 2 });
+  card.dispatch("pointerup", { clientX: 0, clientY: 0, pointerId: 2 });
+  assert.equal(state.paintDensity, 100);
+  assert.equal(state.paintSpacing, 0);
+  $("#paint-brush-size").dispatch("change", { target: { value: "4" } });
+  $("#paint-density").dispatch("change", { target: { value: "31" } });
+  // Barrel's 22px width + 10px gap divides the seam; generic shapes retain the 32px lattice.
+  $("#paint-spacing").dispatch("change", { target: { value: model === generic ? "0" : "10" } });
+  const canvas = $("#map-canvas");
+  const pointer = (type, x = 2017, y = 337) =>
+    canvas.dispatch(type, { button: 0, pointerId: 1, clientX: x, clientY: y });
+  const before = e.documents();
+  pointer("pointermove");
+  const hover = canvas.dataset.paintPlacements;
+  pointer("pointerdown");
+  assert.equal(canvas.dataset.paintPlacements, hover, "hover and pointer-down use the same seed and placements");
+  assert.equal($("#paint-density").disabled, true);
+  assert.equal($("#paint-spacing").disabled, true);
+  $("#paint-density").dispatch("change", { target: { value: "100" } });
+  assert.equal(state.pointerStart.density, 31, "probability is latched for the stroke");
+  pointer("pointermove", 2113);
+  const visited = canvas.dataset.paintPlacements;
+  pointer("pointermove");
+  pointer("pointermove", 2113);
+  assert.equal(canvas.dataset.paintPlacements, visited, "repeated pointer passes neither reroll nor stack");
+  const gesture = state.pointerStart;
+  const plan = paint.planPaintStroke(state.sections, gesture.stroke.cells.values(), {
+    assetId: id, assetCatalog: model.ASSET_CATALOG, layers: state.layers,
+    createObject: model === generic
+      ? (id, asset, transform, order) => model.createDesignObject(id, asset, transform, order)
+      : model.createDesignObject,
+    validate: model.validateFloorDocument, density: gesture.density, spacing: gesture.spacing, seed: gesture.seed
+  });
+  assert.ok(plan.placements.length > 0);
+  assert.equal(plan.updates.length, 2);
+  assert.equal(canvas.dataset.paintPlacements, JSON.stringify(plan.placements));
+  assert.equal(e.documents(), before, "the entire pointer gesture remains draft-preview only");
+  pointer("pointerup", 2113);
+  const after = e.documents();
+  for (const update of plan.updates) assert.equal(
+    JSON.stringify(state.sections.find(section => section.sectionId === update.sectionId).document),
+    JSON.stringify(update.document), "committed documents exactly equal the rendered preview's plan");
+  assert.equal(state.undo.length, 1);
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+  $("#undo").click();
+  assert.equal(e.documents(), before);
+  $("#redo").click();
+  assert.equal(e.documents(), after);
+  pointer("pointerdown", 2017, 593);
+  pointer("pointermove", 2113, 593);
+  e.key("#map-canvas", "Escape");
+  pointer("pointerup", 2113, 593);
+  assert.equal(e.documents(), after);
+  assert.equal(state.undo.length, 1, "Escape cancellation never publishes partial documents/history");
+  pointer("pointerdown", 2017, 593);
+  pointer("pointermove", 2113, 593);
+  state.layers.props.locked = true;
+  pointer("pointerup", 2113, 593);
+  assert.equal(e.documents(), after, "a lock after preview atomically rejects the whole cross-section stroke");
+  assert.equal(state.undo.length, 1);
+  assert.match($("#status").textContent, /unlock/);
+  state.layers.props.locked = false;
+  $("#paint-density").dispatch("change", { target: { value: "101" } });
+  assert.equal(state.paintDensity, 31);
+  assert.match($("#status").textContent, /Density/);
+  $("#paint-spacing").dispatch("change", { target: { value: "-1" } });
+  assert.match($("#status").textContent, /Minimum spacing/);
+  let savedBody = null;
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [], startingMapId: "apply-map" }) };
+    savedBody = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ projectId: "apply-project", levelMapId: "apply-map",
+      model: state.model, revision: 1, archivedSections: [],
+      sections: savedBody.sections.map(item => ({
+        ...state.sections.find(section => section.sectionId === item.sectionId), ...item, revision: 1
+      })) }) };
+  };
+  assert.equal(await e.save(), true);
+  assert.equal(savedBody.sections.length, 2, "Save sends every section together");
+  assert.equal($("#save-state").classList.contains("saved"), true);
+  assert.equal(e.documents(), after);
+  $("#undo").click();
+  assert.equal(e.documents(), before, "Undo still restores the whole Paint stroke after Save");
+  $("#redo").click();
+  assert.equal(e.documents(), after);
+
+  const singleId = model === generic ? "generic-player" : "spawn-slime";
+  const single = $(`.asset-card[data-asset-id="${singleId}"]`);
+  single.dispatch("pointerdown", { button: 0, clientX: 0, clientY: 0, pointerId: 2 });
+  single.dispatch("pointerup", { clientX: 0, clientY: 0, pointerId: 2 });
+  assert.equal($("#paint-brush-size").disabled, true);
+  assert.equal($("#paint-density").disabled, true);
+  assert.equal($("#paint-spacing").disabled, true);
+  assert.match($("#paint-support").textContent, /single placement only/);
+  const count = state.sections.reduce((sum, section) => sum + section.document.objects.length, 0);
+  e.drag([[640, 640], [800, 640], [960, 640]]);
+  assert.equal(state.sections.reduce((sum, section) => sum + section.document.objects.length, 0), count + 1,
+    "characters/spawns keep single-click placement even at a large brush size");
+}
+console.log("Paint density/spacing: real UI controls, deterministic pointer previews, exact commit agreement, cross-section retracing, locks, Escape, Save and single-action Undo/Redo passed (event/render fixture; not native browser).");
 
 {
   const e = editor(towerProject);

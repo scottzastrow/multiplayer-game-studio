@@ -40,14 +40,14 @@ function region(image, file, x, y, width, height) {
 
 export const ASSET_CATALOG = Object.freeze({
   "floor-cobblestone": asset({
-    type: "terrain-tile", label: "Cobblestone floor",
+    type: "terrain-tile", label: "Cobblestone floor", paint: "terrain",
     artwork: region("wang", "damp-corridors-wang.png", 64, 32, 32, 32),
     pivot: { x: 0, y: 0 }, snap: { x: 0, y: 0, forced: true },
     play: "implemented", playNote: "Walkable floor; drawn with the Damp Corridors Wang autotile.",
     details: "Wang sheet tile 6 (all floor) · 32 × 32"
   }),
   "wall-damp-stone": asset({
-    type: "wall", label: "Damp stone wall",
+    type: "wall", label: "Damp stone wall", paint: "static",
     artwork: region("wang", "damp-corridors-wang.png", 0, 96, 32, 32),
     autotile: "damp-corridors-wang",
     pivot: { x: 0, y: 0 }, snap: { x: 0, y: 0, forced: false },
@@ -57,7 +57,7 @@ export const ASSET_CATALOG = Object.freeze({
     details: "Wang sheet tile 12 (all wall) · 32 × 32 · collision"
   }),
   "prop-barrel": asset({
-    type: "prop", label: "Barrel", legacyMarker: "B",
+    type: "prop", label: "Barrel", legacyMarker: "B", paint: "static",
     artwork: region("barrel", "barrel.png", 0, 0, 22, 30),
     pivot: { x: 11, y: 28 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -9, y: -8, width: 18, height: 8 },
@@ -65,7 +65,7 @@ export const ASSET_CATALOG = Object.freeze({
     details: "22 × 30 · optional 18 × 8 collision"
   }),
   "prop-crate": asset({
-    type: "prop", label: "Crate", legacyMarker: "X",
+    type: "prop", label: "Crate", legacyMarker: "X", paint: "static",
     artwork: region("crate", "crate.png", 0, 0, 28, 30),
     pivot: { x: 14, y: 28 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -12, y: -10, width: 24, height: 10 },
@@ -73,7 +73,7 @@ export const ASSET_CATALOG = Object.freeze({
     details: "28 × 30 · optional 24 × 10 collision"
   }),
   "prop-pots": asset({
-    type: "prop", label: "Clay pots", legacyMarker: "o",
+    type: "prop", label: "Clay pots", legacyMarker: "o", paint: "static",
     artwork: region("pots", "pots.png", 0, 0, 30, 29),
     pivot: { x: 15, y: 27 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -12, y: -8, width: 24, height: 8 },
@@ -81,7 +81,7 @@ export const ASSET_CATALOG = Object.freeze({
     details: "30 × 29 · optional 24 × 8 collision"
   }),
   "prop-candle": asset({
-    type: "prop", label: "Candle",
+    type: "prop", label: "Candle", paint: "static",
     artwork: region("candle", "candle.png", 0, 0, 18, 27),
     pivot: { x: 9, y: 27 }, snap: { x: 16, y: 24, forced: false },
     light: { offsetY: -23, radius: 80, color: "#ffc070" },

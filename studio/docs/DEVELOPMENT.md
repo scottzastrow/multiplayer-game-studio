@@ -167,26 +167,53 @@ registry access, and whether an owned Vite process is holding native files.
   **Rectangle Fill**, and **Boundary**. Boundary supports grid selection or a
   closed polygon lasso, previews playable cells, and uses Apply/Reset/
   Escape-cancel through the existing history. Decorative fill borders remain
-  independent. Paint continuously strokes compatible single-cell terrain; for
-  other assets it click-places, and palette drag placement remains available.
+  independent. Paint continuously strokes explicitly brush-capable terrain,
+  walls and static props; other assets remain click-place, and palette drag
+  placement remains available.
   The Paint panel shows the explicitly selected asset's thumbnail and name,
   or asks you to choose one. Its **Brush size** selects **1 x 1**, **2 x 2**,
   **4 x 4** or **8 x 8** terrain cells (32, 64, 128 or 256 world pixels per
-  side), without scaling artwork. A grid-snapped cursor footprint shows the
-  exact stamp; even-sized brushes extend one extra cell east/south of the
-  pointer's cell-centered footprint. Green indicates an available footprint;
-  red indicates a locked/hidden Terrain layer or missing/out-of-bounds section.
+  side), without scaling artwork. **Density (%)** accepts whole percentages
+  from **1–100**, default **100**; it controls candidate placement probability,
+  never image size. **Minimum spacing** is a whole-world-pixel gap between
+  **same-layer object footprints**, from **0–2048**, default **0**. Objects on
+  other layers are unaffected, so floors do not prevent placing props.
+  A grid-snapped cursor outline shows the brush's influence area;
+  actual proposed placements show their artwork and full footprint.
+  World-grid footprint anchors inside the influence area are candidates;
+  large artwork can extend beyond the brush outline. Even-sized brushes
+  extend one extra cell east/south of the pointer's cell-centered footprint.
+  Green indicates a valid plan; red rejects the complete stroke for a
+  locked/hidden target layer, missing section, invalid footprint or capacity.
   Fast strokes sweep every intervening cell, including across existing section
-  seams. A stroke captures its size on pointer-down and creates one Undo entry
-  for all changed sections; retracing/identical tiles do not stack. Rejected
+  seams. A stroke captures its size, density, spacing and stable seed on
+  pointer-down and creates one Undo entry for all changed sections.
+  Candidates use a fixed world-space lattice based on the configured asset
+  footprint plus the gap (rounded up for forced 32px alignment). Revisited
+  candidates never reroll or stack. Existing same-layer objects, including
+  neighbors across seams, enforce the gap. Rejected
   strokes change nothing, rather than clipping the brush at a seam or bound.
-  Continuous Paint supports **Cobblestone floor** in Astraeum and **Plain
-  tile** in Generic Grid: non-unique 32 x 32 terrain with compatible pivot/grid
-  alignment. Walls/blocks, props (including imported PNG art), items, spawns and
-  collision boxes are objects, not replaceable terrain cells; unique assets or
-  terrain with incompatible dimensions/pivots also cannot use the continuous
-  brush. Their selected asset remains visible with an explanation, the brush
-  size is disabled, and existing single-click/palette-drag placement remains.
+  At 100% density and zero spacing, **Cobblestone floor** in Astraeum and
+  **Plain tile** in Generic Grid use the original continuous-floor replacement
+  path, including identical-cell no-ops and preserved replacement order.
+  Catalogs explicitly opt assets into `paint: "terrain"` or `paint: "static"`;
+  Fill's repeatable-asset eligibility still guards these capabilities.
+  Built-in walls/blocks and static props opt in; imported assets opt in only
+  when their category is **prop**, not **character** or **item**. Static copies
+  retain dimensions, pivot, layer and collision defaults and append order as
+  in Rectangle Fill. No artwork is scaled or resized. Unique/required objects,
+  stairs portals, characters, spawns, items and collision boxes stay
+  single-place even if a brush capability is incorrectly assigned.
+  Unsupported assets remain visible with an explanation and disabled brush,
+  density and spacing controls; single-click/palette-drag placement remains.
+  A static slot whose footprint crosses a section seam or saved bounds is
+  omitted and counted, like Rectangle Fill; objects never change
+  owners, split or resize. The brush area itself must remain within existing
+  saved bounds: missing/out-of-bounds brush cells reject the complete stroke,
+  even at low density.
+  Escape cancels without edits. Preview and commit use the same pure planner;
+  publication uses the existing transactional multi-section history path.
+  Paint remains an unsaved draft until Save.
   Select returns to selection/movement (also Escape). Rectangle Fill keeps its
   mode when choosing a palette asset; palette input selects the fill asset
   without drag-placing a single object. The Fill panel says **Choose a fill
@@ -198,8 +225,7 @@ registry access, and whether an owned Vite process is holding native files.
   are shown, with Apply/Cancel inside the fill settings rather than the toolbar.
   Save, Undo/Redo and Play remain in the toolbar.
   These tools use the main canvas, palette, hierarchy, Inspector, layers and
-  history. Paint needs a compatible single-cell terrain asset for strokes;
-  Rectangle Fill also repeats static props (including barrels and imported
+  history. Rectangle Fill repeats static props (including barrels and imported
   visual props) and walls using their configured world footprint, not image
   resolution or terrain-cell dimensions. Fill settings show that footprint,
   horizontal/vertical gaps in whole world pixels (0-2048), and Skip/Allow
@@ -375,6 +401,7 @@ run the narrowest relevant check from the root:
 ```powershell
 npm run studio:boundaries:test
 npm run studio:apply:test
+npm run studio:paint:test
 npm run studio:connected-play:test
 npm run studio:runtime-sections:test
 npm run studio:persistence:test
@@ -1577,6 +1604,34 @@ The current service accepts the active/archive union while still rejecting
 genuine stale revisions. A live dirty draft must not be reloaded or discarded
 to resolve this mismatch; restarting the Studio launcher also stops Vite.
 Coordinate draft preservation and an API restart before retrying.
+
+### Paint density and footprint spacing (2026-11-17)
+
+Paint now reuses Fill's static-asset eligibility and the models' existing
+object factories, footprint/pivot/ownership rules, terrain replacement,
+pointer rasterization and transactional document-set history. Explicit
+catalog capabilities gate static repetition, including imported prop artwork;
+characters, spawns and gameplay objects retain single placement. Fill,
+Boundary, section management and Play behavior are unchanged.
+
+**User's manual confirmation:** asset painting works as desired. This is
+separate from the automated checks and is not automated browser verification.
+
+**Logic/event verification:** `npm run studio:paint:test`,
+`npm run studio:apply:test` and `node studio\scripts\world-terrain-test.mjs`
+passed. Coverage includes exact old/new 100% floor documents, deterministic
+sparse candidates and retracing, non-32px footprints, same-layer spacing
+across seams, required/optional collision defaults, capacity rejection,
+actual registered settings/pointer events, preview/commit document equality,
+locks, Escape, one-action Undo/Redo (also after Save), and draft-only behavior.
+The Paint test uses a disposable SQLite API service for atomic multi-section
+Save and restart/reopen; evidence stays under `studio\data\paint-check-*`.
+
+**Native-browser verification:** not run. No blocked browser harness was
+launched; event/render-command fixtures are not native visual acceptance.
+User data, recovery, backups and unrelated edits were preserved. Changes
+were reviewed for a local commit; no push, deployment or kit rebuild occurred.
+T042 stays open.
 
 ## 6. Enhancement tracking and Git
 

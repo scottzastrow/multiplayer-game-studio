@@ -50,9 +50,10 @@ import {
   playableBoundaryCells,
   validatePlayableBoundaryForSections
 } from "../playable-boundaries.js";
-import { extendTerrainStroke, planTerrainStroke, terrainBrushFootprint,
+import { extendTerrainStroke, terrainBrushFootprint,
   isTerrainBrushAsset } from "../world-terrain.js";
 import { fillRectangle, isBorderAsset, isRepeatableAsset, planFill } from "../world-fill.js";
+import { isPaintBrushAsset, planPaintStroke } from "../world-paint.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
@@ -140,6 +141,9 @@ const state = {
   tool: "select",
   placeAssetId: null,
   paintBrushSize: 1,
+  paintDensity: 100,
+  paintSpacing: 0,
+  paintSeed: 1,
   paintCursor: null,
   preview: null,
   showGrid: true,
@@ -713,7 +717,7 @@ function refreshChrome({ structure = true } = {}) {
   $("#boundary-mode").value = state.boundaryMode;
   $("#boundary-mode").disabled = levelDisabled || pendingGesture;
   const asset = ASSET_CATALOG[state.placeAssetId];
-  const terrainTool = isTerrainBrushAsset(asset);
+  const paintTool = isPaintBrushAsset(asset);
   const targetLayer = asset && state.layers[OBJECT_TYPES[asset.type].layer];
   if (state.tool === "paint") refreshPaintSettings(asset, levelDisabled || Boolean(state.pointerMode));
   refreshFillSettings(asset);
@@ -724,10 +728,10 @@ function refreshChrome({ structure = true } = {}) {
       ? "Drag a grid area or draw a lasso polygon. The preview shows the playable cells; Apply or Cancel before editing."
     : !asset ? state.tool === "fill" ? "Choose a fill asset from the palette" : "Choose an asset from the palette."
     : state.tool === "fill" && !isRepeatableAsset(asset) ? "Rectangle Fill repeats static terrain, walls and props only; not spawns or unique gameplay objects."
-    : (terrainTool || state.tool === "fill") && (!targetLayer.visible || targetLayer.locked)
+    : (paintTool || state.tool === "fill") && (!targetLayer.visible || targetLayer.locked)
       ? `${asset.label}: Target layer is ${targetLayer.locked ? "locked. Unlock" : "hidden. Show"} it in Layers before painting or filling.`
     : `${asset.label}: ${state.tool === "fill" ? "Drag a rectangle, then Apply or Cancel."
-      : terrainTool ? "Drag to paint terrain cells." : "Click to place; drag from the palette to position."}`;
+      : paintTool ? "Drag to paint; preview shows the actual proposed placements." : "Click to place; drag from the palette to position."}`;
   $("#fill-apply").disabled = !state.fillPreview || state.fillPreview.error || state.saving || isPlaying();
   $("#fill-cancel").disabled = state.tool !== "fill" || state.saving || isPlaying();
   if (state.tool === "fill" || !$("#fill-diagnostics").hidden) {
@@ -1328,26 +1332,20 @@ function drawMap() {
     context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
     context.restore();
   }
-  const terrainPreview = state.pointerStart?.mode === "brush" ? state.pointerStart.stroke?.cells
-    : state.fillPreview?.rectangle ? null : null;
-  if (terrainPreview?.size) {
-    context.save();
-    context.fillStyle = state.pointerStart.stroke.error ? "#ff667060" : "#66ccff60";
-    context.strokeStyle = state.pointerStart.stroke.error ? "#ff6670" : "#66ccff";
-    context.lineWidth = line;
-    for (const cell of terrainPreview.values()) {
-      context.fillRect(cell.x, cell.y, 32, 32);
-      context.strokeRect(cell.x, cell.y, 32, 32);
-    }
-    context.restore();
-  }
   canvas.dataset.paintFootprint = "";
+  canvas.dataset.paintPlacements = "";
   if (state.tool === "paint" && state.paintCursor && !state.paletteDrag &&
       (!state.pointerMode || state.pointerMode === "brush") &&
-      isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
+      isPaintBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
     const footprint = terrainBrushFootprint(state.paintCursor,
       state.pointerStart?.stroke?.brushSize ?? state.paintBrushSize);
-    const problem = paintFootprintProblem(footprint) ?? state.pointerStart?.stroke?.error;
+    let problem = state.pointerStart?.stroke?.error;
+    let plan = null;
+    try {
+      const gesture = state.pointerStart?.mode === "brush" ? state.pointerStart : paintGesture(state.paintCursor);
+      if (problem) throw new Error(problem);
+      plan = paintPlan(gesture);
+    } catch (error) { problem = error.message; }
     context.save();
     context.fillStyle = problem ? "#ff667030" : "#7dffa824";
     context.strokeStyle = problem ? "#ff6670" : "#7dffa8";
@@ -1361,7 +1359,19 @@ function drawMap() {
     context.lineWidth = 2 * line;
     context.strokeRect(footprint.x, footprint.y, footprint.width, footprint.height);
     context.restore();
+    for (const placement of plan?.placements ?? []) {
+      const definition = ASSET_CATALOG[placement.assetId];
+      drawAsset(context, state.artwork, placement.assetId, {
+        x: placement.x + definition.pivot.x, y: placement.y + definition.pivot.y
+      }, { alpha: 0.65 });
+      context.save();
+      context.strokeStyle = "#66ccff";
+      context.lineWidth = line;
+      context.strokeRect(placement.x, placement.y, placement.width, placement.height);
+      context.restore();
+    }
     canvas.dataset.paintFootprint = JSON.stringify({ ...footprint, problem: problem ?? null });
+    canvas.dataset.paintPlacements = JSON.stringify(plan?.placements ?? []);
   }
   const rectangle = state.pointerStart?.mode === "fill" ? state.pointerStart.rectangle : state.fillPreview?.rectangle;
   if (rectangle) {
@@ -1957,9 +1967,9 @@ function pointerDown(event) {
   }
   activateSection(section);
   const point = { x: local.x, y: local.y };
-  if (state.tool === "fill" || (state.tool === "paint" && isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId]))) {
+  if (state.tool === "fill" || (state.tool === "paint" && isPaintBrushAsset(ASSET_CATALOG[state.placeAssetId]))) {
     const asset = ASSET_CATALOG[state.placeAssetId];
-    if (state.tool === "fill" ? !isRepeatableAsset(asset) : !isTerrainBrushAsset(asset)) {
+    if (state.tool === "fill" ? !isRepeatableAsset(asset) : !isPaintBrushAsset(asset)) {
       setStatus(state.tool === "fill"
         ? !asset ? "Choose a fill asset from the palette"
           : "Choose static terrain, a wall or a prop; spawns and unique gameplay objects cannot repeat."
@@ -1969,10 +1979,8 @@ function pointerDown(event) {
     if (state.tool === "paint") {
       state.paintCursor = worldPoint;
       state.pointerMode = "brush";
-      state.pointerStart = { mode: "brush", assetId: state.placeAssetId,
-        before: state.sections.map(item => ({ sectionId: item.sectionId, document: item.document })),
-        stroke: { cells: new Map(), last: null, error: null, brushSize: state.paintBrushSize } };
-      extendTerrainStroke(state.pointerStart.stroke, worldPoint);
+      state.preview = null;
+      state.pointerStart = paintGesture(worldPoint);
       refreshChrome({ structure: false });
     } else {
       state.pointerMode = "fill";
@@ -2120,10 +2128,10 @@ function pointerMove(event) {
     refreshChrome();
     return;
   }
-  if (state.tool === "paint" && state.placeAssetId && !isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId]) && !state.paletteDrag) {
+  if (state.tool === "paint" && state.placeAssetId && !isPaintBrushAsset(ASSET_CATALOG[state.placeAssetId]) && !state.paletteDrag) {
     state.preview = previewAtWorld(state.placeAssetId, point);
     render();
-  } else if (state.tool === "paint" && !state.paletteDrag && isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
+  } else if (state.tool === "paint" && !state.paletteDrag && isPaintBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
     state.paintCursor = point;
     render();
   }
@@ -2195,46 +2203,46 @@ function finishTerrainStroke() {
   const gesture = state.pointerStart;
   if (!gesture || gesture.mode !== "brush") return;
   if (gesture.stroke.error) {
-    setStatus(`Terrain stroke rejected: ${gesture.stroke.error}. No sections changed.`, true);
+    setStatus(`Paint stroke rejected: ${gesture.stroke.error}. No sections changed.`, true);
     return;
   }
   try {
-    const updates = planTerrainStroke(state.sections, gesture.stroke.cells.values(), {
-      assetId: gesture.assetId, assetCatalog: ASSET_CATALOG, layerState: state.layers.terrain,
-      createObject: createDesignObject, validate: validateFloorDocument
-    });
+    const { updates, seamSkipped } = paintPlan(gesture);
+    const edgeNote = seamSkipped
+      ? ` ${seamSkipped} footprint slot(s) skipped at section edges; move the brush or adjust spacing to fit them.`
+      : "";
     if (!updates.length) {
-      setStatus("Terrain stroke unchanged (identical cells).");
+      setStatus(`Paint stroke unchanged (identical cells, density or minimum spacing left no new placements).${edgeNote}`);
       return;
     }
-    pushSectionUndo(gesture.before);
-    for (const update of updates) {
-      const section = state.sections.find(item => item.sectionId === update.sectionId);
-      section.document = update.document;
-    }
-    state.document = activeSection().document;
-    refreshChrome();
-    setStatus(`Terrain stroke applied to ${updates.length} section(s). Undo with Ctrl+Z.`);
+    commitToolPreview(updates, gesture.before);
+    setStatus(`Paint stroke applied to ${updates.length} section(s). Undo with Ctrl+Z. Save to persist.${edgeNote}`);
   } catch (error) {
-    setStatus(`Terrain stroke rejected: ${error.message}. No sections changed.`, true);
+    setStatus(`Paint stroke rejected: ${error.message}. No sections changed; adjust the settings or use a shorter stroke.`, true);
+  } finally {
+    state.paintSeed++;
   }
 }
 
-function paintFootprintProblem(footprint) {
-  if (state.layers.terrain.locked || !state.layers.terrain.visible) {
-    return `Terrain is ${state.layers.terrain.locked ? "locked; unlock it" : "hidden; show it"} before painting.`;
+function paintGesture(point) {
+  const gesture = { mode: "brush", assetId: state.placeAssetId,
+    before: state.sections.map(({ sectionId, document }) => ({ sectionId, document })),
+    density: state.paintDensity, spacing: state.paintSpacing, seed: state.paintSeed,
+    stroke: { cells: new Map(), last: null, error: null, brushSize: state.paintBrushSize } };
+  extendTerrainStroke(gesture.stroke, point);
+  return gesture;
+}
+
+function paintPlan(gesture) {
+  if (gesture.before.length !== state.sections.length ||
+      gesture.before.some(saved => state.sections.find(section => section.sectionId === saved.sectionId)?.document !== saved.document)) {
+    throw new Error("The level changed during this stroke; cancel and paint again.");
   }
-  for (let y = footprint.y; y < footprint.y + footprint.height; y += CELL) {
-    for (let x = footprint.x; x < footprint.x + footprint.width; x += CELL) {
-      const local = worldToSection(x, y);
-      const section = state.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
-      if (!section?.document) return `Section (${local.gridX}, ${local.gridY}) is missing or unloaded.`;
-      if (local.x + CELL > section.document.bounds.width || local.y + CELL > section.document.bounds.height) {
-        return "Brush extends outside the saved map bounds; no cells will be clipped.";
-      }
-    }
-  }
-  return null;
+  return planPaintStroke(state.sections, gesture.stroke.cells.values(), {
+    assetId: gesture.assetId, assetCatalog: ASSET_CATALOG, layers: state.layers,
+    createObject: createDesignObject, validate: validateFloorDocument,
+    density: gesture.density, spacing: gesture.spacing, seed: gesture.seed
+  });
 }
 
 function refreshPaintSettings(asset, busy) {
@@ -2246,17 +2254,19 @@ function refreshPaintSettings(asset, busy) {
   }
   thumbnail.hidden = !asset;
   $("#paint-asset-name").textContent = asset?.label ?? "Choose a Paint asset from the palette";
-  const supported = isTerrainBrushAsset(asset);
+  const supported = isPaintBrushAsset(asset);
   $("#paint-brush-size").value = String(state.paintBrushSize);
   $("#paint-brush-size").disabled = busy || !supported;
+  $("#paint-density").value = String(state.paintDensity);
+  $("#paint-spacing").value = String(state.paintSpacing);
+  $("#paint-density").disabled = $("#paint-spacing").disabled = busy || !supported;
   $("#paint-support").textContent = !asset ? "Choose an asset to see its Paint support."
     : supported ? `${state.paintBrushSize} x ${state.paintBrushSize} cells (${state.paintBrushSize * CELL} x ${state.paintBrushSize * CELL} world px). ` +
-      "Drag to paint; one Undo restores the whole stroke across section seams. Red means locked, hidden or outside existing bounds."
-    : asset.type !== "terrain-tile"
-      ? `${asset.label} is ${OBJECT_TYPES[asset.type].label.toLowerCase()}, not terrain. ` +
-        "Single placement only: repeating objects, collision or gameplay starts is not terrain-cell replacement."
-      : asset.unique ? `${asset.label} is unique and cannot repeat in a brush.`
-        : `${asset.label} is not a grid-compatible 32 x 32 terrain tile; its footprint or pivot cannot replace single terrain cells.`;
+      `Asset footprint: ${asset.size.width} x ${asset.size.height} world px, unchanged. ` +
+      "World-grid footprint anchors inside the brush repeat; large artwork may extend past its outline. " +
+      "Minimum spacing skips nearby same-layer objects, including across seams. Static slots crossing section edges are omitted, never resized. " +
+      "One Undo restores the stroke. Red means the whole stroke is invalid."
+    : `${asset.label}: single placement only. Characters, spawns, items, unique gameplay objects and assets without a static Paint capability cannot repeat.`;
 }
 
 function pushSectionUndo(documents) {
@@ -2437,7 +2447,7 @@ function cancelPointerGesture() {
   if (mode === "fill") state.fillPreview = null;
   if (mode === "boundary-grid" || mode === "boundary-polygon") state.boundaryDraft = null;
   refreshChrome();
-  if (mode === "brush") setStatus("Terrain stroke cancelled; no sections changed.");
+  if (mode === "brush") setStatus("Paint stroke cancelled; no sections changed.");
   if (mode === "fill") setStatus("Rectangle fill cancelled; no sections changed.");
   if (mode === "boundary-grid" || mode === "boundary-polygon") {
     setStatus("Playable boundary drawing cancelled; no changes were made.");
@@ -2920,6 +2930,18 @@ function configureEvents() {
     state.paintBrushSize = size;
     refreshChrome({ structure: false });
   });
+  for (const [id, key, min, max] of [
+    ["paint-density", "paintDensity", 1, 100], ["paint-spacing", "paintSpacing", 0, 2048]
+  ]) {
+    $(`#${id}`).addEventListener("change", event => {
+      const value = Number(event.target.value);
+      if (state.pointerMode) setStatus("Finish or cancel the current stroke before changing Paint settings.", true);
+      else if (event.target.value === "" || !Number.isInteger(value) || value < min || value > max) {
+        setStatus(`${id === "paint-density" ? "Density (%)" : "Minimum spacing (world px)"} must be a whole number from ${min} to ${max}.`, true);
+      } else state[key] = value;
+      refreshChrome({ structure: false });
+    });
+  }
   $("#fill-apply").addEventListener("click", applyFill);
   $("#fill-cancel").addEventListener("click", cancelFill);
   $("#fill-diagnostic-copy").addEventListener("click", copyFillDiagnostics);

@@ -29,11 +29,12 @@ button:disabled { opacity: .48; cursor: default; }
 .tool-settings { position: absolute; top: 10px; right: 10px; max-width: min(390px, 60%); max-height: calc(100% - 60px); overflow-y: auto; padding: 8px 10px; border: 1px solid #59616e; border-radius: 5px; background: #22252bf2; }
 .tool-settings p { margin: 0; }
 #paint-options { display: grid; gap: 6px; margin: 6px 0 0; padding: 6px; }
-#paint-options label { display: flex; align-items: center; gap: 6px; }
+#paint-options label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#paint-options input[type="number"] { width: 76px; }
 #paint-asset { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #paint-asset-thumbnail { flex: 0 0 48px; }
 #paint-asset-thumbnail .asset-thumb { display: block; width: 48px; height: 48px; }
-#paint-brush-size { padding: 5px; color: inherit; background: #21242a; border: 1px solid #59616e; border-radius: 4px; }
+#paint-brush-size, #paint-density, #paint-spacing { padding: 5px; color: inherit; background: #21242a; border: 1px solid #59616e; border-radius: 4px; }
 #fill-options { display: grid; gap: 6px; margin: 6px 0 0; padding: 6px; }
 #fill-options label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 #fill-options input[type="number"] { width: 76px; }

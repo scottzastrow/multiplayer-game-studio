@@ -33,6 +33,7 @@ function primitive(label, type, color, { blocking = false, required = false } = 
     collision: blocking ? "required" : "none",
     collisionBox: blocking ? { x: 0, y: 0, width: 32, height: 32 } : null,
     required, unique: required, artwork: null, play: "implemented",
+    paint: type === "terrain-tile" ? "terrain" : ["wall", "prop"].includes(type) ? "static" : null,
     details: "Built-in generic shape; no imported artwork.",
     playNote: type === "collision" ? "Invisible blocker in Play." : "Visible in the movement preview."
   });

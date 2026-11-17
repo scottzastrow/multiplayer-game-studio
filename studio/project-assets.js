@@ -12,6 +12,7 @@ export function importedAssetDefinition(record, model = "astraeum-floor-v2") {
     alpha: 1,
     artwork: null,
     imported: true,
+    paint: record.category === "prop" ? "static" : null,
     importedInfo: Object.freeze({
       direction: record.direction,
       category: record.category,
