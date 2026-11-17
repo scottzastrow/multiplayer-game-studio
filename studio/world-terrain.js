@@ -3,12 +3,52 @@ import { SECTION_SIZE, worldToSection, sectionOrigin } from "./world-coordinates
 export const TERRAIN_CELL_SIZE = 32;
 const MAX_STROKE_CELLS = 2 * (SECTION_SIZE / TERRAIN_CELL_SIZE) ** 2;
 
+export function terrainRectangle(start, end) {
+  const first = worldToSection(start.x, start.y);
+  const last = worldToSection(end.x, end.y);
+  const x = Math.floor(Math.min(start.x, end.x) / TERRAIN_CELL_SIZE) * TERRAIN_CELL_SIZE;
+  const y = Math.floor(Math.min(start.y, end.y) / TERRAIN_CELL_SIZE) * TERRAIN_CELL_SIZE;
+  const right = Math.floor(Math.max(start.x, end.x) / TERRAIN_CELL_SIZE) * TERRAIN_CELL_SIZE;
+  const bottom = Math.floor(Math.max(start.y, end.y) / TERRAIN_CELL_SIZE) * TERRAIN_CELL_SIZE;
+  const columns = (right - x) / TERRAIN_CELL_SIZE + 1;
+  const rows = (bottom - y) / TERRAIN_CELL_SIZE + 1;
+  const cellCount = columns * rows;
+  const sectionCount = (Math.abs(first.gridX - last.gridX) + 1) * (Math.abs(first.gridY - last.gridY) + 1);
+  if (![x, y, right, bottom, cellCount, sectionCount].every(Number.isSafeInteger)) {
+    throw new RangeError("Rectangle exceeds safe world coordinates.");
+  }
+  return { x, y, columns, rows, cellCount, sectionCount };
+}
+
+export function* terrainRectangleCells(rectangle) {
+  if (rectangle.cellCount > MAX_STROKE_CELLS) {
+    throw new RangeError("Rectangle exceeds the two-section working set.");
+  }
+  for (let row = 0; row < rectangle.rows; row++) {
+    for (let column = 0; column < rectangle.columns; column++) {
+      yield { x: rectangle.x + column * TERRAIN_CELL_SIZE, y: rectangle.y + row * TERRAIN_CELL_SIZE };
+    }
+  }
+}
+
 export function isTerrainBrushAsset(asset) {
   return asset?.type === "terrain-tile" && !asset.unique &&
     asset.size?.width === TERRAIN_CELL_SIZE && asset.size?.height === TERRAIN_CELL_SIZE &&
     [asset.pivot?.x, asset.pivot?.y].every(Number.isSafeInteger) &&
     (!asset.snap?.forced || ((asset.snap.x - asset.pivot.x) % TERRAIN_CELL_SIZE === 0 &&
       (asset.snap.y - asset.pivot.y) % TERRAIN_CELL_SIZE === 0));
+}
+
+export function terrainBrushFootprint(point, size = 1) {
+  worldToSection(point.x, point.y);
+  if (![1, 2, 4, 8].includes(size)) throw new RangeError("Brush size must be 1, 2, 4 or 8 cells.");
+  const offset = Math.floor((size - 1) / 2);
+  return {
+    x: (Math.floor(point.x / TERRAIN_CELL_SIZE) - offset) * TERRAIN_CELL_SIZE,
+    y: (Math.floor(point.y / TERRAIN_CELL_SIZE) - offset) * TERRAIN_CELL_SIZE,
+    width: size * TERRAIN_CELL_SIZE,
+    height: size * TERRAIN_CELL_SIZE
+  };
 }
 
 export function rasterizeTerrainSegment(start, end) {
@@ -61,8 +101,13 @@ export function extendTerrainStroke(stroke, point) {
   if (stroke.error) return;
   try {
     for (const cell of rasterizeTerrainSegment(stroke.last ?? point, point)) {
-      stroke.cells.set(`${cell.x},${cell.y}`, cell);
-      if (stroke.cells.size > MAX_STROKE_CELLS) throw new RangeError("Stroke exceeds the two-section working set.");
+      const footprint = terrainBrushFootprint(cell, stroke.brushSize ?? 1);
+      for (let y = footprint.y; y < footprint.y + footprint.height; y += TERRAIN_CELL_SIZE) {
+        for (let x = footprint.x; x < footprint.x + footprint.width; x += TERRAIN_CELL_SIZE) {
+          stroke.cells.set(`${x},${y}`, { x, y });
+          if (stroke.cells.size > MAX_STROKE_CELLS) throw new RangeError("Stroke exceeds the two-section working set.");
+        }
+      }
     }
     stroke.last = point;
   } catch (error) {
@@ -102,10 +147,18 @@ export function planTerrainStroke(sections, cells, { assetId, assetCatalog, laye
     try {
       const original = section.document;
       if (original.id !== section.mapId || original.cellSize !== TERRAIN_CELL_SIZE ||
-          original.bounds.width !== SECTION_SIZE || original.bounds.height !== SECTION_SIZE) {
+          ![original.bounds.width, original.bounds.height].every(size =>
+            Number.isInteger(size) && size >= 2 * TERRAIN_CELL_SIZE &&
+            size <= SECTION_SIZE && size % TERRAIN_CELL_SIZE === 0)) {
         throw new TypeError("Incompatible section identity or dimensions.");
       }
       validate(structuredClone(original));
+      for (const local of locations.values()) {
+        if (local.x + TERRAIN_CELL_SIZE > original.bounds.width ||
+            local.y + TERRAIN_CELL_SIZE > original.bounds.height) {
+          throw new RangeError("Terrain cell is outside the saved map bounds; expand the map explicitly before painting there.");
+        }
+      }
       const next = structuredClone(original);
       const occupied = new Map(next.objects.filter(object => object.type === "terrain-tile").map(object => {
         const definition = assetCatalog[object.assetId];

@@ -5,6 +5,11 @@ import {
   LEGACY_MARKER_ASSETS,
   OBJECT_TYPES
 } from "./catalog.js";
+import {
+  appendPlayableBoundaryCollisions,
+  boundaryContainsCircle,
+  validatePlayableBoundary
+} from "../../../studio/playable-boundaries.js";
 
 export const MAP_CELL_SIZE = 32;
 export const DESIGN_FORMAT_VERSION = 2;
@@ -438,9 +443,10 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     fail("The Floor 1 design must be an object.");
   }
-  const allowedKeys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects"];
+  const allowedKeys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects",
+    "playableBoundary"];
   const unknownKeys = Object.keys(document).filter(key => !allowedKeys.includes(key));
-  const requiredKeys = allowedKeys.filter(key => key !== "cameraZoom");
+  const requiredKeys = allowedKeys.filter(key => !["cameraZoom", "playableBoundary"].includes(key));
   if (unknownKeys.length || requiredKeys.some(key => !Object.hasOwn(document, key))) {
     fail(`The Floor 1 design must contain ${requiredKeys.join(", ")} and no unknown fields.`);
   }
@@ -452,6 +458,8 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
     fail(`Map dimensions must be multiples of ${MAP_CELL_SIZE} between ${MAP_CELL_SIZE * 2} and ${MAX_MAP_DIMENSION} pixels.`);
   }
   const cameraZoom = document.cameraZoom ?? DEFAULT_CAMERA_ZOOM;
+  const playableBoundary = Object.hasOwn(document, "playableBoundary")
+    ? validatePlayableBoundary(document.playableBoundary) : undefined;
   if (!Number.isFinite(cameraZoom) || cameraZoom < MIN_CAMERA_ZOOM ||
       cameraZoom > MAX_CAMERA_ZOOM || Math.round(cameraZoom * 10) !== cameraZoom * 10) {
     fail(`Gameplay camera zoom must be between ${MIN_CAMERA_ZOOM} and ${MAX_CAMERA_ZOOM} in 0.1 increments.`);
@@ -503,7 +511,8 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
     bounds: { ...bounds },
     cameraZoom,
     layers: DESIGN_LAYERS.map(layer => ({ ...layer })),
-    objects
+    objects,
+    ...(playableBoundary ? { playableBoundary } : {})
   };
 }
 
@@ -607,12 +616,22 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
   if (!start) {
     return ["The Aries player start is missing. Add a player start from the palette or undo clearing spawns before Play."];
   }
+  if (!boundaryContainsCircle(design.playableBoundary, design,
+    { x: start.transform.x, y: start.transform.y }, 4)) {
+    return ["The Aries player start lies outside the playable boundary. Move the start inside or edit/reset the boundary."];
+  }
   const grid = floorDocumentGrid(design, assetCatalog);
   const cell = {
     x: Math.floor(start.transform.x / MAP_CELL_SIZE),
     y: Math.floor(start.transform.y / MAP_CELL_SIZE)
   };
   const problems = [];
+  const reserve = FLOOR1_GRID.flatMap((row, y) => [...row].map((value, x) =>
+    value === "." ? { x, y } : null)).find(Boolean);
+  if (!boundaryContainsCircle(design.playableBoundary, design,
+    { x: reserve.x * MAP_CELL_SIZE + 16, y: reserve.y * MAP_CELL_SIZE + 16 }, 4)) {
+    problems.push("The reserved second player start lies outside the playable boundary. Move the boundary to include it or reset to default.");
+  }
   if (grid[cell.y][cell.x] === "#") {
     problems.push(`Aries start is on a wall or blocked cell at column ${cell.x}, row ${cell.y}. ` +
       "Move the Aries start to an open cell or remove the wall there.");
@@ -634,6 +653,11 @@ export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
   const design = validateFloorDocument(document, assetCatalog);
   const problems = playStartProblems(design, assetCatalog);
   if (problems.length) throw new Error(problems.join(" "));
+  return appendPlayableBoundaryCollisions(createFloorSection(design, assetCatalog), design);
+}
+
+export function createFloorSection(document, assetCatalog = ASSET_CATALOG) {
+  const design = validateFloorDocument(document, assetCatalog);
   const start = design.objects.find(object => object.assetId === "spawn-aries");
   const reserve = FLOOR1_GRID.flatMap((row, y) => [...row].map((cell, x) =>
     cell === "." ? { x, y } : null)).find(Boolean);
@@ -652,7 +676,7 @@ export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
     objectId: object.id,
     shape: { type: "rect", width: object.collision.width, height: object.collision.height }
   }));
-  return {
+  const map = {
     formatVersion: 1,
     id: design.id,
     name: design.name,
@@ -660,12 +684,13 @@ export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
     cellSize: MAP_CELL_SIZE,
     objects,
     collisions,
-    spawns: [
+    spawns: start ? [
       { id: "aries-start", kind: "player",
         position: { x: start.transform.x, y: start.transform.y }, radius: 4 },
       { id: "reserved-player-spawn", kind: "player",
         position: { x: reserve.x * MAP_CELL_SIZE + 16, y: reserve.y * MAP_CELL_SIZE + 16 },
         radius: 4 }
-    ]
+    ] : []
   };
+  return map;
 }

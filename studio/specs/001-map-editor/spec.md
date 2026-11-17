@@ -191,7 +191,12 @@ or implementation.
   required. Keep all work local and uncommitted, leave T042 open, and preserve
   pending map/camera and onboarding work.
 
-## World-workspace increment
+## Prior World-workspace proposal (superseded)
+
+The following section records the earlier separate-workspace design and its
+historical verification only. The current editor surface is the unified
+level-section implementation documented below; the standalone Worlds chooser
+and canvas are no longer part of Studio.
 
 The foundation supports two new adjacent sections, a shared canvas,
 section-local object movement and transactional workspace persistence.
@@ -201,9 +206,12 @@ replacement/no-op behavior, whole-stroke preflight, Escape cancellation and
 one cross-section Undo/Redo. It reuses each model's catalog/object factory and
 validator and the existing transactional two-section save endpoint. Terrain
 visibility/lock controls share the editor's local layer preferences.
-Rectangular fill, Boundary, cross-section object moves and world Play remain
-deferred; their design and acceptance criteria below are not implementation
-or verification claims.
+Rectangular fill shares those contracts and adds a snapped, counted preview
+with explicit Apply/Cancel. Boundary editing is now implemented and covered by
+focused tests; cross-section object moves and world Play remain deferred. The
+one disposable boundary browser flow stopped at Studio startup before any
+boundary assertion, as recorded in
+`studio/docs/DEVELOPMENT.md`.
 
 The focused logic check passed with evidence in
 `studio/data/world-terrain-logic-ldQV1c/diagnostics.json`. The disposable
@@ -229,8 +237,8 @@ save, service restart and exact reopen. T042 remains open.
   and zoom; a 100-entry history stores immutable document/selection snapshots.
   Layer visibility and locks are local model preferences. Placing on a hidden
   or locked layer is rejected. Switching documents clears history
-  (`studio/src/main.js`). The world workspace has a terrain brush; rectangular
-  fill remains deferred.
+  (`studio/src/main.js`). The world workspace has a terrain brush and
+  rectangular fill.
 - The pinned public SDK map is limited to 2048 pixels per dimension, 4096
   runtime objects, 4096 collisions and 256 spawns; `createLocalGame` accepts
   one optional `MapDefinition` at creation. Its declarations do not expose
@@ -282,8 +290,8 @@ save, service restart and exact reopen. T042 remains open.
   selection geometry consistent. Show section boundaries and loading/error
   states distinctly from authored terrain. No panning or zooming discontinuity
   occurs at the shared edge.
-- The terrain brush supports cell-sized strokes and existing editing within
-  a section; rectangular fill remains future work. A single object, artwork
+- The terrain brush supports cell-sized strokes and rectangular fill across
+  the loaded sections. A single object, artwork
   bounds and collision must remain wholly inside its owning section; reject
   placement or movement that would
   straddle an edge instead of clamping, splitting or relocating it. Cross-edge
@@ -362,20 +370,30 @@ save, service restart and exact reopen. T042 remains open.
 Studio can implement the workspace, persistence, coordinate math, rendering,
 tools and history locally while continuing to validate each supported section
 and to use the installed public map validator for playable individual maps.
-World Play is unavailable in this increment. Open an independent level to
-use Play; the workspace does not walk across the seam or merge two sections
-into an oversized `MapDefinition`.
+The older separate World workspace is not automatically adopted. Main-editor
+level Play now uses kit 0.3.0's public `createLocalGame({ world })` contract:
+every section of the selected level, including unsaved edits, retains local
+bounds and a signed origin. Validate global starts and public local/aggregate
+limits before mounting. Do not flatten a larger level, use replacement geometry
+as a streaming bypass, or silently play only one section.
 
-The actual public-contract gap is a supported multi-section runtime map/
-streaming and transition interface: the pinned map contract cannot represent
-the combined 4096 x 2048 area as one map, and local preview exposes no running
-map replacement API. This blocks an Engine-supported seamless multi-section
-preview, not the Studio-only workspace. Future multiplayer also needs an
-explicit authoritative loading, movement/collision and client synchronization
-contract; that is a separate Engine design, not something established by
-editor loading. Game-owned custom behavior may be investigated separately;
-do not infer that every possible custom simulation requires an Engine change.
-Do not edit private Engine internals or rebuild the installed kit.
+Connected mode is movement, camera and collision only for both models;
+single-section gameplay stays on its existing module/skin paths. Resolve the
+authored primary start once, preserve entity identity/ticks while crossing
+seams, compose neighbor-aware floor artwork and track a continuous world
+camera. Enforce both-side collisions, holes and root-owned outer/custom
+boundaries. Stop restores editor pan, zoom, active section and selection.
+Play never modifies documents, history or saved baselines. Missing starts
+fail explicitly; Tower's required unused second runtime slot never replaces
+its authored Aries start. Exact contract constraints and compatibility-slot
+handling are in `studio/docs/DEVELOPMENT.md`.
+
+Focused runtime/controller checks and traversal of the unchanged disposable
+two-section saved level pass. The single native-browser attempt was blocked
+at startup; UI/visual acceptance remains unverified, not completed.
+Future multiplayer still needs explicit authoritative section loading,
+movement/collision and client synchronization. Do not edit private Engine
+internals or rebuild the installed kit.
 
 ### Acceptance criteria for a future implementation
 
@@ -407,3 +425,68 @@ Do not edit private Engine internals or rebuild the installed kit.
   focused verification; this design is not a claim that those checks ran.
   Runtime streaming, multiplayer, deployment and kit rebuild remain out of
   scope. T042 stays open.
+
+## Unified level sections (current)
+
+- Each level is a stage containing one or more adjacent 2048 × 2048 sections.
+  New levels begin with one section. Select an existing section, choose
+  Add Section, and click a visual North/East/South/West preview. Disable
+  occupied sides; do not expose coordinate entry in the normal workflow.
+  New sections have an empty object array (no terrain, walls, props or starts),
+  without clearing any saved contents or changing the editor camera. Independent levels are
+  never merged or relocated.
+- Section maps retain their own map IDs and section-local object coordinates.
+  The editor uses the existing main canvas, palette, hierarchy, Inspector,
+  layers, tools and history. Object selection identity is `(sectionId,
+  objectId)`; objects remain inside their owning section. Unsupported boundary
+  moves are rejected with an explanation.
+- One labelled Tool dropdown exposes Select, Paint, Rectangle Fill and
+  Boundary; only active-tool settings are shown. Palette choice preserves Fill mode;
+  Paint strokes terrain and click-places other assets. Keep Save, Undo/Redo
+  and Play in the main toolbar. Explain locked/hidden Terrain and incompatible
+  palette assets without silently changing layer preferences.
+- Terrain painting and rectangle fill operate in continuous 32px world cells
+  across loaded section seams. Preflight and history cover all changed
+  sections atomically; the existing two-section working-set bound remains.
+  Existing smaller maps can paint/fill within saved bounds without resizing.
+  Pending fill has explicit Apply/Cancel and blocks Play until resolved.
+- Rectangle Fill also repeats non-unique static props and walls at their
+  configured world footprint, with independent horizontal/vertical gaps.
+  Source artwork resolution and object properties are unchanged. Preview
+  counts placements, same-layer Skip/Allow overlaps, and seam-straddling slots
+  left empty to retain section ownership. Spawns, items and unique gameplay
+  objects do not repeat. Intentional borders are off by default and have a
+  separate terrain/wall asset selector in existing tool settings; they use
+  a one-cell ring inside the rectangle, not along section seams. Existing
+  Wang artwork edge selection is preserved and is not generated geometry.
+  Capacity, locks, stale-preview protection and Undo/Redo remain atomic
+  across sections. See the development guide for evidence and UI limitations.
+- The default playable boundary is the union of saved sections, not their
+  bounding rectangle; exposed outer edges block movement, shared seams stay
+  open, and holes remain blocked. Adding a section expands the implicit
+  default. Custom grid masks or closed polygon outlines preview before Apply,
+  reject self-intersections and missing-section areas, and support Escape,
+  Undo/Redo and Reset as single history operations. A custom root-level
+  boundary remains unchanged when sections are added. Boundary data is
+  versioned and validated with the level; decorative border assets are
+  independent.
+- SQLite migration is additive. `level_sections` and its revision/receipt
+  records associate section maps with their owning level; the original map row
+  remains the `(0,0)` section. Section saves validate membership and revisions
+  and update all documents in one transaction. Each level is bounded to 16
+  sections and each saved section retains the 2 MB document limit.
+- Existing level documents, metadata, starting-level references, assets,
+  credits, backups, and independent stages are not rewritten by startup.
+  Existing `worlds`, `world_sections`, and workspace-save receipts remain
+  unchanged; there is no automatic World adoption. Multi-section movement
+  Play loads the selected level's complete section snapshot through public
+  connected-world APIs. Single-section custom boundaries remain enforced
+  through public rectangle collisions. Excluded/missing authored starts are
+  explained, never repositioned or replaced.
+  Do not equate runtime adapter checks with main-editor UI acceptance.
+
+Focused disposable checks include `npm run studio:sections:test` and
+`npm run studio:boundaries:test`. The one attempted boundary-only
+direct-CDP flow stopped at startup and retains diagnostics and screenshots;
+its actual results are recorded in `studio/docs/DEVELOPMENT.md`. T042 remains
+open.

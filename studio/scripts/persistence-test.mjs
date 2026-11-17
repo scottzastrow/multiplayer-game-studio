@@ -297,8 +297,14 @@ try {
   const blankId = blank.body.mapId;
   assert.notEqual(blankId, one.mapId);
   const blankDocument = (await request(url(origin, one.projectId, blankId))).body.document;
-  assert.equal(blankDocument.objects.length, 2);
+  assert.deepEqual(blankDocument.objects, [], "Add Level creates no objects, including player starts");
   assert.deepEqual(blankDocument.bounds, { width: 2048, height: 2048 });
+  assert.equal(blank.body.startingMapId, one.mapId, "Add Level does not change the starting level");
+  const blankSections = (await request(`${origin}/api/projects/${one.projectId}/levels/${blankId}/sections`)).body;
+  assert.equal(blankSections.sections.length, 1);
+  assert.deepEqual([blankSections.sections[0].gridX, blankSections.sections[0].gridY], [0, 0]);
+  assert.deepEqual(blankSections.sections[0].document, blankDocument);
+  assert.equal((await mutate({ action: "add", mapId: two.mapId, name: "Foreign source" })).status, 404);
   const duplicate = await mutate({ action: "duplicate", name: "Independent copy" });
   assert.equal(duplicate.status, 200);
   const copyId = duplicate.body.mapId;
@@ -326,6 +332,151 @@ try {
   assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels`)).body.levels.length, 1);
   await stop();
 
+  origin = await start(creationPath);
+  const world = await request(`${origin}/api/projects/${one.projectId}/worlds`, "POST", {
+    name: "Retained legacy world", sourceMapId: one.mapId,
+    positions: [{ gridX: 0, gridY: 0 }, { gridX: 1, gridY: 0 }]
+  });
+  assert.equal(world.status, 201);
+  const worldPath = `/api/projects/${one.projectId}/worlds/${world.body.worldId}`;
+  const worldAddress = `${origin}${worldPath}`;
+  const preservedWorld = (await request(worldAddress)).body;
+  const sectionsPath = `/api/projects/${one.projectId}/levels/${one.mapId}/sections`;
+  const sectionsAddress = `${origin}${sectionsPath}`;
+  const firstSection = await request(sectionsAddress);
+  assert.equal(firstSection.status, 200);
+  assert.equal(firstSection.body.sections.length, 1, "an existing level opens as its original single section");
+  assert.deepEqual(firstSection.body.sections[0].document, edited, "existing level bytes are preserved");
+  const added = await request(sectionsAddress, "POST", { gridX: 1, gridY: 0, revision: firstSection.body.revision });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.sections.length, 2);
+  assert.deepEqual(added.body.sections.map(section => [section.gridX, section.gridY]), [[0, 0], [1, 0]]);
+  assert.deepEqual(added.body.sections[1].document.objects, [], "new Generic sections have no starts or other contents");
+  assert.deepEqual(added.body.sections[0].document, edited, "adding a section preserves saved contents exactly");
+  assert.equal((await request(sectionsAddress, "POST", { gridX: 1, gridY: 0, revision: added.body.revision })).status, 409,
+    "occupied section positions are rejected");
+  assert.equal((await request(sectionsAddress, "POST", { gridX: 3, gridY: 0, revision: added.body.revision })).status, 400,
+    "non-adjacent section positions are rejected");
+  assert.equal((await request(`${origin}/api/projects/${one.projectId}/levels`)).body.levels
+    .filter(level => !level.deletedAt).length, 3, "section maps do not become independent levels");
+  assert.equal((await request(url(origin, two.projectId, two.mapId))).body.document.id, two.mapId,
+    "another project remains isolated");
+  const sectionDocs = added.body.sections.map(section => structuredClone(section.document));
+  sectionDocs[0].objects.push(generic.createDesignObject("root-section-edit", "generic-block", { x: 64, y: 64 }, 0));
+  sectionDocs[1].objects.push(generic.createDesignObject("adjacent-section-edit", "generic-block", { x: 96, y: 96 }, 0));
+  const sectionSave = {
+    operationId: "section-save-test-1", revision: added.body.revision,
+    sections: added.body.sections.map((section, index) => ({ sectionId: section.sectionId,
+      revision: section.revision, document: sectionDocs[index] }))
+  };
+  const failChildUpdate = new DatabaseSync(creationPath);
+  const childMapId = added.body.sections[1].mapId;
+  failChildUpdate.exec(`CREATE TRIGGER fail_level_section BEFORE UPDATE ON maps
+    WHEN NEW.map_id = '${childMapId}' BEGIN SELECT RAISE(ABORT, 'injected section save failure'); END`);
+  assert.equal((await request(sectionsAddress, "PUT", sectionSave)).status, 500);
+  assert.deepEqual((await request(sectionsAddress)).body, added.body, "failed save rolls back every section");
+  failChildUpdate.exec("DROP TRIGGER fail_level_section");
+  failChildUpdate.close();
+  const savedSections = await request(sectionsAddress, "PUT", sectionSave);
+  assert.equal(savedSections.status, 200);
+  assert.deepEqual((await request(sectionsAddress, "PUT", sectionSave)).body, savedSections.body,
+    "section save retries are idempotent");
+  assert.deepEqual((await request(worldAddress)).body, preservedWorld, "legacy world records remain unchanged");
+  await stop();
+  origin = await start(creationPath);
+  assert.deepEqual((await request(`${origin}${sectionsPath}`)).body,
+    savedSections.body, "all section documents reopen exactly after service restart");
+  assert.deepEqual((await request(`${origin}${worldPath}`)).body,
+    preservedWorld, "world records survive section saves and restart");
+
+  const towerUrl = url(origin, projectId, mapId);
+  const towerOriginal = createFloorDocument();
+  assert.equal((await request(towerUrl, "PUT", { projectId, model, document: towerOriginal })).status, 200);
+  const towerSectionAddress = `${origin}/api/projects/${projectId}/levels/${mapId}/sections`;
+  const towerRoot = (await request(towerSectionAddress)).body;
+  const towerAdded = await request(towerSectionAddress, "POST", { gridX: 0, gridY: -1, revision: towerRoot.revision });
+  assert.equal(towerAdded.status, 201);
+  const towerEmpty = towerAdded.body.sections.find(section => section.mapId !== mapId);
+  assert.deepEqual(towerEmpty.document.objects, [], "new Tower sections have no cobblestone, walls, props or starts");
+  assert.deepEqual(towerEmpty.document.bounds, { width: 2048, height: 2048 });
+  assert.deepEqual(towerAdded.body.sections.find(section => section.mapId === mapId).document, towerOriginal);
+  const authoredChild = structuredClone(towerEmpty.document);
+  authoredChild.objects.push({ ...towerOriginal.objects[0], id: "saved-child-tile" });
+  const towerSaved = await request(towerSectionAddress, "PUT", {
+    operationId: "tower-preservation", revision: towerAdded.body.revision,
+    sections: towerAdded.body.sections.map(section => ({
+      sectionId: section.sectionId, revision: section.revision,
+      document: section.sectionId === towerEmpty.sectionId ? authoredChild : section.document
+    }))
+  });
+  assert.equal(towerSaved.status, 200);
+  const towerThird = await request(towerSectionAddress, "POST", { gridX: -1, gridY: -1, revision: towerSaved.body.revision });
+  assert.equal(towerThird.status, 201);
+  assert.deepEqual(towerThird.body.sections.find(section => section.sectionId === towerEmpty.sectionId).document,
+    authoredChild, "later section creation must not clear an already-saved section");
+  await stop();
+  origin = await start(creationPath);
+  const towerReopened = (await request(`${origin}/api/projects/${projectId}/levels/${mapId}/sections`)).body;
+  assert.deepEqual(towerReopened, towerThird.body, "empty and authored Tower sections persist after restart");
+  assert.deepEqual((await request(`${origin}${worldPath}`)).body, preservedWorld);
+  const preservedGenericSections = (await request(`${origin}${sectionsPath}`)).body;
+  const levelCreationSnapshots = [];
+  for (const [owner, sourceId, modelId, objectFactory] of [
+    [projectId, mapId, model, (id, assetId, transform, order) =>
+      ({ ...towerOriginal.objects.find(object => object.assetId === "prop-barrel"), id, transform, order })],
+    [one.projectId, one.mapId, generic.MODEL, generic.createDesignObject]
+  ]) {
+    const levels = `${origin}/api/projects/${owner}/levels`;
+    const beforeLevels = (await request(levels)).body;
+    const inspect = new DatabaseSync(creationPath, { readOnly: true });
+    const beforeRows = inspect.prepare("SELECT * FROM maps ORDER BY project_id, map_id").all();
+    const beforeMembership = inspect.prepare("SELECT * FROM level_sections ORDER BY project_id, level_map_id, section_id").all();
+    const beforeStarts = inspect.prepare("SELECT * FROM project_levels ORDER BY project_id").all();
+    const created = await request(levels, "POST", { action: "add", mapId: sourceId, name: `Empty ${modelId}` });
+    assert.equal(created.status, 200);
+    const newId = created.body.mapId;
+    assert.equal(created.body.startingMapId, beforeLevels.startingMapId);
+    const sectionAddress = `${origin}/api/projects/${owner}/levels/${newId}/sections`;
+    const fresh = (await request(sectionAddress)).body;
+    assert.equal(fresh.sections.length, 1, "a separate level starts with exactly one section");
+    const rootSection = fresh.sections[0];
+    assert.equal(rootSection.mapId, newId);
+    assert.deepEqual([rootSection.gridX, rootSection.gridY], [0, 0]);
+    assert.deepEqual(rootSection.document.bounds, { width: 2048, height: 2048 });
+    assert.deepEqual(rootSection.document.objects, [], "neither model inherits cobblestone, objects or starts");
+    assert.equal(Object.hasOwn(rootSection.document, "playableBoundary"), false);
+    const oldIds = new Set(beforeRows.map(row => `${row.project_id}/${row.map_id}`));
+    assert.deepEqual(inspect.prepare("SELECT * FROM maps ORDER BY project_id, map_id").all()
+      .filter(row => oldIds.has(`${row.project_id}/${row.map_id}`)), beforeRows,
+    "Add Level preserves every existing saved row, timestamp, model and deletion flag");
+    assert.deepEqual(inspect.prepare("SELECT * FROM level_sections ORDER BY project_id, level_map_id, section_id").all(),
+      beforeMembership, "adding a separate level never reassigns existing sections");
+    assert.deepEqual(inspect.prepare("SELECT * FROM project_levels ORDER BY project_id").all(), beforeStarts);
+    inspect.close();
+    const document = structuredClone(rootSection.document);
+    document.objects.push(objectFactory("new-level-marker", owner === projectId ? "prop-barrel" : "generic-marker",
+      { x: 128, y: 128 }, 0));
+    const saved = await request(sectionAddress, "PUT", { operationId: `empty-level-${newId}`,
+      revision: fresh.revision, sections: [{ sectionId: rootSection.sectionId,
+        revision: rootSection.revision, document }] });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.body.sections[0].document, document);
+    assert.equal((await request(url(origin, two.projectId, newId))).body.document, null, "new level is project-isolated");
+    assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels/${newId}/sections`)).status, 404);
+    levelCreationSnapshots.push({ owner, newId, payload: saved.body });
+  }
+  await stop();
+  origin = await start(creationPath);
+  for (const saved of levelCreationSnapshots) {
+    assert.deepEqual((await request(`${origin}/api/projects/${saved.owner}/levels/${saved.newId}/sections`)).body,
+      saved.payload, "newly created and edited levels reopen exactly after service restart");
+  }
+  assert.deepEqual((await request(`${origin}/api/projects/${projectId}/levels/${mapId}/sections`)).body, towerReopened);
+  assert.deepEqual((await request(`${origin}${sectionsPath}`)).body, preservedGenericSections);
+  assert.deepEqual((await request(`${origin}${worldPath}`)).body, preservedWorld);
+  assert.deepEqual((await request(url(origin, two.projectId, two.mapId))).body.document, two.document);
+  await stop();
+
   const badPath = resolve(testDir, "unknown.sqlite");
   seed(badPath, v2Json, "unknown-map");
   await assert.rejects(start(badPath), /unknown legacy/);
@@ -333,7 +484,7 @@ try {
   assert.equal(badDb.prepare("SELECT document_json FROM maps WHERE id = ?").get("unknown-map").document_json, v2Json);
   assert.equal(badDb.prepare("SELECT document_json FROM map_backups").get().document_json, "original backup bytes");
   badDb.close();
-  console.log("Persistence passed: legacy migration/backups, model isolation, fixed New Game and blank-level dimensions, custom-size creation rejection, duplicate rejection, metadata-only files, rollback cleanup and restart.");
+  console.log("Persistence passed: legacy migration/backups, model isolation, level-section membership and atomic save/reopen, retained World records, fixed dimensions, metadata-only files, rollback cleanup and restart.");
 } finally {
   await stop();
   await rm(testDir, { recursive: true, force: true });

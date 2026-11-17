@@ -16,6 +16,7 @@ import * as generic from "../games/generic-grid-v1/src/project.js";
 import { parseAssetUpload, sha256, validateImportFields } from "./asset-import.js";
 import { importedAssetDefinition } from "./project-assets.js";
 import { sectionOrigin } from "./world-coordinates.js";
+import { validatePlayableBoundaryForSections } from "./playable-boundaries.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = resolve(root, "studio", "data");
@@ -34,6 +35,8 @@ if (isAbsolute(relativeDatabase) || relativeDatabase === ".." ||
   throw new Error("STUDIO_DATABASE_PATH must stay inside studio/data/.");
 }
 const port = Number(process.env.STUDIO_API_PORT ?? 4179);
+const MAX_LEVEL_SECTIONS = 16;
+const MAX_LEVEL_SECTION_SAVE_BYTES = 32_100_000;
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new RangeError("STUDIO_API_PORT is invalid.");
 
 mkdirSync(dataDirectory, { recursive: true });
@@ -188,6 +191,27 @@ function initializeStorage() {
         request_hash TEXT NOT NULL, result_json TEXT NOT NULL,
         PRIMARY KEY (project_id, world_id, operation_id),
         FOREIGN KEY (project_id, world_id) REFERENCES worlds(project_id, world_id)
+      );
+      CREATE TABLE IF NOT EXISTS level_section_sets (
+        project_id TEXT NOT NULL, level_map_id TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, level_map_id),
+        FOREIGN KEY (project_id, level_map_id) REFERENCES maps(project_id, map_id)
+      );
+      CREATE TABLE IF NOT EXISTS level_sections (
+        project_id TEXT NOT NULL, level_map_id TEXT NOT NULL, section_id TEXT NOT NULL,
+        map_id TEXT NOT NULL, grid_x INTEGER NOT NULL, grid_y INTEGER NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, level_map_id, section_id),
+        UNIQUE (project_id, level_map_id, grid_x, grid_y),
+        UNIQUE (project_id, map_id),
+        FOREIGN KEY (project_id, level_map_id) REFERENCES level_section_sets(project_id, level_map_id),
+        FOREIGN KEY (project_id, map_id) REFERENCES maps(project_id, map_id)
+      );
+      CREATE TABLE IF NOT EXISTS level_section_save_receipts (
+        project_id TEXT NOT NULL, level_map_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL, result_json TEXT NOT NULL,
+        PRIMARY KEY (project_id, level_map_id, operation_id),
+        FOREIGN KEY (project_id, level_map_id) REFERENCES level_section_sets(project_id, level_map_id)
       );
       CREATE TABLE IF NOT EXISTS project_levels (
         project_id TEXT PRIMARY KEY,
@@ -569,6 +593,8 @@ function levelList(projectId) {
     .get(projectId)?.starting_map_id ?? null;
   const levels = database.prepare(`SELECT * FROM maps WHERE project_id = ? AND NOT EXISTS
     (SELECT 1 FROM world_sections s WHERE s.project_id = maps.project_id AND s.map_id = maps.map_id)
+    AND NOT EXISTS (SELECT 1 FROM level_sections s WHERE s.project_id = maps.project_id
+      AND s.map_id = maps.map_id AND s.level_map_id != maps.map_id)
     ORDER BY updated_at, map_id`).all(projectId)
     .map(row => {
       const reason = unsupportedReason(row, projectId, row.map_id);
@@ -585,6 +611,174 @@ function levelError(message, status = 409) {
   throw error;
 }
 
+function levelSectionPayload(projectId, levelMapId) {
+  const level = getMap.get(projectId, levelMapId);
+  if (!level || level.deleted_at) levelError("Active level not found.", 404);
+  if (database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(projectId, levelMapId) ||
+      database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+        .get(projectId, levelMapId, levelMapId)) levelError("This map is not an independent level.");
+  const problem = unsupportedReason(level, projectId, levelMapId);
+  if (problem) levelError(problem);
+  const model = level.model;
+  const set = database.prepare("SELECT revision FROM level_section_sets WHERE project_id = ? AND level_map_id = ?")
+    .get(projectId, levelMapId);
+  const rows = database.prepare(`SELECT s.*, m.document_json, m.model AS map_model, m.deleted_at
+    FROM level_sections s LEFT JOIN maps m ON m.project_id = s.project_id AND m.map_id = s.map_id
+    WHERE s.project_id = ? AND s.level_map_id = ? ORDER BY s.grid_y, s.grid_x`).all(projectId, levelMapId);
+  const sections = rows.length ? rows : [{
+    section_id: `section-${levelMapId}`, map_id: levelMapId, grid_x: 0, grid_y: 0,
+    revision: 0, document_json: level.document_json, map_model: model, deleted_at: null
+  }];
+  const payload = { projectId, levelMapId, model, revision: set?.revision ?? 0,
+    sections: sections.map(row => {
+      if (!row.document_json || row.deleted_at || row.map_model !== model) {
+        levelError(`Section ${row.section_id} is missing, deleted, or incompatible.`);
+      }
+      sectionOrigin(row.grid_x, row.grid_y);
+      const document = JSON.parse(row.document_json);
+      if (row.map_id !== levelMapId &&
+          (document.bounds.width !== 2048 || document.bounds.height !== 2048)) {
+        levelError(`Section ${row.section_id} must be 2048 × 2048.`);
+      }
+      return { sectionId: row.section_id, mapId: row.map_id, gridX: row.grid_x, gridY: row.grid_y,
+        revision: row.revision, document };
+    }) };
+  const root = payload.sections.find(section => section.mapId === levelMapId);
+  if (root.document.playableBoundary) {
+    validatePlayableBoundaryForSections(root.document.playableBoundary, payload.sections);
+  }
+  return payload;
+}
+
+function addLevelSection(projectId, levelMapId, input) {
+  if (!input || !Number.isSafeInteger(input.gridX) || !Number.isSafeInteger(input.gridY) ||
+      !Number.isSafeInteger(input.revision)) {
+    throw new TypeError("Choose an integer grid position for the new section.");
+  }
+  sectionOrigin(input.gridX, input.gridY);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const current = levelSectionPayload(projectId, levelMapId);
+    if (input.revision !== current.revision) levelError("Level sections changed since they were opened. Reopen before adding a section.");
+    if (current.sections.length >= MAX_LEVEL_SECTIONS) {
+      levelError(`A level can contain at most ${MAX_LEVEL_SECTIONS} sections.`, 400);
+    }
+    if (current.model == null) levelError("The level model is not assigned.");
+    if (!current.sections.some(section => Math.abs(section.gridX - input.gridX) +
+        Math.abs(section.gridY - input.gridY) === 1)) {
+      levelError("A section must be adjacent to an existing section.", 400);
+    }
+    if (current.sections.some(section => section.gridX === input.gridX && section.gridY === input.gridY)) {
+      levelError("That section position is already occupied.", 409);
+    }
+    if (!database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND level_map_id = ?")
+        .get(projectId, levelMapId)) {
+      database.prepare("INSERT INTO level_section_sets (project_id, level_map_id, revision) VALUES (?, ?, 0) " +
+        "ON CONFLICT(project_id, level_map_id) DO NOTHING").run(projectId, levelMapId);
+      const root = current.sections.find(section => section.mapId === levelMapId);
+      database.prepare(`INSERT INTO level_sections
+        (project_id, level_map_id, section_id, map_id, grid_x, grid_y) VALUES (?, ?, ?, ?, 0, 0)`)
+        .run(projectId, levelMapId, root.sectionId, levelMapId);
+    }
+    const mapId = `map-${randomUUID()}`;
+    const sectionId = `section-${randomUUID()}`;
+    const name = `${current.sections[0].document.name} section`;
+    const starter = current.model === generic.MODEL ? generic.createDocument(mapId, name) : createBlankDocument(mapId, name);
+    const validate = current.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument;
+    const document = validate({ ...starter, objects: [] });
+    const now = new Date().toISOString();
+    database.prepare("INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)")
+      .run(projectId, mapId, JSON.stringify(document), now, current.model);
+    database.prepare(`INSERT INTO level_sections
+      (project_id, level_map_id, section_id, map_id, grid_x, grid_y) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(projectId, levelMapId, sectionId, mapId, input.gridX, input.gridY);
+    database.prepare("UPDATE level_section_sets SET revision = revision + 1 WHERE project_id = ? AND level_map_id = ?")
+      .run(projectId, levelMapId);
+    const result = levelSectionPayload(projectId, levelMapId);
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function saveLevelSections(projectId, levelMapId, input) {
+  if (!input || !isProjectMapId(input.operationId) || !Number.isSafeInteger(input.revision) ||
+      !Array.isArray(input.sections) || !input.sections.length || input.sections.length > MAX_LEVEL_SECTIONS) {
+    throw new TypeError(`Invalid level section save (maximum ${MAX_LEVEL_SECTIONS} sections).`);
+  }
+  const hash = sha256(Buffer.from(JSON.stringify(input)));
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const receipt = database.prepare(`SELECT request_hash, result_json FROM level_section_save_receipts
+      WHERE project_id = ? AND level_map_id = ? AND operation_id = ?`)
+      .get(projectId, levelMapId, input.operationId);
+    if (receipt) {
+      if (receipt.request_hash !== hash) levelError("Save operation ID was reused with different content.");
+      database.exec("COMMIT");
+      return JSON.parse(receipt.result_json);
+    }
+    const current = levelSectionPayload(projectId, levelMapId);
+    if (current.revision !== input.revision || current.sections.length !== input.sections.length) {
+      levelError("Level sections changed since they were opened. Reopen before saving.");
+    }
+    const catalog = assetCatalogFor(projectId, current.model);
+    if (!database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND level_map_id = ?")
+        .get(projectId, levelMapId)) {
+      database.prepare("INSERT INTO level_section_sets (project_id, level_map_id, revision) VALUES (?, ?, 0) " +
+        "ON CONFLICT(project_id, level_map_id) DO NOTHING").run(projectId, levelMapId);
+      const root = current.sections.find(section => section.mapId === levelMapId);
+      database.prepare(`INSERT INTO level_sections
+        (project_id, level_map_id, section_id, map_id, grid_x, grid_y) VALUES (?, ?, ?, ?, 0, 0)`)
+        .run(projectId, levelMapId, root.sectionId, levelMapId);
+    }
+    const seen = new Set();
+    const updates = input.sections.map(section => {
+      const existing = current.sections.find(item => item.sectionId === section.sectionId);
+      if (!existing || seen.has(section.sectionId) || section.revision !== existing.revision ||
+          section.document?.id !== existing.mapId) levelError("Section membership or revision changed; no sections were saved.");
+      seen.add(section.sectionId);
+      if (Buffer.byteLength(JSON.stringify(section.document)) > 2_000_000) throw new RangeError("Section exceeds the 2 MB limit.");
+      const document = (current.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)
+        (section.document, catalog);
+      if (existing.mapId !== levelMapId &&
+          (document.bounds.width !== 2048 || document.bounds.height !== 2048)) {
+        throw new TypeError("Section dimensions must remain 2048 × 2048.");
+      }
+      return { existing, document };
+    });
+    const updatedSections = current.sections.map(section => ({
+      ...section,
+      document: updates.find(update => update.existing.sectionId === section.sectionId)?.document ?? section.document
+    }));
+    const root = updatedSections.find(section => section.mapId === levelMapId);
+    if (root.document.playableBoundary) {
+      validatePlayableBoundaryForSections(root.document.playableBoundary, updatedSections);
+    }
+    const now = new Date().toISOString();
+    for (const { existing, document } of updates) {
+      saveMap.run(projectId, existing.mapId, JSON.stringify(document), now, current.model);
+      if (database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND level_map_id = ? AND section_id = ?")
+          .get(projectId, levelMapId, existing.sectionId)) {
+        database.prepare(`UPDATE level_sections SET revision = revision + 1
+          WHERE project_id = ? AND level_map_id = ? AND section_id = ?`)
+          .run(projectId, levelMapId, existing.sectionId);
+      }
+    }
+    database.prepare(`INSERT INTO level_section_sets (project_id, level_map_id, revision) VALUES (?, ?, 1)
+      ON CONFLICT(project_id, level_map_id) DO UPDATE SET revision = revision + 1`).run(projectId, levelMapId);
+    const result = levelSectionPayload(projectId, levelMapId);
+    database.prepare("INSERT INTO level_section_save_receipts VALUES (?, ?, ?, ?, ?)")
+      .run(projectId, levelMapId, input.operationId, hash, JSON.stringify(result));
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function changeLevels(projectId, input) {
   if (!input || !isProjectMapId(input.mapId)) levelError("A valid level ID is required.", 400);
   if (input.action === "add" && (Object.hasOwn(input, "width") || Object.hasOwn(input, "height")) &&
@@ -596,13 +790,20 @@ function changeLevels(projectId, input) {
     const source = getMap.get(projectId, input.mapId);
     if (!source) levelError("Level not found in this game.", 404);
     if (database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(projectId, input.mapId)) {
-      levelError("World sections must be managed through their world workspace.");
+      levelError("This legacy world section is not an independent level.");
     }
+    if (database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+        .get(projectId, input.mapId, input.mapId)) levelError("A section is part of its owning level, not an independent level.");
     const problem = unsupportedReason(source, projectId, input.mapId);
     if (problem) levelError(problem);
     const project = database.prepare("SELECT model FROM projects WHERE project_id = ?").get(projectId);
     if (project && source.model !== project.model) levelError("The level model does not match this game.");
     if (source.deleted_at && input.action !== "recover") levelError("Recover this level before changing it.");
+    if (input.action === "duplicate" &&
+        database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND level_map_id = ? AND map_id != ?")
+          .get(projectId, input.mapId, input.mapId)) {
+      levelError("Duplicating a multi-section level is not supported; create a blank level instead.");
+    }
     const now = new Date().toISOString();
     let mapId = input.mapId;
     if (["add", "duplicate", "rename"].includes(input.action)) {
@@ -614,22 +815,30 @@ function changeLevels(projectId, input) {
         saveMap.run(projectId, mapId, JSON.stringify({ ...original, name }), now, source.model);
       } else {
         mapId = `map-${randomUUID()}`;
-        const document = input.action === "duplicate" ? { ...original, id: mapId, name }
+        const starter = input.action === "duplicate" ? { ...original, id: mapId, name }
           : source.model === generic.MODEL ? generic.createDocument(mapId, name)
           : createBlankDocument(mapId, name);
+        const document = input.action === "add"
+          ? (source.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)
+            ({ ...starter, objects: [] }, assetCatalogFor(projectId, source.model))
+          : starter;
         saveMap.run(projectId, mapId, JSON.stringify(document), now, source.model);
       }
     } else if (input.action === "start") {
       database.prepare("UPDATE project_levels SET starting_map_id = ? WHERE project_id = ?").run(mapId, projectId);
     } else if (input.action === "delete") {
       const active = database.prepare(`SELECT map_id FROM maps WHERE project_id = ? AND deleted_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM world_sections s WHERE s.project_id = maps.project_id AND s.map_id = maps.map_id)`).all(projectId);
+        AND NOT EXISTS (SELECT 1 FROM world_sections s WHERE s.project_id = maps.project_id AND s.map_id = maps.map_id)
+        AND NOT EXISTS (SELECT 1 FROM level_sections s WHERE s.project_id = maps.project_id
+          AND s.map_id = maps.map_id AND s.level_map_id != maps.map_id)`).all(projectId);
       if (active.length <= 1) levelError("A game must keep at least one active level.");
       const starting = database.prepare("SELECT starting_map_id FROM project_levels WHERE project_id = ?").get(projectId);
       if (starting?.starting_map_id === mapId) {
         const replacement = getMap.get(projectId, input.replacementMapId ?? "");
         if (!replacement || replacement.deleted_at || input.replacementMapId === mapId ||
             database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(projectId, input.replacementMapId) ||
+            database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+              .get(projectId, input.replacementMapId, input.replacementMapId) ||
             unsupportedReason(replacement, projectId, input.replacementMapId)) {
           levelError("Choose a valid active replacement starting level in this game.");
         }
@@ -690,6 +899,8 @@ function createWorld(projectId, input) {
     if (database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(projectId, input.sourceMapId)) {
       levelError("Choose an independent source level.");
     }
+    if (database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+        .get(projectId, input.sourceMapId, input.sourceMapId)) levelError("Choose an independent source level.");
     const worldId = `world-${randomUUID()}`;
     const name = input.name.trim();
     database.prepare("INSERT INTO worlds (project_id, world_id, name, model) VALUES (?, ?, ?, ?)")
@@ -770,6 +981,24 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = new URL(request.url, "http://127.0.0.1").pathname;
+  const levelSectionsMatch = /^\/api\/projects\/([^/]+)\/levels\/([^/]+)\/sections$/.exec(path);
+  if (levelSectionsMatch) {
+    const [, projectId, levelMapId] = levelSectionsMatch;
+    try {
+      if (!isProjectMapId(projectId) || !isProjectMapId(levelMapId)) throw new TypeError("Invalid project or level ID.");
+      if (!projectExists(projectId)) levelError("Game not found.", 404);
+      if (request.method === "GET") send(response, 200, levelSectionPayload(projectId, levelMapId));
+      else if (request.method === "POST") send(response, 201, addLevelSection(projectId, levelMapId, await readJson(request)));
+      else if (request.method === "PUT") send(response, 200,
+        saveLevelSections(projectId, levelMapId, await readJson(request, MAX_LEVEL_SECTION_SAVE_BYTES)));
+      else send(response, 405, { error: "Method not allowed." });
+    } catch (error) {
+      console.error(`Level section request failed for ${projectId}/${levelMapId}:`, error);
+      send(response, error.status ?? (error instanceof TypeError || error instanceof SyntaxError || error instanceof RangeError ? 400 : 500),
+        { error: error.message });
+    }
+    return;
+  }
   const worldMatch = /^\/api\/projects\/([^/]+)\/worlds(?:\/([^/]+))?$/.exec(path);
   if (worldMatch) {
     const [, projectId, worldId] = worldMatch;
@@ -826,7 +1055,10 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const maps = listMaps.all().filter(row => !database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(row.project_id, row.map_id)).map(row => {
+      const maps = listMaps.all().filter(row =>
+        !database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(row.project_id, row.map_id) &&
+        !database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+          .get(row.project_id, row.map_id, row.map_id)).map(row => {
         const reason = unsupportedReason(row, row.project_id, row.map_id);
         const canAdopt = row.model === null && documentProblem(row, row.project_id, row.map_id) === null;
         return { projectId: row.project_id, mapId: row.map_id, model: row.model,
@@ -925,7 +1157,12 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (database.prepare("SELECT 1 FROM world_sections WHERE project_id = ? AND map_id = ?").get(projectId, mapId)) {
-    send(response, 409, { error: "This map belongs to a world. Open and save it through the world workspace." });
+    send(response, 409, { error: "This map belongs to a preserved legacy world workspace, not an independent level." });
+    return;
+  }
+  if (database.prepare("SELECT 1 FROM level_sections WHERE project_id = ? AND map_id = ? AND level_map_id != ?")
+      .get(projectId, mapId, mapId)) {
+    send(response, 409, { error: "This map is a level section; edit and save it through its owning level." });
     return;
   }
   if (match[3]) {
@@ -996,6 +1233,11 @@ const server = createServer(async (request, response) => {
     send(response, 405, { error: "Method not allowed." });
     return;
   }
+  if (database.prepare(`SELECT 1 FROM level_sections WHERE project_id = ? AND level_map_id = ?
+      AND map_id != ? LIMIT 1`).get(projectId, mapId, mapId)) {
+    send(response, 409, { error: "This level has multiple sections; save all of them transactionally through the level sections endpoint." });
+    return;
+  }
   try {
     let body = "";
     for await (const chunk of request) {
@@ -1014,6 +1256,9 @@ const server = createServer(async (request, response) => {
     }
     const catalog = assetCatalogFor(projectId, parsed.model);
     const document = (parsed.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)(parsed.document, catalog);
+    if (document.playableBoundary) {
+      validatePlayableBoundaryForSections(document.playableBoundary, [{ gridX: 0, gridY: 0, document }]);
+    }
     let inTransaction = false;
     try {
       database.exec("BEGIN IMMEDIATE");

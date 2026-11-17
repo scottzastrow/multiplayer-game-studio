@@ -11,8 +11,14 @@
       <header class="toolbar">
         <div class="brand"><span class="brand-mark">W</span><strong>Web Studio</strong><span id="project-name" class="project-name">Astraeum Tower · Floor 1</span></div>
         <nav class="tool-group" aria-label="Map tools">
-          <button id="select-tool" class="tool-button active" title="Select and move (Esc)">Select</button>
-          <button id="place-tool" class="tool-button" title="Click the map to place the armed palette asset">Place: <span id="place-asset-label">—</span></button>
+          <label class="tool-picker" for="editor-tool">Tool
+            <select id="editor-tool" disabled aria-describedby="tool-hint">
+              <option value="select">Select</option>
+              <option value="paint">Paint</option>
+              <option value="fill">Rectangle Fill</option>
+              <option value="boundary">Boundary</option>
+            </select>
+          </label>
           <button id="undo" class="icon-button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
           <button id="redo" class="icon-button" title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
           <button id="duplicate-selection" class="tool-button" type="button" disabled title="Duplicate selection (Ctrl+D)">Duplicate</button>
@@ -25,7 +31,6 @@
         <div class="file-actions">
           <button id="new-game" class="button secondary" type="button" disabled>New Game</button>
           <button id="open-game" class="button secondary" type="button" disabled>Open Game</button>
-          <button id="worlds-button" class="button secondary" type="button">Worlds</button>
           <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
           <button id="save" class="button secondary" disabled>Save</button>
           <button id="play" class="button primary" disabled>▶ Play</button>
@@ -102,56 +107,44 @@
           </form>
         </dialog>
       </header>
-      <dialog id="world-dialog" aria-labelledby="world-title">
-        <h2 id="world-title">World workspace</h2>
-        <p>World sections are new, independent 2048 × 2048 maps. Existing levels are not moved or connected.</p>
-        <label>World name <input id="world-name" maxlength="64" value="New world"></label>
-        <label>First section grid X <input id="world-grid-x" type="number" step="1" value="0"></label>
-        <label>First section grid Y <input id="world-grid-y" type="number" step="1" value="0"></label>
-        <p>The second section is immediately east of the first.</p>
-        <button id="world-create" class="button primary" type="button">Create world</button>
-        <label>Existing world <select id="world-list"></select></label>
-        <button id="world-open" class="button secondary" type="button" disabled>Open world</button>
-        <p id="world-dialog-status" role="alert"></p>
-        <button id="world-dialog-close" class="button secondary" type="button">Cancel</button>
-      </dialog>
-      <dialog id="world-workspace" aria-labelledby="world-workspace-title">
-        <div class="world-toolbar">
-          <strong id="world-workspace-title"></strong>
-          <button id="world-select-tool" type="button" aria-pressed="true">Select / Move</button>
-          <button id="world-brush-tool" type="button" aria-pressed="false">Terrain brush</button>
-          <label>Terrain <select id="world-brush-asset" aria-label="Terrain brush asset"></select></label>
-          <label><input id="world-terrain-visible" type="checkbox"> Show terrain</label>
-          <label><input id="world-terrain-locked" type="checkbox"> Lock terrain</label>
-          <button id="world-zoom-out" type="button">−</button>
-          <output id="world-zoom-label"></output>
-          <button id="world-zoom-in" type="button">+</button>
-          <button id="world-undo" type="button">Undo</button>
-          <button id="world-redo" type="button">Redo</button>
-          <button id="world-save" type="button">Save workspace</button>
-          <button id="world-close" type="button">Close workspace</button>
-        </div>
-        <p id="world-play-note">Play is unavailable in the world workspace. Open an independent level to use Play; cross-section Play and runtime streaming are not implemented.</p>
-        <p>Drag an unlocked object within its section to move it. Middle-drag or Space-drag pans; wheel zooms. Rectangular fill is not available.</p>
-        <p>Terrain brush: drag to replace 32px cells across sections. Escape cancels the stroke. Space-drag or middle-drag pans.</p>
-        <canvas id="world-canvas" tabindex="0" aria-label="World workspace canvas"></canvas>
-        <p id="world-status" role="status" aria-live="polite"></p>
-      </dialog>
       <main class="workspace">
         <aside class="panel hierarchy">
           <section aria-label="Levels in selected game">
-            <div class="panel-title">Levels</div>
+            <details id="level-menu">
+              <summary>Level</summary>
+              <div class="level-actions" role="group" aria-label="Level actions">
+                <button id="level-add" class="button secondary" type="button" disabled aria-describedby="level-add-help">Add Level</button>
+                <small id="level-add-help">Separate level: one empty 2048 × 2048 section.</small>
+                <button id="level-duplicate" class="button secondary" type="button" disabled>Duplicate</button>
+                <button id="level-rename" class="button secondary" type="button" disabled>Rename</button>
+                <button id="level-start" class="button secondary" type="button" disabled>Set as start</button>
+                <button id="level-delete" class="button danger" type="button" disabled>Delete</button>
+              </div>
+            </details>
             <div class="level-picker">
               <label for="level-select">Current level</label>
               <select id="level-select" disabled></select>
             </div>
-            <div class="level-actions">
-              <button id="level-add" class="button secondary" type="button" disabled>Add blank</button>
-              <button id="level-duplicate" class="button secondary" type="button" disabled>Duplicate</button>
-              <button id="level-rename" class="button secondary" type="button" disabled>Rename</button>
-              <button id="level-start" class="button secondary" type="button" disabled>Set as start</button>
-              <button id="level-delete" class="button danger" type="button" disabled>Delete</button>
+            <div class="level-picker">
+              <label for="section-select">Selected section</label>
+              <select id="section-select" disabled></select>
+              <button id="section-add" class="button secondary" type="button" disabled>Add Section</button>
             </div>
+            <div id="section-placement" hidden>
+              <p>Choose an empty side of the selected section, then confirm. New sections have no contents.</p>
+              <div class="section-compass" role="group" aria-label="New section placement preview">
+                <button data-direction="north" type="button">North</button>
+                <button data-direction="west" type="button">West</button>
+                <span>Selected<br>section</span>
+                <button data-direction="east" type="button">East</button>
+                <button data-direction="south" type="button">South</button>
+              </div>
+              <p id="section-placement-preview" role="status" aria-live="polite"></p>
+              <button id="section-confirm" class="button" type="button" disabled>Confirm Add Section</button>
+              <button id="section-cancel" class="button secondary" type="button">Cancel</button>
+            </div>
+            <p id="section-summary"></p>
+            <p id="section-status" role="status" aria-live="polite"></p>
             <details id="deleted-levels"><summary>Deleted levels (recover)</summary><div id="level-recovery"></div></details>
             <p id="level-message" role="status" aria-live="polite"></p>
           </section>
@@ -163,7 +156,71 @@
         <section class="viewport" aria-label="Map viewport">
           <div id="editor-view" class="editor-view">
             <canvas id="map-canvas" class="selecting" tabindex="0" aria-label="Floor 1 map editor" data-testid="map-canvas"></canvas>
+            <div id="tool-settings" class="tool-settings" hidden>
+              <p id="tool-hint" role="status"></p>
+              <fieldset id="paint-options" hidden>
+                <legend>Paint</legend>
+                <div id="paint-asset" role="status" aria-live="polite">
+                  <span id="paint-asset-thumbnail" aria-hidden="true" hidden></span>
+                  <strong id="paint-asset-name">Choose a Paint asset from the palette</strong>
+                </div>
+                <label>Brush size
+                  <select id="paint-brush-size" aria-describedby="paint-support">
+                    <option value="1">1 × 1</option>
+                    <option value="2">2 × 2</option>
+                    <option value="4">4 × 4</option>
+                    <option value="8">8 × 8</option>
+                  </select>
+                </label>
+                <p id="paint-support" role="status"></p>
+                <p>Continuous brushes replace grid cells with non-unique 32 × 32 terrain only. Other assets keep single-click or palette-drag placement; brush size does not repeat them.</p>
+              </fieldset>
+              <fieldset id="fill-options" hidden>
+                <legend>Rectangle Fill</legend>
+                <div id="fill-asset" role="status" aria-live="polite">
+                  <span id="fill-asset-thumbnail" aria-hidden="true" hidden></span>
+                  <strong id="fill-asset-name">Choose a fill asset from the palette</strong>
+                </div>
+                <p id="fill-footprint"></p>
+                <label>Horizontal gap (world px) <input id="fill-gap-x" type="number" min="0" max="2048" step="1" value="0"></label>
+                <label>Vertical gap (world px) <input id="fill-gap-y" type="number" min="0" max="2048" step="1" value="0"></label>
+                <label>Same-layer objects
+                  <select id="fill-overlap"><option value="skip">Skip overlaps (preserve existing)</option><option value="allow">Allow overlaps (keep both)</option></select>
+                </label>
+                <label id="fill-collision-option" hidden><input id="fill-collision" type="checkbox"> Enable optional collision on new copies</label>
+                <label><input id="fill-border" type="checkbox"> Generate border (off by default)</label>
+                <label>Border asset <select id="fill-border-asset" disabled></select></label>
+                <p>Border uses a one-cell ring inside the rectangle, not along section seams. It requires its own unlocked, visible layer. Astraeum's Wang artwork edges are visual autotiling, not generated borders or collision.</p>
+              </fieldset>
+              <div id="fill-actions" hidden>
+                <button id="fill-apply" class="button secondary" type="button" disabled>Apply fill</button>
+                <button id="fill-cancel" class="button secondary" type="button" disabled>Cancel fill</button>
+              </div>
+              <div id="fill-diagnostics" hidden>
+                <strong>Temporary Fill diagnostics</strong>
+                <p id="fill-diagnostic-build">Diagnostics not loaded (stale or loading editor code).</p>
+                <textarea id="fill-diagnostic-report" rows="6" readonly spellcheck="false" aria-label="Copyable Fill diagnostic report"></textarea>
+                <button id="fill-diagnostic-copy" class="button secondary" type="button">Copy report</button>
+                <span id="fill-diagnostic-copy-status" role="status">Memory only; no automatic edits or saves.</span>
+              </div>
+              <div id="boundary-options" hidden>
+                <label>Selection mode
+                  <select id="boundary-mode">
+                    <option value="grid">Grid area</option>
+                    <option value="polygon">Lasso polygon</option>
+                  </select>
+                </label>
+                <p>Drag a grid rectangle or trace a closed polygon. Lasso points snap to the 32 px grid; the preview shows the playable cells.</p>
+                <p id="boundary-status" role="status"></p>
+                <div class="boundary-actions">
+                  <button id="boundary-apply" class="button primary" type="button" disabled>Apply boundary</button>
+                  <button id="boundary-cancel" class="button secondary" type="button" disabled>Cancel preview</button>
+                  <button id="boundary-reset" class="button secondary" type="button" disabled>Reset to default</button>
+                </div>
+              </div>
+            </div>
             <div class="viewport-hint">Click selects · Shift-click toggles · Empty drag marquee · Drag palette assets to place · Ctrl+A visible/unlocked · Middle/Space-drag pans · Arrows nudge 5 px</div>
+            <p id="play-limitation" class="play-limitation" role="note" hidden>Connected Play loads all sections of this level for movement, camera and collision. Arrows/WASD move; combat, dodge and lighting are not simulated.</p>
           </div>
           <div id="play-host" class="play-host" hidden></div>
           <div id="play-loading" class="play-overlay" role="status" data-testid="play-loading" hidden><div class="spinner" aria-hidden="true"></div><span>Starting Play…</span></div>

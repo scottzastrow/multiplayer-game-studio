@@ -1,4 +1,9 @@
 import { isProjectMapId } from "../../../studio/project-identity.js";
+import {
+  appendPlayableBoundaryCollisions,
+  boundaryContainsCircle,
+  validatePlayableBoundary
+} from "../../../studio/playable-boundaries.js";
 
 export const MODEL = "generic-grid-v1";
 export const MAP_CELL_SIZE = 32;
@@ -92,11 +97,14 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     throw new TypeError("Generic document must be an object.");
   }
-  const keys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects"];
+  const keys = ["formatVersion", "id", "name", "cellSize", "bounds", "cameraZoom", "layers", "objects",
+    "playableBoundary"];
   const unknown = Object.keys(document).filter(key => !keys.includes(key));
-  if (unknown.length || keys.some(key => key !== "cameraZoom" && !Object.hasOwn(document, key))) {
+  if (unknown.length || keys.some(key => !["cameraZoom", "playableBoundary"].includes(key) && !Object.hasOwn(document, key))) {
     throw new TypeError("Generic document has missing or unknown fields.");
   }
+  const playableBoundary = Object.hasOwn(document, "playableBoundary")
+    ? validatePlayableBoundary(document.playableBoundary) : undefined;
   const cameraZoom = document.cameraZoom ?? DEFAULT_CAMERA_ZOOM;
   if (!Number.isFinite(cameraZoom) || cameraZoom < MIN_CAMERA_ZOOM ||
       cameraZoom > MAX_CAMERA_ZOOM || Math.round(cameraZoom * 10) !== cameraZoom * 10) {
@@ -143,7 +151,7 @@ export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   for (const [id, asset] of Object.entries(ASSET_CATALOG)) {
     if (asset.required && asset.type !== "spawn" && !unique.has(id)) throw new TypeError(`${asset.label} is required.`);
   }
-  return { ...document, cameraZoom };
+  return { ...document, cameraZoom, ...(playableBoundary ? { playableBoundary } : {}) };
 }
 export const objectBounds = (object, assetCatalog = ASSET_CATALOG) => {
   const asset = assetCatalog[object.assetId];
@@ -194,6 +202,12 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
     const dy = Math.max(block.transform.y - (spawn.transform.y + 16), 0, spawn.transform.y + 16 - block.transform.y - 32);
     return dx * dx + dy * dy < 64;
   })).map(spawn => `${assetCatalog[spawn.assetId].label} is blocked; move the spawn or blocker.`);
+  for (const spawn of spawns) {
+    if (!boundaryContainsCircle(document.playableBoundary, document,
+      { x: spawn.transform.x + 16, y: spawn.transform.y + 16 }, 8)) {
+      problems.push(`${assetCatalog[spawn.assetId].label} lies outside the playable boundary. Move the start inside or edit/reset the boundary.`);
+    }
+  }
   for (const [assetId, asset] of Object.entries(assetCatalog)) {
     if (asset.required && asset.type === "spawn" &&
         !document.objects.some(object => object.assetId === assetId)) {
@@ -207,9 +221,12 @@ export function playStartProblems(document, assetCatalog = ASSET_CATALOG) {
   return problems;
 }
 export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
+  return appendPlayableBoundaryCollisions(createFloorSection(document, assetCatalog), document);
+}
+export function createFloorSection(document, assetCatalog = ASSET_CATALOG) {
   validateFloorDocument(document, assetCatalog);
   const blocks = document.objects.filter(object => object.collision);
-  return {
+  const map = {
     formatVersion: 1, id: document.id, name: document.name, bounds: { ...document.bounds }, cellSize: 32,
     objects: blocks.map(object => ({ id: object.id, typeId: "generic-block",
       position: { x: object.transform.x + 16, y: object.transform.y + 16 } })),
@@ -219,6 +236,7 @@ export function createFloorMap(document, assetCatalog = ASSET_CATALOG) {
       id: object.id, kind: "player", position: { x: object.transform.x + 16, y: object.transform.y + 16 }, radius: 8
     }))
   };
+  return map;
 }
 export function drawAsset(context, artwork, assetId, transform, { alpha = 1, assetCatalog = ASSET_CATALOG } = {}) {
   const asset = assetCatalog[assetId];

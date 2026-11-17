@@ -1,36 +1,32 @@
 # Web Studio map editor
 
-## World workspace foundation
+## Unified level editor
 
-**Worlds** opens a workspace scoped to the current saved game. Create a world
-with two new 2048 × 2048 sections; the second is immediately east of the
-specified integer grid position. Existing levels are not added, resized or
-relocated. Open an existing world from the same dialog. Each section retains
-its own stable ID and local document; section borders and grid coordinates are
-shown on one pan/zoom canvas.
+Studio edits each level in the main editor. A level starts as one 2048 × 2048
+section; select an existing section, choose **Add Section**, then click its
+visual **North/East/South/West** preview (occupied sides are disabled). New
+sections contain no terrain, objects or starts; saved section contents are
+never cleared. Adding a section does not change the viewport. Sections share the main canvas, palette,
+hierarchy, Inspector, tools and history while retaining section-local map
+documents. The **Tool** dropdown contains **Select**, **Paint**,
+**Rectangle Fill** and **Boundary**, with contextual settings instead of a row
+of fill buttons. Boundary previews either a grid area or closed polygon and
+edits the playable region independently of optional decorative fill borders.
+Terrain painting and rectangle fill work across seams. Fill also repeats
+static palette props at their configured footprint, with spacing, overlap
+preview and an optional separately selected border in the tool settings.
+Object moves remain section-local. Multi-section Play uses kit 0.3.0's public
+connected-world runtime for the selected level's complete section set and
+authored player start. It previews keyboard movement, camera and collision
+only; single-section gameplay remains unchanged. Stop restores the editor
+view and selection without saving movement. Focused checks pass, but the one
+browser acceptance attempt was blocked during startup; see the development
+guide for exact evidence and remaining gates. Existing World-workspace records are
+kept separate and are never automatically attached to levels; the retired
+standalone workspace is no longer available to open them in the editor.
 
-Drag a visible, unlocked object within its section to move it. Middle-drag or
-Space-drag pans; the wheel zooms. A move crossing the section boundary is
-rejected. Undo/Redo applies to workspace moves, and Save writes both sections
-in one revision-checked SQLite transaction. If a save response is lost, retry
-the same save before closing; a conflict leaves edits open. Closing a dirty
-workspace asks before discarding it. The independent level beneath the
-workspace is not changed. Save, history and Close are unavailable during an
-active drag.
-
-This foundation does not include painting, fill or cross-section object moves.
-Play is unavailable while a world workspace is open; use an independent
-level for Play. Runtime section streaming and cross-section Play are not
-implemented. `npm run studio:world:test` uses disposable storage and direct CDP,
-retaining its evidence under `studio/data/`.
-
-The 2026-11-14 disposable verification was segmented: API creation, validation,
-rollback, revision checks, retry and restart passed before an opening timeout;
-opening and movement passed in a continuation before a CDP wheel-event error;
-zoom, pan and exact save/reopen passed in a further continuation. The full
-smoke did not pass end-to-end. After the drag-action review fix, the
-`--reuse-data world-workspace-yzWxps --pending-ui-only` continuation passed
-with evidence in `studio/data/world-workspace-aA8MAL/`.
+See `docs/DEVELOPMENT.md` for the detailed editor behavior, persistence model,
+limitations, setup and verification workflow.
 
 Run `npm run studio:dev` from the repository root, then open
 `http://127.0.0.1:4173`. This starts the Studio Vite app and its map service;
@@ -61,14 +57,19 @@ showing the open level and marking the starting level with `(Start)`.
 Choose a level with the pointer or native keyboard controls to open it;
 dirty edits require Save and Open, Discard and Open, or Cancel. Cancelling
 keeps the original level selected and its unsaved edits intact. The compact
-action buttons target the open, selected level; switching and actions are
+**Level** menu targets the open, selected level; switching and actions are
 disabled during Play or an operation. Recovery stays in the separate
 **Deleted levels (recover)** collapsible section.
-**Add blank** uses the selected game's existing model and defaults: Generic
-Grid and Astraeum default to 2048 x 2048 with safe starts; Astraeum keeps
-uniform Floor 1-sized terrain and an Aries start, without Floor 1's walls,
-props, enemies or layout. Project assets remain available, and Play uses the
-existing model-specific settings and adapter.
+**Level > Add Level** uses the selected game's model to create a separate
+level with one empty 2048 x 2048 section, without cobblestone, objects or
+player starts. It preserves existing levels, section membership and the
+project's starting-level choice. **Add Section**, directly below the
+**Selected section** dropdown, instead expands the current level. Select
+a section, click Add Section, choose an available North/East/South/West side,
+then **Confirm Add Section** or **Cancel**. Occupied sides stay disabled;
+new sections are empty and existing saved/unsaved content is preserved.
+Project assets remain available; place required starts explicitly
+before Play. Empty drafts remain saveable.
 
 On 2026-11-14, the user manually saved an edit, opened another game, and
 returned to find the edit persisted. This did not verify a refresh or restart.
@@ -82,6 +83,11 @@ timed out during startup before acceptance checks. A subsequent diagnostic in
 `studio/data/startup-levels-oCi2Ct/` failed during fixture preparation; the
 startup-only continuation in `studio/data/startup-levels-NPIAbV/` reached
 readiness but recorded no acceptance checks. T042 remains open.
+The focused Add Level slice passed disposable persistence/restart and
+editor-event checks, but its single native-editor attempt also stopped at
+**Opening Floor 1...**, before interaction assertions. Evidence remains in
+`studio/data/sections-smoke-ICyb19/`; it was not retried. See the shared
+[development guide](docs/DEVELOPMENT.md) for precise coverage and limitations.
 
 ## Map dimensions and gameplay camera
 

@@ -89,7 +89,7 @@ export const ASSET_CATALOG = Object.freeze({
     details: "18 × 27 · warm light"
   }),
   "prop-stairs-rune": asset({
-    type: "prop", label: "Stairs portal", legacyMarker: ">", unique: false,
+    type: "prop", label: "Stairs portal", legacyMarker: ">", unique: false, repeatable: false,
     artwork: region("rune", "rune.png", 0, 0, 114, 113),
     alpha: 0.85, playVisible: false,
     pivot: { x: 57, y: 48 }, snap: { x: 16, y: 16, forced: true },

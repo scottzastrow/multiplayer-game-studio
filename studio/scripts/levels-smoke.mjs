@@ -147,6 +147,10 @@ async function clickAt(x, y) {
   await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 async function click(selector) {
+  if (await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)});
+    return e?.closest("#level-menu") && e.tagName !== "SUMMARY" && !document.querySelector("#level-menu").open; })()`)) {
+    await click("#level-menu > summary");
+  }
   await waitFor(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); return e && !e.disabled && !e.closest("[inert]") && e.getClientRects().length; })()`);
   const point = await evaluate(`(() => {
     const e = document.querySelector(${JSON.stringify(selector)});
@@ -209,7 +213,14 @@ async function placeMarker() {
   await click('.asset-card[data-asset-id="generic-marker"]');
   await click("#map-canvas");
   await waitFor('document.querySelector("#save-state").textContent.includes("Unsaved")');
-  await click("#select-tool");
+  await selectTool();
+}
+async function selectTool() {
+  await click("#editor-tool");
+  for (const [key, code] of [["Home", 36], ["Enter", 13]]) {
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: code });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code });
+  }
 }
 async function save() {
   await click("#save");
@@ -300,7 +311,7 @@ async function mapSettingsChecks() {
   // Keep the entire collision lane inside the centered-follow region at zoom 1.5.
   await fill("#object-x", "1280");
   await fill("#object-y", "1504");
-  await click("#select-tool");
+  await selectTool();
   await waitFor(`(() => {
     const spawn = window.__studioTest.document().objects.find(object => object.id === "aries-start");
     return spawn.transform.x === 1296 && spawn.transform.y === 1520;
@@ -944,7 +955,8 @@ async function wallAndClearChecks(record) {
 try {
   service = startService();
   await ready(`http://127.0.0.1:${apiPort}/api/projects`, service);
-  web = launch(process.execPath, [resolve(root, "games", "sample", "node_modules", "vite", "bin", "vite.js"),
+  web = launch(process.execPath, [process.env.STUDIO_VITE_BIN ??
+    resolve(root, "games", "sample", "node_modules", "vite", "bin", "vite.js"),
     "--config", "studio/vite.config.js", "--port", String(webPort), "--strictPort"], { STUDIO_API_PORT: String(apiPort) });
   await ready(origin, web);
   chrome = launch(process.env.CHROME_PATH ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", [
@@ -1028,7 +1040,8 @@ try {
     await dropdownChecks();
   } else {
   const towerBlank = await operation("add", "Empty Tower");
-  assert.deepEqual([...new Set(towerBlank.objects.map(object => object.assetId))].sort(), ["floor-cobblestone", "spawn-aries"]);
+  assert.deepEqual(towerBlank.objects, [], "new Tower levels contain no cobblestone or starts");
+  await openGame("astraeum-tower", "astraeum-tower-floor-1");
   await preview("astraeum-world");
   const one = await createGame("Levels One");
   assert.equal(await evaluate('document.querySelector("#level-delete").disabled'), true);
@@ -1037,7 +1050,7 @@ try {
   await save();
   const editedFirst = await design();
   const blank = await operation("add", "Blank room");
-  assert.equal(blank.objects.length, 2, "blank levels have no copied placements");
+  assert.deepEqual(blank.objects, [], "blank levels have no objects or copied placements");
   assert.deepEqual(blank.bounds, first.bounds);
   await placeMarker();
   const unsaved = await design();
@@ -1053,6 +1066,11 @@ try {
   await selectLevel(blank.id);
   await waitFor(`window.__studioTest.document().id === ${JSON.stringify(blank.id)} && !document.querySelector("#open-dialog").open`);
   assert.deepEqual(await design(), blank, "discard did not save the marker");
+  for (const [assetId, x, y] of [["generic-player", 320, 320], ["generic-player-2", 416, 320]]) {
+    await click(`.asset-card[data-asset-id="${assetId}"]`);
+    const point = await evaluate(`window.__studioTest.worldToClient(${x},${y})`);
+    await clickAt(point.x, point.y);
+  }
   await placeMarker();
   await selectLevel(first.id);
   await click("#switch-save");

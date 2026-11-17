@@ -63,7 +63,7 @@ function cameraOffset(player, width, height, map, zoom) {
   };
 }
 
-function drawPlayer(context, artwork, player) {
+export function drawPlayer(context, artwork, player) {
   if (!player) return;
   if (!player.moving) {
     const idle = artwork[IDLE.id];

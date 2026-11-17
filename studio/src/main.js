@@ -3,6 +3,7 @@ import { ARTWORK_CREDIT } from "../../games/astraeum-tower/src/catalog.js";
 import * as towerProject from "../../games/astraeum-tower/src/project.js";
 import * as generic from "../../games/generic-grid-v1/src/project.js";
 import { genericPreview, genericSkin } from "../../games/generic-grid-v1/src/runtime.js";
+import { createConnectedPreview, connectedSkin } from "../extensions/connected-play.js";
 const {
   MAP_CELL_SIZE,
   artworkReplacementAssets,
@@ -40,7 +41,18 @@ import {
 } from "@multiplayer-game/theme-sdk";
 import { ASTRAEUM_PROJECT_ID, ASTRAEUM_FLOOR_1_MAP_ID, ASTRAEUM_MODEL } from "../project-identity.js";
 import { importedAssetDefinition } from "../project-assets.js";
-import { configureWorldWorkspace } from "./world-workspace.js";
+import { sectionOrigin, worldToSection } from "../world-coordinates.js";
+import {
+  boundaryEdges,
+  createGridRectangleBoundary,
+  createPolygonBoundary,
+  defaultBoundaryCells,
+  playableBoundaryCells,
+  validatePlayableBoundaryForSections
+} from "../playable-boundaries.js";
+import { extendTerrainStroke, planTerrainStroke, terrainBrushFootprint,
+  isTerrainBrushAsset } from "../world-terrain.js";
+import { fillRectangle, isBorderAsset, isRepeatableAsset, planFill } from "../world-fill.js";
 import "./styles.css";
 
 const CELL = MAP_CELL_SIZE;
@@ -78,6 +90,10 @@ const CLEAR_CATEGORIES = Object.freeze([
   { id: "collision", label: "Collision boxes", type: "collision" },
   { id: "spawns", label: "Spawns", type: "spawn" }
 ]);
+const SECTION_DIRECTIONS = Object.freeze({
+  north: { x: 0, y: -1 }, east: { x: 1, y: 0 },
+  south: { x: 0, y: 1 }, west: { x: -1, y: 0 }
+});
 const $ = selector => document.querySelector(selector);
 const studio = $("#studio");
 const canvas = $("#map-canvas");
@@ -86,8 +102,6 @@ const editorView = $("#editor-view");
 const playHost = $("#play-host");
 let playerSettingsReturnFocus = null;
 let playerControllerStatusTimer = null;
-let worldWorkspace;
-
 const state = {
   document: null,
   loadedPayload: null,
@@ -111,8 +125,19 @@ const state = {
   artwork: null,
   selectedId: null,
   selectedIds: new Set(),
+  sections: [],
+  activeSectionId: null,
+  sectionRevision: 0,
+  sectionPlacementDirection: null,
+  sectionBaseline: "",
+  boundaryDraft: null,
+  boundaryMode: "grid",
+  fillPreview: null,
+  fillSettings: { gapX: 0, gapY: 0, overlap: "skip", borderAssetId: null, collision: false },
   tool: "select",
   placeAssetId: null,
+  paintBrushSize: 1,
+  paintCursor: null,
   preview: null,
   showGrid: true,
   snap: true,
@@ -136,6 +161,94 @@ const state = {
   scene: { document: null, key: "", canvas: null },
   play: { phase: "idle", game: null, mount: null, timer: null, view: null, resizeObserver: null }
 };
+
+// Temporary, bounded, in-memory observation of the user's real Fill workflow.
+const FILL_DIAGNOSTIC_BUILD = "fill-live-2026-11-15-r1";
+const fillDiagnostics = {
+  loaded: new Date().toISOString(), events: [], sequence: 0,
+  documents: new WeakMap(), nextDocument: 0, redraws: 0, sceneBuilds: 0,
+  lastRedraw: null, validation: "not run", applying: false, lastApplyEnabled: null
+};
+
+function fillDiagnosticDocuments() {
+  return state.sections.map(section => {
+    const design = section.document;
+    if (!fillDiagnostics.documents.has(design)) {
+      fillDiagnostics.documents.set(design, ++fillDiagnostics.nextDocument);
+    }
+    return { section: section.sectionId, ref: fillDiagnostics.documents.get(design),
+      objects: design.objects.length, cached: section.scene?.document === design };
+  });
+}
+
+function fillDiagnosticSnapshot() {
+  const fill = state.pointerStart?.mode === "fill" ? state.pointerStart : state.fillPreview;
+  const asset = ASSET_CATALOG[state.placeAssetId];
+  const layer = asset && state.layers[OBJECT_TYPES[asset.type].layer];
+  return {
+    tool: state.tool, asset: state.placeAssetId, label: asset?.label ?? null,
+    gestureAsset: fill?.assetId ?? null,
+    pointer: state.pointerMode, rectangle: fill?.rectangle ?? null,
+    preview: { exists: Boolean(state.fillPreview), count: fill?.plan?.count ?? null,
+      placements: fill?.plan?.placements?.length ?? null, skipped: fill?.plan?.skipped ?? null,
+      overlaps: fill?.plan?.overlaps ?? null, seamSkipped: fill?.plan?.seamSkipped ?? null,
+      updates: fill?.plan?.updates?.length ?? null, error: fill?.error ?? null },
+    applyEnabled: !$("#fill-apply").disabled,
+    panelInert: Boolean($("#fill-apply").closest("[inert]")),
+    saving: state.saving, play: state.play.phase, switching: state.switching,
+    creating: state.creating, levelBusy: state.levelBusy,
+    settings: { ...state.fillSettings }, layer: layer ? { ...layer } : null,
+    activeSection: state.activeSectionId, documents: fillDiagnosticDocuments(),
+    undo: state.undo.length, redo: state.redo.length,
+    validation: fillDiagnostics.validation, redraw: fillDiagnostics.lastRedraw,
+    status: $("#status").textContent
+  };
+}
+
+function updateFillDiagnostics(force = false) {
+  const report = $("#fill-diagnostic-report");
+  $("#fill-diagnostics").hidden = state.tool !== "fill";
+  $("#fill-diagnostic-build").textContent = `Served build: ${FILL_DIAGNOSTIC_BUILD}`;
+  if (!force && document.activeElement === report) return;
+  const text = [
+    `Fill diagnostics | served build=${FILL_DIAGNOSTIC_BUILD}`,
+    `loaded=${fillDiagnostics.loaded} | module=${import.meta.url}`,
+    `model=${state.model} | level=${state.identity.mapId}`,
+    `current ${JSON.stringify(fillDiagnosticSnapshot())}`,
+    ...fillDiagnostics.events.map(entry => JSON.stringify(entry))
+  ].join("\n");
+  if (report.value !== text) report.value = text;
+}
+
+function traceFill(event, detail = {}) {
+  fillDiagnostics.events.push({ n: ++fillDiagnostics.sequence, at: new Date().toISOString(),
+    event, tool: state.tool, asset: state.placeAssetId, pointer: state.pointerMode,
+    applyEnabled: !$("#fill-apply").disabled, ...detail });
+  if (fillDiagnostics.events.length > 32) fillDiagnostics.events.shift();
+  updateFillDiagnostics();
+}
+
+function traceFillPointer(event, source) {
+  traceFill(`${source}:${event.type}`, {
+    id: event.pointerId, button: event.button, client: [event.clientX, event.clientY],
+    world: worldPointFromClient(event.clientX, event.clientY),
+    captured: canvas.hasPointerCapture(event.pointerId),
+    previewExists: Boolean(state.fillPreview), documentLoaded: Boolean(state.document)
+  });
+}
+
+async function copyFillDiagnostics() {
+  updateFillDiagnostics(true);
+  const report = $("#fill-diagnostic-report");
+  try {
+    await navigator.clipboard.writeText(report.value);
+    $("#fill-diagnostic-copy-status").textContent = "Report copied.";
+  } catch (error) {
+    report.focus();
+    report.select();
+    $("#fill-diagnostic-copy-status").textContent = `Clipboard unavailable (${error.message}); press Ctrl+C to copy the selected report.`;
+  }
+}
 
 function loadPlayerControlMode() {
   try {
@@ -168,7 +281,8 @@ function updatePlayerSettings() {
     cameraZoom.value = String(state.document?.cameraZoom ?? towerProject.DEFAULT_CAMERA_ZOOM);
   }
   $("#camera-zoom-value").textContent = `${Number(cameraZoom?.value ?? towerProject.DEFAULT_CAMERA_ZOOM).toFixed(1)}×`;
-  if (cameraZoom) cameraZoom.disabled = !state.document || isPlaying() || state.saving || state.switching;
+  if (cameraZoom) cameraZoom.disabled = !state.document || isPlaying() || state.saving || state.switching ||
+    Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
   $("#player-settings-note").textContent = state.model === generic.MODEL
     ? "Generic Grid supports WASD and arrow-key movement. Camera zoom is saved with the current level."
     : "Camera zoom is saved with the current level; control mode remains a local browser preference.";
@@ -269,6 +383,18 @@ const selectedObjects = () => state.document?.objects.filter(object => state.sel
 const isSelectable = object => state.layers[object.layer].visible && !state.layers[object.layer].locked;
 const layerName = id => DESIGN_LAYERS.find(layer => layer.id === id).name;
 const mapBounds = () => state.document?.bounds ?? FLOOR1_BOUNDS;
+function levelBounds() {
+  if (!state.sections.length) return mapBounds();
+  const points = state.sections.map(section => {
+    const origin = sectionOrigin(section.gridX, section.gridY);
+    return { left: origin.x, top: origin.y,
+      right: origin.x + Math.max(2048, section.document.bounds.width),
+      bottom: origin.y + Math.max(2048, section.document.bounds.height) };
+  });
+  return { x: Math.min(...points.map(point => point.left)), y: Math.min(...points.map(point => point.top)),
+    width: Math.max(...points.map(point => point.right)) - Math.min(...points.map(point => point.left)),
+    height: Math.max(...points.map(point => point.bottom)) - Math.min(...points.map(point => point.top)) };
+}
 
 function setSelection(ids, preferredId = null) {
   const available = new Set(state.document?.objects.map(object => object.id) ?? []);
@@ -321,6 +447,14 @@ function updateMapSettings() {
   }
   const next = { width: Number(draft.width), height: Number(draft.height) };
   const message = $("#map-size-error");
+  if (state.sections.length > 1) {
+    message.textContent = "Section dimensions are fixed; use Add Section to expand this level.";
+    width.disabled = true;
+    height.disabled = true;
+    $("#apply-map-size").disabled = true;
+    $("#cancel-map-size").disabled = true;
+    return;
+  }
   const valid = [next.width, next.height].every((value, index) =>
     Number.isInteger(value) && value >= [bounds.width, bounds.height][index] &&
     value <= RUNTIME_MAX_MAP_DIMENSION && value % RUNTIME_MAP_CELL_SIZE === 0);
@@ -360,27 +494,59 @@ function cancelMapSizeDraft() {
   updateMapSettings();
 }
 
+const activeSection = () => state.sections.find(section => section.sectionId === state.activeSectionId) ?? null;
+const sectionDocuments = () => state.sections.map(section => section.document);
+function boundarySections() {
+  return state.sections.map(({ gridX, gridY, document }) => ({ gridX, gridY, document }));
+}
+function levelBoundary() {
+  const root = state.sections.find(section => section.mapId === state.identity.mapId) ?? state.sections[0];
+  return root?.document.playableBoundary ?? null;
+}
 function dirty() {
-  return JSON.stringify(state.document) !== state.savedJson;
+  return state.sections.length
+    ? state.sections.some(section => JSON.stringify(section.document) !== section.savedJson)
+    : JSON.stringify(state.document) !== state.savedJson;
 }
 
 function setStatus(message, isError = false) {
   const status = $("#status");
   status.textContent = message;
   status.classList.toggle("error", isError);
+  if (state.tool === "fill" || fillDiagnostics.applying) {
+    traceFill("status", { message, error: isError });
+  }
 }
 
 // ---------------------------------------------------------------- history
 
 function pushUndo(before) {
-  state.undo.push({ document: before, selection: [...state.selectedIds] });
+  const documents = state.sections.map(section => ({
+    sectionId: section.sectionId,
+    document: section.sectionId === state.activeSectionId ? before : section.document
+  }));
+  state.undo.push({ documents, selection: [...state.selectedIds], sectionId: state.activeSectionId });
   if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
   state.redo.length = 0;
+}
+
+function restoreHistory(entry) {
+  for (const saved of entry.documents ?? []) {
+    const section = state.sections.find(item => item.sectionId === saved.sectionId);
+    if (section) section.document = saved.document;
+  }
+  state.activeSectionId = entry.sectionId ?? state.activeSectionId;
+  state.document = activeSection()?.document ?? state.document;
+  setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
+    isSelectable(state.document.objects.find(object => object.id === id))));
+  state.scene.document = null;
+  refreshChrome();
 }
 
 /** Documents are never mutated in place, so history can keep references. */
 function commitDocument(next, before = state.document) {
   state.document = validateFloorDocument(next);
+  if (activeSection()) activeSection().document = state.document;
   pushUndo(before);
   refreshChrome();
 }
@@ -390,48 +556,53 @@ function replaceObject(document, id, patch) {
 }
 
 function undo() {
-  if (!state.undo.length || isPlaying()) return;
-  state.redo.push({ document: state.document, selection: [...state.selectedIds] });
+  if (!state.undo.length || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  state.redo.push({ documents: state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })),
+    selection: [...state.selectedIds], sectionId: state.activeSectionId });
   const entry = state.undo.pop();
-  state.document = entry.document;
-  setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
-    isSelectable(state.document.objects.find(object => object.id === id))));
-  refreshChrome();
+  restoreHistory(entry);
   setStatus("Undone.");
 }
 
 function redo() {
-  if (!state.redo.length || isPlaying()) return;
-  state.undo.push({ document: state.document, selection: [...state.selectedIds] });
+  if (!state.redo.length || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  state.undo.push({ documents: state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })),
+    selection: [...state.selectedIds], sectionId: state.activeSectionId });
   const entry = state.redo.pop();
-  state.document = entry.document;
-  setSelection(entry.selection.filter(id => state.document.objects.some(object => object.id === id) &&
-    isSelectable(state.document.objects.find(object => object.id === id))));
-  refreshChrome();
+  restoreHistory(entry);
   setStatus("Redone.");
 }
 
 // ---------------------------------------------------------------- chrome
 
 function refreshChrome({ structure = true } = {}) {
+  if (activeSection() && activeSection().document !== state.document) activeSection().document = state.document;
   const loaded = Boolean(state.document);
-  const isDirty = loaded && dirty();
+  const isDirty = loaded && (dirty() || !state.persisted);
   updatePlayerSettings();
   updateMapSettings();
   $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
   $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
-  $("#save").disabled = !loaded || !isDirty || isPlaying();
+  $("#save").disabled = !loaded || (!isDirty && state.persisted) || isPlaying() || Boolean(state.fillPreview);
   $("#save").disabled ||= state.saving;
   $("#open-game").disabled = isPlaying() || state.saving || state.switching || !state.artwork;
   $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
   $("#import-assets").disabled = !loaded || isPlaying() || state.saving || state.switching || state.creating;
-  $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork;
+  const pendingGesture = Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
+  for (const id of ["open-game", "new-game", "import-assets", "save"]) $(`#${id}`).disabled ||= pendingGesture;
+  $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork || pendingGesture;
+  $("#play").title = state.sections.length > 1
+    ? "Play all sections of this level (movement, camera and collision only)."
+    : pendingGesture ? "Apply or cancel the current edit before Play." : "Play this level.";
+  $("#play-limitation").hidden = state.sections.length <= 1;
   for (const id of ["save", "play", "open-game", "new-game", "import-assets"]) {
     $(`#${id}`).disabled ||= state.levelBusy || state.switching;
   }
-  const levelDisabled = !loaded || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy;
+  const levelDisabled = !loaded || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy || pendingGesture;
   $(".workspace").inert = state.switching || state.creating || state.levelBusy;
-  $("#asset-list").inert = state.switching || state.creating || state.levelBusy;
+  $(".hierarchy").inert = Boolean(state.fillPreview || state.boundaryDraft);
+  $(".inspector").inert = Boolean(state.fillPreview || state.boundaryDraft);
+  $("#asset-list").inert = state.switching || state.creating || state.levelBusy || Boolean(state.fillPreview || state.boundaryDraft);
   for (const action of ["add", "duplicate", "rename", "start", "delete"]) {
     $(`#level-${action}`).disabled = levelDisabled ||
       (action === "start" && state.startingMapId === state.identity.mapId) ||
@@ -439,20 +610,67 @@ function refreshChrome({ structure = true } = {}) {
   }
   $("#level-select").disabled = levelDisabled;
   $("#level-recovery").inert = levelDisabled;
-  $("#undo").disabled = state.undo.length === 0 || isPlaying();
-  $("#redo").disabled = state.redo.length === 0 || isPlaying();
+  $("#undo").disabled = state.undo.length === 0 || isPlaying() || pendingGesture;
+  $("#redo").disabled = state.redo.length === 0 || isPlaying() || pendingGesture;
   $("#duplicate-selection").disabled = !loaded || !selectedObjects().length || isPlaying() ||
-    state.saving || state.switching || state.creating || state.levelBusy;
+    state.saving || state.switching || state.creating || state.levelBusy || pendingGesture;
   $("#clear-level-contents").disabled = !loaded || isPlaying() || state.saving ||
-    state.switching || state.creating || state.levelBusy;
+    state.switching || state.creating || state.levelBusy || pendingGesture;
   $("#zoom-label").textContent = `${Math.round(state.zoom * 100)}%`;
-  $("#select-tool").classList.toggle("active", state.tool === "select");
-  $("#place-tool").classList.toggle("active", state.tool === "place");
-  $("#place-tool").disabled = !state.placeAssetId;
-  $("#place-asset-label").textContent = state.placeAssetId ? ASSET_CATALOG[state.placeAssetId].label : "—";
+  $("#editor-tool").value = state.tool;
+  canvas.dataset.tool = state.tool;
+  $("#editor-tool").disabled = levelDisabled;
+  $("#tool-settings").hidden = state.tool === "select";
+  $("#paint-options").hidden = state.tool !== "paint";
+  $("#fill-actions").hidden = state.tool !== "fill";
+  $("#fill-options").hidden = state.tool !== "fill";
+  $("#boundary-options").hidden = state.tool !== "boundary";
+  $("#boundary-mode").value = state.boundaryMode;
+  $("#boundary-mode").disabled = levelDisabled || pendingGesture;
+  const asset = ASSET_CATALOG[state.placeAssetId];
+  const terrainTool = isTerrainBrushAsset(asset);
+  const targetLayer = asset && state.layers[OBJECT_TYPES[asset.type].layer];
+  if (state.tool === "paint") refreshPaintSettings(asset, levelDisabled || Boolean(state.pointerMode));
+  refreshFillSettings(asset);
+  $("#tool-hint").textContent = state.fillPreview
+    ? state.fillPreview.error ? `Fill preview rejected: ${state.fillPreview.error}. Cancel to try again.`
+      : fillSummary(state.fillPreview.plan)
+    : state.tool === "boundary"
+      ? "Drag a grid area or draw a lasso polygon. The preview shows the playable cells; Apply or Cancel before editing."
+    : !asset ? state.tool === "fill" ? "Choose a fill asset from the palette" : "Choose an asset from the palette."
+    : state.tool === "fill" && !isRepeatableAsset(asset) ? "Rectangle Fill repeats static terrain, walls and props only; not spawns or unique gameplay objects."
+    : (terrainTool || state.tool === "fill") && (!targetLayer.visible || targetLayer.locked)
+      ? `${asset.label}: Target layer is ${targetLayer.locked ? "locked. Unlock" : "hidden. Show"} it in Layers before painting or filling.`
+    : `${asset.label}: ${state.tool === "fill" ? "Drag a rectangle, then Apply or Cancel."
+      : terrainTool ? "Drag to paint terrain cells." : "Click to place; drag from the palette to position."}`;
+  $("#fill-apply").disabled = !state.fillPreview || state.fillPreview.error || state.saving || isPlaying();
+  $("#fill-cancel").disabled = state.tool !== "fill" || state.saving || isPlaying();
+  if (state.tool === "fill" || !$("#fill-diagnostics").hidden) {
+    const enabled = !$("#fill-apply").disabled;
+    if (fillDiagnostics.lastApplyEnabled !== enabled) {
+      fillDiagnostics.lastApplyEnabled = enabled;
+      traceFill("apply-enabled-state", { enabled, previewError: state.fillPreview?.error ?? null });
+    } else updateFillDiagnostics();
+  }
+  $("#boundary-apply").disabled = !state.boundaryDraft || state.boundaryDraft.error || state.saving || isPlaying();
+  $("#boundary-cancel").disabled = !state.boundaryDraft || state.saving || isPlaying();
+  $("#boundary-reset").disabled = !levelBoundary() || pendingGesture || levelDisabled;
+  $("#boundary-status").textContent = state.boundaryDraft
+    ? state.boundaryDraft.error
+      ? `Preview rejected: ${state.boundaryDraft.error}`
+      : `${state.boundaryDraft.cells.size} playable grid cell(s) previewed. Apply or Cancel.`
+    : levelBoundary() ? "Custom boundary is active; Reset restores the section union."
+      : "Default boundary is the union of existing sections.";
+  $("#section-select").disabled = levelDisabled;
+  $("#section-add").disabled = levelDisabled || !state.persisted || state.sections.length >= 16;
+  $("#section-add").title = !state.persisted ? "Save this initial level before adding sections."
+    : state.sections.length >= 16 ? "This level reached the 16-section limit." : "Choose a side of the selected section.";
+  $("#section-cancel").disabled = levelDisabled;
+  updateSectionPicker(levelDisabled);
   canvas.classList.toggle("selecting", state.tool === "select");
+  canvas.classList.toggle("boundary-tool", state.tool === "boundary");
   for (const card of $("#asset-list").querySelectorAll(".asset-card")) {
-    card.classList.toggle("active", state.tool === "place" && card.dataset.assetId === state.placeAssetId);
+    card.classList.toggle("active", state.tool !== "select" && card.dataset.assetId === state.placeAssetId);
   }
   if (loaded) {
     updateInspector();
@@ -531,12 +749,16 @@ function updateHierarchy() {
   const objects = state.document.objects;
   const unresolved = objects.filter(isUnresolvedCollision);
   const selectionKey = [...state.selectedIds].sort().join(",");
-  const key = `${objects.length}|${objects.map(object => object.id).join(",").length}|${selectionKey}|` +
+  const key = `${state.activeSectionId}|${objects.length}|${objects.map(object => object.id).join(",").length}|${selectionKey}|` +
     `${unresolved.map(object => object.id).join(",")}|` +
     `${JSON.stringify(state.layers)}|${[...state.openGroups].join(",")}|${state.undo.length}|${state.redo.length}`;
   if (key === state.hierarchyKey) return;
   state.hierarchyKey = key;
   $("#object-count").textContent = String(objects.length);
+  if (activeSection()) {
+    $("#section-summary").textContent = `${state.sections.length} section(s) in this level` +
+      (state.sections.length >= 16 ? " · maximum 16 sections reached" : "");
+  }
   const tree = $("#object-tree");
   const scrollTop = tree.scrollTop;
   const groups = DESIGN_LAYERS.map(layer => {
@@ -568,6 +790,8 @@ function updateHierarchy() {
         item.type = "button";
         item.className = `tree-item${state.selectedIds.has(object.id) ? " selected" : ""}`;
         item.dataset.objectId = object.id;
+        item.dataset.sectionId = state.activeSectionId ?? "";
+        item.dataset.identity = `${state.activeSectionId ?? ""}/${object.id}`;
         item.setAttribute("role", "treeitem");
         item.disabled = !isSelectable(object);
         const unresolvedItem = isUnresolvedCollision(object);
@@ -781,13 +1005,15 @@ function revealSelection(id = state.selectedId) {
     const object = state.document.objects.find(item => item.id === id);
     if (!object) return;
     const bounds = objectBounds(object);
+    const origin = activeSection() ? sectionOrigin(activeSection().gridX, activeSection().gridY) : { x: 0, y: 0 };
+    const worldBounds = { x: bounds.x + origin.x, y: bounds.y + origin.y };
     const visibleWidth = state.viewportWidth / state.zoom;
     const visibleHeight = state.viewportHeight / state.zoom;
-    if (bounds.x < state.cameraX || bounds.y < state.cameraY ||
-        bounds.x + bounds.width > state.cameraX + visibleWidth ||
-        bounds.y + bounds.height > state.cameraY + visibleHeight) {
-      state.cameraX = bounds.x + bounds.width / 2 - visibleWidth / 2;
-      state.cameraY = bounds.y + bounds.height / 2 - visibleHeight / 2;
+    if (worldBounds.x < state.cameraX || worldBounds.y < state.cameraY ||
+        worldBounds.x + bounds.width > state.cameraX + visibleWidth ||
+        worldBounds.y + bounds.height > state.cameraY + visibleHeight) {
+      state.cameraX = worldBounds.x + bounds.width / 2 - visibleWidth / 2;
+      state.cameraY = worldBounds.y + bounds.height / 2 - visibleHeight / 2;
     }
   }
 }
@@ -800,8 +1026,15 @@ function selectObject(id, { reveal = false } = {}) {
 }
 
 function setTool(tool) {
-  state.tool = tool === "place" && state.placeAssetId ? "place" : "select";
-  if (state.tool === "select") state.preview = null;
+  if (tool === "fill" || state.tool === "fill") traceFill("tool-request", { requested: tool });
+  if ((state.fillPreview || state.boundaryDraft || ["brush", "fill", "boundary-grid", "boundary-polygon"].includes(state.pointerMode)) &&
+      tool !== state.tool) {
+    setStatus("Apply or cancel the pending tool preview before changing tools.", true);
+    return;
+  }
+  state.tool = ["paint", "fill", "boundary"].includes(tool) ? tool : "select";
+  state.paintCursor = null;
+  state.preview = null;
   refreshChrome({ structure: false });
 }
 
@@ -811,26 +1044,108 @@ function visibleLayers() {
   return Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id, state.layers[layer.id].visible]));
 }
 
-function sceneCanvas() {
+function sceneCanvas(design = state.document, section = activeSection()) {
   const visible = visibleLayers();
   const key = JSON.stringify(visible);
-  const scene = state.scene;
-  if (scene.document === state.document && scene.key === key && scene.canvas) return scene.canvas;
+  const scene = section ? (section.scene ??= { document: null, key: "", canvas: null }) : state.scene;
+  if (scene.document === design && scene.key === key && scene.canvas) return scene.canvas;
   if (!scene.canvas) {
     scene.canvas = document.createElement("canvas");
   }
-  scene.canvas.width = mapBounds().width;
-  scene.canvas.height = mapBounds().height;
+  scene.canvas.width = design.bounds.width;
+  scene.canvas.height = design.bounds.height;
   const sceneContext = scene.canvas.getContext("2d", { alpha: false });
   sceneContext.imageSmoothingEnabled = false;
-  drawDesign(sceneContext, state.artwork, state.document, {
-    grid: floorDocumentGrid(state.document),
+  drawDesign(sceneContext, state.artwork, design, {
+    grid: floorDocumentGrid(design),
     mode: "editor",
-    visible
+    visible,
+    decorations: design.objects.length > 0
   });
-  scene.document = state.document;
+  scene.document = design;
   scene.key = key;
+  if (state.tool === "fill" || fillDiagnostics.applying) fillDiagnostics.sceneBuilds++;
   return scene.canvas;
+}
+
+function drawBoundaryCells(cells, fillStyle) {
+  const rows = new Map();
+  for (const key of cells) {
+    const [x, y] = key.split(",").map(Number);
+    if (!rows.has(y)) rows.set(y, []);
+    rows.get(y).push(x);
+  }
+  context.fillStyle = fillStyle;
+  for (const [y, values] of rows) {
+    values.sort((left, right) => left - right);
+    let start = values[0];
+    let previous = start;
+    for (let index = 1; index <= values.length; index += 1) {
+      const current = values[index];
+      if (current !== previous + 1) {
+        context.fillRect(start * CELL, y * CELL, (previous - start + 1) * CELL, CELL);
+        start = current;
+      }
+      previous = current;
+    }
+  }
+}
+
+function drawBoundaryEdges(cells, color) {
+  context.save();
+  context.strokeStyle = color;
+  context.lineWidth = 2 / state.zoom;
+  context.beginPath();
+  for (const edge of boundaryEdges(cells)) {
+    context.moveTo(edge.x1 * CELL, edge.y1 * CELL);
+    context.lineTo(edge.x2 * CELL, edge.y2 * CELL);
+  }
+  context.stroke();
+  context.restore();
+}
+
+function drawBoundaryOverlay() {
+  if (!state.sections.length || (state.tool !== "boundary" && !levelBoundary())) return;
+  const sections = boundarySections();
+  const current = levelBoundary()
+    ? playableBoundaryCells(levelBoundary(), sections) : defaultBoundaryCells(sections);
+  if (state.tool === "boundary") drawBoundaryCells(current, "#60d6a11c");
+  drawBoundaryEdges(current, "#66d6a1cc");
+  if (state.tool !== "boundary") return;
+  const draft = state.boundaryDraft;
+  if (draft?.cells?.size) {
+    drawBoundaryCells(draft.cells, draft.error ? "#ff586044" : "#51c8ff55");
+    if (!draft.error) drawBoundaryEdges(draft.cells, "#7bd8ff");
+  }
+  const points = draft?.points ?? (state.pointerMode === "boundary-polygon" ? state.pointerStart.points : null);
+  if (points?.length) {
+    context.save();
+    context.strokeStyle = draft?.error ? "#ff6670" : "#b8ecff";
+    context.lineWidth = 2 / state.zoom;
+    context.setLineDash([6 / state.zoom, 4 / state.zoom]);
+    context.beginPath();
+    points.forEach(([x, y], index) => {
+      if (!index) context.moveTo(x * CELL, y * CELL);
+      else context.lineTo(x * CELL, y * CELL);
+    });
+    if (draft?.boundary) context.closePath();
+    context.stroke();
+    context.restore();
+  }
+  if (state.pointerMode === "boundary-grid") {
+    const { start, current: end } = state.pointerStart;
+    const left = Math.min(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    context.save();
+    context.fillStyle = "#51c8ff44";
+    context.strokeStyle = "#7bd8ff";
+    context.lineWidth = 2 / state.zoom;
+    context.fillRect(left * CELL, top * CELL,
+      (Math.abs(end.x - start.x) + 1) * CELL, (Math.abs(end.y - start.y) + 1) * CELL);
+    context.strokeRect(left * CELL, top * CELL,
+      (Math.abs(end.x - start.x) + 1) * CELL, (Math.abs(end.y - start.y) + 1) * CELL);
+    context.restore();
+  }
 }
 
 function drawMap() {
@@ -841,40 +1156,56 @@ function drawMap() {
   const scale = state.pixelRatio * state.zoom;
   context.setTransform(scale, 0, 0, scale, -state.cameraX * scale, -state.cameraY * scale);
   context.imageSmoothingEnabled = false;
-  context.drawImage(sceneCanvas(), 0, 0);
-  const line = 1 / state.zoom;
-  if (state.showGrid) {
-    context.save();
-    context.strokeStyle = "#d4e4f21b";
-    context.lineWidth = line;
-    context.beginPath();
-    for (let x = 0; x <= mapBounds().width; x += CELL) {
-      context.moveTo(x, 0);
-      context.lineTo(x, mapBounds().height);
+  const sections = state.sections.length ? state.sections : [{
+    gridX: 0, gridY: 0, document: state.document, sectionId: state.activeSectionId
+  }];
+  for (const section of sections) {
+    const origin = sectionOrigin(section.gridX, section.gridY);
+    const visibleWidth = state.viewportWidth / state.zoom;
+    const visibleHeight = state.viewportHeight / state.zoom;
+    if (origin.x + 2048 < state.cameraX || origin.y + 2048 < state.cameraY ||
+        origin.x > state.cameraX + visibleWidth || origin.y > state.cameraY + visibleHeight) continue;
+    context.drawImage(sceneCanvas(section.document, section), origin.x, origin.y);
+    context.strokeStyle = "#ffd16688";
+    context.lineWidth = 2 / state.zoom;
+    context.strokeRect(origin.x, origin.y, Math.max(2048, section.document.bounds.width),
+      Math.max(2048, section.document.bounds.height));
+    if (state.showGrid) {
+      context.save();
+      context.strokeStyle = "#d4e4f21b";
+      context.lineWidth = 1 / state.zoom;
+      context.beginPath();
+      for (let x = 0; x <= section.document.bounds.width; x += CELL) {
+        context.moveTo(origin.x + x, origin.y);
+        context.lineTo(origin.x + x, origin.y + section.document.bounds.height);
+      }
+      for (let y = 0; y <= section.document.bounds.height; y += CELL) {
+        context.moveTo(origin.x, origin.y + y);
+        context.lineTo(origin.x + section.document.bounds.width, origin.y + y);
+      }
+      context.stroke();
+      context.restore();
     }
-    for (let y = 0; y <= mapBounds().height; y += CELL) {
-      context.moveTo(0, y);
-      context.lineTo(mapBounds().width, y);
-    }
-    context.stroke();
-    context.restore();
   }
+  drawBoundaryOverlay();
+  const line = 1 / state.zoom;
+  const activeOrigin = activeSection() ? sectionOrigin(activeSection().gridX, activeSection().gridY) : { x: 0, y: 0 };
   for (const selected of selectedObjects()) {
     const bounds = objectBounds(selected);
     context.save();
     context.strokeStyle = "#ffcc55";
     context.lineWidth = 2 * line;
-    context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    context.strokeRect(activeOrigin.x + bounds.x, activeOrigin.y + bounds.y, bounds.width, bounds.height);
     const rect = collisionRect(selected);
     if (rect) {
       context.strokeStyle = "#59d8ff";
       context.setLineDash([3 * line, 2 * line]);
       context.lineWidth = line;
-      context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      context.strokeRect(activeOrigin.x + rect.x, activeOrigin.y + rect.y, rect.width, rect.height);
     }
     context.setLineDash([]);
     context.fillStyle = "#ffcc55";
-    context.fillRect(selected.transform.x - 2 * line, selected.transform.y - 2 * line, 4 * line, 4 * line);
+    context.fillRect(activeOrigin.x + selected.transform.x - 2 * line, activeOrigin.y + selected.transform.y - 2 * line, 4 * line, 4 * line);
     context.restore();
   }
   if (state.pointerMode === "marquee" && state.pointerStart) {
@@ -892,7 +1223,9 @@ function drawMap() {
   }
   const preview = state.preview;
   if (preview) {
-    const bounds = drawAsset(context, state.artwork, preview.assetId, preview.transform, { alpha: 0.65 });
+    const bounds = drawAsset(context, state.artwork, preview.assetId, {
+      x: activeOrigin.x + preview.transform.x, y: activeOrigin.y + preview.transform.y
+    }, { alpha: 0.65 });
     context.save();
     context.strokeStyle = preview.problem ? "#ff6670" : "#7dffa8";
     context.lineWidth = 2 * line;
@@ -900,23 +1233,99 @@ function drawMap() {
     context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
     context.restore();
   }
+  const terrainPreview = state.pointerStart?.mode === "brush" ? state.pointerStart.stroke?.cells
+    : state.fillPreview?.rectangle ? null : null;
+  if (terrainPreview?.size) {
+    context.save();
+    context.fillStyle = state.pointerStart.stroke.error ? "#ff667060" : "#66ccff60";
+    context.strokeStyle = state.pointerStart.stroke.error ? "#ff6670" : "#66ccff";
+    context.lineWidth = line;
+    for (const cell of terrainPreview.values()) {
+      context.fillRect(cell.x, cell.y, 32, 32);
+      context.strokeRect(cell.x, cell.y, 32, 32);
+    }
+    context.restore();
+  }
+  canvas.dataset.paintFootprint = "";
+  if (state.tool === "paint" && state.paintCursor && !state.paletteDrag &&
+      (!state.pointerMode || state.pointerMode === "brush") &&
+      isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
+    const footprint = terrainBrushFootprint(state.paintCursor,
+      state.pointerStart?.stroke?.brushSize ?? state.paintBrushSize);
+    const problem = paintFootprintProblem(footprint) ?? state.pointerStart?.stroke?.error;
+    context.save();
+    context.fillStyle = problem ? "#ff667030" : "#7dffa824";
+    context.strokeStyle = problem ? "#ff6670" : "#7dffa8";
+    context.lineWidth = line;
+    context.fillRect(footprint.x, footprint.y, footprint.width, footprint.height);
+    for (let y = footprint.y; y < footprint.y + footprint.height; y += CELL) {
+      for (let x = footprint.x; x < footprint.x + footprint.width; x += CELL) {
+        context.strokeRect(x, y, CELL, CELL);
+      }
+    }
+    context.lineWidth = 2 * line;
+    context.strokeRect(footprint.x, footprint.y, footprint.width, footprint.height);
+    context.restore();
+    canvas.dataset.paintFootprint = JSON.stringify({ ...footprint, problem: problem ?? null });
+  }
+  const rectangle = state.pointerStart?.mode === "fill" ? state.pointerStart.rectangle : state.fillPreview?.rectangle;
+  if (rectangle) {
+    context.save();
+    const invalid = state.pointerStart?.error ?? state.fillPreview?.error;
+    context.fillStyle = invalid ? "#ff667060" : "#66ccff50";
+    context.strokeStyle = invalid ? "#ff6670" : "#66ccff";
+    context.lineWidth = 2 * line;
+    context.fillRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+    context.strokeRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+    for (const placement of state.fillPreview?.plan?.placements ?? []) {
+      context.strokeStyle = placement.border ? "#ffcc55" : "#66ccff";
+      context.strokeRect(placement.x, placement.y, placement.width, placement.height);
+    }
+    context.restore();
+  }
   const counts = layerCounts();
   canvas.dataset.cameraX = String(state.cameraX);
   canvas.dataset.cameraY = String(state.cameraY);
   canvas.dataset.zoom = String(state.zoom);
-  canvas.dataset.objectCount = String(state.document.objects.length);
-  canvas.dataset.wallCount = String(state.document.objects.filter(object => object.type === "wall").length);
+  const allObjects = sections.flatMap(section => section.document.objects);
+  canvas.dataset.objectCount = String(allObjects.length);
+  canvas.dataset.wallCount = String(allObjects.filter(object => object.type === "wall").length);
   canvas.dataset.layerCounts = JSON.stringify(counts);
   canvas.dataset.selectedId = state.selectedId ?? "";
   canvas.dataset.selectedIds = JSON.stringify([...state.selectedIds]);
+  canvas.dataset.selectedIdentity = state.selectedId && activeSection()
+    ? `${activeSection().sectionId}/${state.selectedId}` : "";
   canvas.dataset.selectionCount = String(state.selectedIds.size);
   canvas.dataset.tool = state.tool;
   canvas.dataset.preview = preview ? `${preview.assetId}@${preview.transform.x},${preview.transform.y}${preview.problem ? ":invalid" : ""}` : "";
 }
 
 function render() {
-  if (!state.artwork || !state.document || isPlaying()) return;
-  drawMap();
+  const observingFill = state.tool === "fill" || fillDiagnostics.applying;
+  if (!state.artwork || !state.document || isPlaying()) {
+    if (observingFill) {
+      fillDiagnostics.lastRedraw = { result: "skipped", artwork: Boolean(state.artwork),
+        document: Boolean(state.document), play: state.play.phase };
+      updateFillDiagnostics();
+    }
+    return;
+  }
+  try {
+    drawMap();
+    if (observingFill) {
+      fillDiagnostics.lastRedraw = { result: "completed", n: ++fillDiagnostics.redraws,
+        at: new Date().toISOString(), sceneBuilds: fillDiagnostics.sceneBuilds,
+        documents: fillDiagnosticDocuments(), canvasCounts: canvas.dataset.layerCounts,
+        camera: [state.cameraX, state.cameraY, state.zoom], viewport: [canvas.width, canvas.height] };
+      updateFillDiagnostics();
+    }
+  } catch (error) {
+    if (observingFill) {
+      fillDiagnostics.lastRedraw = { result: "failed", error: error.message };
+      traceFill("redraw-error", { error: error.message });
+    }
+    throw error;
+  }
 }
 
 function resize() {
@@ -930,8 +1339,9 @@ function resize() {
 }
 
 function centerCamera() {
-  state.cameraX = (mapBounds().width - state.viewportWidth / state.zoom) / 2;
-  state.cameraY = (mapBounds().height - state.viewportHeight / state.zoom) / 2;
+  const bounds = levelBounds();
+  state.cameraX = bounds.x + (bounds.width - state.viewportWidth / state.zoom) / 2;
+  state.cameraY = bounds.y + (bounds.height - state.viewportHeight / state.zoom) / 2;
 }
 
 function setZoom(nextZoom, anchorX = state.viewportWidth / 2, anchorY = state.viewportHeight / 2) {
@@ -955,6 +1365,94 @@ function overCanvas(clientX, clientY) {
   if (editorView.hidden) return false;
   const rect = canvas.getBoundingClientRect();
   return clientX >= rect.left && clientX < rect.right && clientY >= rect.top && clientY < rect.bottom;
+}
+
+function simplifyBoundaryPoints(points) {
+  const result = [];
+  for (const point of points) {
+    if (result.length && result.at(-1)[0] === point[0] && result.at(-1)[1] === point[1]) continue;
+    while (result.length >= 2) {
+      const a = result.at(-2);
+      const b = result.at(-1);
+      const cross = (BigInt(b[0]) - BigInt(a[0])) * (BigInt(point[1]) - BigInt(b[1])) -
+        (BigInt(b[1]) - BigInt(a[1])) * (BigInt(point[0]) - BigInt(b[0]));
+      if (cross !== 0n) break;
+      result.pop();
+    }
+    result.push(point);
+  }
+  if (result.length > 1 && result[0][0] === result.at(-1)[0] && result[0][1] === result.at(-1)[1]) result.pop();
+  return result;
+}
+
+function boundaryPreviewFromGesture(gesture) {
+  const sections = boundarySections();
+  try {
+    const result = gesture.mode === "boundary-grid"
+      ? createGridRectangleBoundary(gesture.start, gesture.current, sections)
+      : createPolygonBoundary(simplifyBoundaryPoints(gesture.points), sections);
+    state.boundaryDraft = { ...result, type: gesture.mode, points: gesture.points,
+      before: state.sections.map(({ sectionId, document }) => ({ sectionId, document })) };
+  } catch (error) {
+    state.boundaryDraft = { boundary: null, cells: new Set(), type: gesture.mode,
+      points: gesture.points ?? null, error: error.message };
+  }
+  refreshChrome({ structure: false });
+  render();
+}
+
+function applyBoundary() {
+  const draft = state.boundaryDraft;
+  if (!draft || isPlaying() || state.saving) return;
+  try {
+    if (draft.error || !draft.boundary) throw new Error(draft.error ?? "Draw a valid playable boundary before applying.");
+    if (draft.before && (draft.before.length !== state.sections.length ||
+        draft.before.some(saved => state.sections.find(section => section.sectionId === saved.sectionId)?.document !== saved.document))) {
+      throw new Error("The level changed after this gesture began. Cancel and preview again.");
+    }
+    const root = state.sections.find(section => section.mapId === state.identity.mapId);
+    if (!root) throw new Error("The level boundary owner is missing from its section set.");
+    validatePlayableBoundaryForSections(draft.boundary, boundarySections());
+    const next = validateFloorDocument({ ...root.document, playableBoundary: draft.boundary });
+    const changed = JSON.stringify(root.document.playableBoundary ?? null) !== JSON.stringify(next.playableBoundary);
+    commitToolPreview(changed ? [{ sectionId: root.sectionId, document: next }] : [],
+      state.sections.map(({ sectionId, document }) => ({ sectionId, document })));
+    setStatus(changed ? "Playable boundary applied as one undoable edit. Save the level to persist it."
+      : "Playable boundary unchanged; no history entry was added.");
+  } catch (error) {
+    draft.error = error.message;
+    setStatus(`Playable boundary rejected: ${error.message}. No changes were applied.`, true);
+    refreshAfterOperation();
+  }
+}
+
+function resetBoundary() {
+  if (state.boundaryDraft || isPlaying() || state.saving) return;
+  const root = state.sections.find(section => section.mapId === state.identity.mapId) ?? state.sections[0];
+  if (!root?.document.playableBoundary) {
+    setStatus("The default section boundary is already active.");
+    return;
+  }
+  const { playableBoundary: _removed, ...document } = root.document;
+  const next = validateFloorDocument(document);
+  pushSectionUndo(state.sections.map(section => ({ sectionId: section.sectionId, document: section.document })));
+  root.document = next;
+  state.document = activeSection()?.document ?? state.document;
+  state.boundaryDraft = null;
+  state.scene.document = null;
+  refreshChrome();
+  setStatus("Reset to the union of existing sections as one undoable edit. Save the level to persist it.");
+}
+
+function cancelBoundaryPreview() {
+  state.boundaryDraft = null;
+  if (["boundary-grid", "boundary-polygon"].includes(state.pointerMode)) {
+    state.pointerMode = null;
+    state.pointerStart = null;
+  }
+  refreshChrome();
+  render();
+  setStatus("Playable boundary preview cancelled; no changes were made.");
 }
 
 // ---------------------------------------------------------------- placement
@@ -989,6 +1487,14 @@ function previewAt(assetId, point) {
   return { assetId, transform, problem: placementProblem(assetId, transform) };
 }
 
+function previewAtWorld(assetId, point) {
+  const local = worldToSection(point.x, point.y);
+  const section = state.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
+  if (!section) return null;
+  activateSection(section);
+  return previewAt(assetId, { x: local.x, y: local.y });
+}
+
 function nextObjectId(assetId) {
   const ids = new Set(state.document.objects.map(object => object.id));
   let number = 1;
@@ -1016,11 +1522,17 @@ function placeFromPreview(preview) {
 }
 
 function armPlace(assetId) {
+  if (state.tool === "fill") traceFill("asset-request", { requested: assetId });
+  if (state.fillPreview || state.boundaryDraft || state.pointerMode) {
+    setStatus("Finish or cancel the current edit before changing assets.", true);
+    return;
+  }
   state.placeAssetId = assetId;
-  state.tool = "place";
+  state.paintCursor = null;
+  if (state.tool !== "fill") state.tool = "paint";
   state.preview = null;
   const asset = ASSET_CATALOG[assetId];
-  setStatus(`Place ${asset.label}: click the map (Esc to cancel).` +
+  setStatus(`${state.tool === "fill" ? "Rectangle Fill" : "Paint"}: ${asset.label} (Esc to select).` +
     (asset.play === "editor-only" ? " Editor only — no gameplay yet." : ""));
   refreshChrome({ structure: false });
   canvas.focus();
@@ -1216,7 +1728,8 @@ function duplicateSelection() {
 }
 
 function clearCategoryCounts(category) {
-  const objects = state.document?.objects.filter(object => object.type === category.type) ?? [];
+  const objects = state.sections.flatMap(section => section.document.objects)
+    .filter(object => object.type === category.type);
   return {
     affected: objects.filter(object => !state.layers[object.layer].locked).length,
     skipped: objects.filter(object => state.layers[object.layer].locked).length
@@ -1277,23 +1790,28 @@ function clearLevelContents() {
     .map(input => input.dataset.clearCategory));
   const types = new Set(CLEAR_CATEGORIES.filter(category => categories.has(category.id)).map(category => category.type));
   if (!types.size) return;
-  const removed = state.document.objects.filter(object =>
-    types.has(object.type) && !state.layers[object.layer].locked);
-  const skipped = state.document.objects.filter(object =>
-    types.has(object.type) && state.layers[object.layer].locked).length;
+  const before = state.sections.map(section => ({ sectionId: section.sectionId, document: section.document }));
+  const objects = state.sections.flatMap(section => section.document.objects);
+  const removed = objects.filter(object => types.has(object.type) && !state.layers[object.layer].locked);
+  const skipped = objects.filter(object => types.has(object.type) && state.layers[object.layer].locked).length;
   if (!removed.length) {
     $("#clear-contents-dialog").close();
     setStatus(`Nothing was removed; ${skipped} selected-category object${skipped === 1 ? " is" : "s are"} on locked layers.`);
     return;
   }
-  const removedIds = new Set(removed.map(object => object.id));
   try {
-    const next = validateFloorDocument({
-      ...state.document,
-      objects: state.document.objects.filter(object => !removedIds.has(object.id))
-    });
-    commitDocument(next);
-    setSelection([...state.selectedIds].filter(id => !removedIds.has(id)));
+    const removedCurrentIds = new Set(activeSection().document.objects
+      .filter(object => types.has(object.type) && !state.layers[object.layer].locked).map(object => object.id));
+    const updates = state.sections.map(section => ({
+      section,
+      document: validateFloorDocument({ ...section.document,
+        objects: section.document.objects.filter(object => !types.has(object.type) ||
+          state.layers[object.layer].locked) })
+    }));
+    pushSectionUndo(before);
+    for (const update of updates) update.section.document = update.document;
+    state.document = activeSection().document;
+    setSelection([...state.selectedIds].filter(id => !removedCurrentIds.has(id)));
     $("#clear-contents-dialog").close();
     refreshChrome();
     setStatus(`Cleared ${removed.length} object${removed.length === 1 ? "" : "s"} in one undoable edit; ` +
@@ -1304,9 +1822,11 @@ function clearLevelContents() {
 }
 
 function pointerDown(event) {
-  if (isPlaying() || !state.document) return;
+  if (state.tool === "fill") traceFillPointer(event, "canvas");
+  if (isPlaying() || !state.document || state.fillPreview || state.boundaryDraft) return;
   canvas.focus();
   if (event.button === 1 || (event.button === 0 && state.spaceDown)) {
+    state.paintCursor = null;
     state.pointerMode = "pan";
     state.pointerStart = { x: event.clientX, y: event.clientY, cameraX: state.cameraX, cameraY: state.cameraY };
     canvas.classList.add("panning");
@@ -1315,8 +1835,67 @@ function pointerDown(event) {
     return;
   }
   if (event.button !== 0) return;
-  const point = worldPointFromClient(event.clientX, event.clientY);
-  if (state.tool === "place" && state.placeAssetId) {
+  const worldPoint = worldPointFromClient(event.clientX, event.clientY);
+  if (state.tool === "boundary") {
+    if (state.boundaryMode === "polygon") {
+      const point = [Math.round(worldPoint.x / CELL), Math.round(worldPoint.y / CELL)];
+      state.pointerMode = "boundary-polygon";
+      state.pointerStart = { mode: "boundary-polygon", points: [point], tooComplex: false };
+    } else {
+      const cell = { x: Math.floor(worldPoint.x / CELL), y: Math.floor(worldPoint.y / CELL) };
+      state.pointerMode = "boundary-grid";
+      state.pointerStart = { mode: "boundary-grid", start: cell, current: cell };
+    }
+    state.boundaryDraft = null;
+    canvas.setPointerCapture(event.pointerId);
+    render();
+    event.preventDefault();
+    return;
+  }
+  let local;
+  try { local = worldToSection(worldPoint.x, worldPoint.y); }
+  catch (error) { setStatus(error.message, true); return; }
+  const section = state.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
+  if (!section) {
+    setStatus(`No section exists at (${local.gridX}, ${local.gridY}); add it with Add Section.`, true);
+    return;
+  }
+  activateSection(section);
+  const point = { x: local.x, y: local.y };
+  if (state.tool === "fill" || (state.tool === "paint" && isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId]))) {
+    const asset = ASSET_CATALOG[state.placeAssetId];
+    if (state.tool === "fill" ? !isRepeatableAsset(asset) : !isTerrainBrushAsset(asset)) {
+      setStatus(state.tool === "fill"
+        ? !asset ? "Choose a fill asset from the palette"
+          : "Choose static terrain, a wall or a prop; spawns and unique gameplay objects cannot repeat."
+        : "Choose a compatible 32 x 32 terrain tile in the palette first.", true);
+      return;
+    }
+    if (state.tool === "paint") {
+      state.paintCursor = worldPoint;
+      state.pointerMode = "brush";
+      state.pointerStart = { mode: "brush", assetId: state.placeAssetId,
+        before: state.sections.map(item => ({ sectionId: item.sectionId, document: item.document })),
+        stroke: { cells: new Map(), last: null, error: null, brushSize: state.paintBrushSize } };
+      extendTerrainStroke(state.pointerStart.stroke, worldPoint);
+      refreshChrome({ structure: false });
+    } else {
+      state.pointerMode = "fill";
+      state.pointerStart = { mode: "fill", assetId: state.placeAssetId, start: worldPoint,
+        before: state.sections.map(item => ({ sectionId: item.sectionId, document: item.document })) };
+      try { state.pointerStart.rectangle = currentFillRectangle(state.pointerStart, worldPoint); }
+      catch (error) { state.pointerStart.error = error.message; }
+    }
+    canvas.setPointerCapture(event.pointerId);
+    render();
+    event.preventDefault();
+    return;
+  }
+  if (state.tool === "paint") {
+    if (!state.placeAssetId) {
+      setStatus("Choose an asset in the palette before painting.", true);
+      return;
+    }
     placeFromPreview(previewAt(state.placeAssetId, point));
     state.preview = previewAt(state.placeAssetId, point);
     render();
@@ -1326,8 +1905,10 @@ function pointerDown(event) {
   if (!object) {
     state.pointerMode = "marquee";
     state.pointerStart = {
-      anchor: point,
-      current: point,
+      anchor: worldPoint,
+      current: worldPoint,
+      gridX: section.gridX,
+      gridY: section.gridY,
       baseSelection: event.shiftKey ? [...state.selectedIds] : [],
       moved: false
     };
@@ -1348,7 +1929,7 @@ function pointerDown(event) {
     setSelection(state.selectedIds, object.id);
   }
   state.pointerMode = "move";
-  state.pointerStart = { point, before: state.document, id: object.id, ids: [...state.selectedIds], error: null };
+  state.pointerStart = { point: worldPoint, before: state.document, id: object.id, ids: [...state.selectedIds], error: null };
   canvas.setPointerCapture(event.pointerId);
   refreshChrome();
 }
@@ -1361,8 +1942,54 @@ function pointerMove(event) {
     return;
   }
   const point = worldPointFromClient(event.clientX, event.clientY);
+  if (state.pointerMode === "boundary-grid") {
+    state.pointerStart.current = { x: Math.floor(point.x / CELL), y: Math.floor(point.y / CELL) };
+    render();
+    return;
+  }
+  if (state.pointerMode === "boundary-polygon") {
+    const gesture = state.pointerStart;
+    const next = [Math.round(point.x / CELL), Math.round(point.y / CELL)];
+    const points = gesture.points;
+    if (!points.length || points.at(-1)[0] !== next[0] || points.at(-1)[1] !== next[1]) {
+      while (points.length >= 2) {
+        const a = points.at(-2);
+        const b = points.at(-1);
+        const cross = (BigInt(b[0]) - BigInt(a[0])) * (BigInt(next[1]) - BigInt(b[1])) -
+          (BigInt(b[1]) - BigInt(a[1])) * (BigInt(next[0]) - BigInt(b[0]));
+        if (cross !== 0n) break;
+        points.pop();
+      }
+      if (points.length < 513) points.push(next);
+      else gesture.tooComplex = true;
+    }
+    render();
+    return;
+  }
+  if (state.pointerMode === "brush") {
+    state.paintCursor = point;
+    for (const sample of event.getCoalescedEvents?.() ?? []) {
+      extendTerrainStroke(state.pointerStart.stroke, worldPointFromClient(sample.clientX, sample.clientY));
+    }
+    extendTerrainStroke(state.pointerStart.stroke, point);
+    render();
+    return;
+  }
+  if (state.pointerMode === "fill") {
+    try { state.pointerStart.rectangle = currentFillRectangle(state.pointerStart, point); state.pointerStart.error = null; }
+    catch (error) { state.pointerStart.rectangle = null; state.pointerStart.error = error.message; }
+    render();
+    return;
+  }
   if (state.pointerMode === "move") {
     const start = state.pointerStart;
+    const position = worldToSection(point.x, point.y);
+    if (position.gridX !== activeSection().gridX || position.gridY !== activeSection().gridY) {
+      start.error = "Move rejected: objects must remain inside their owning section; cross-section moves are not supported.";
+      state.document = start.before;
+      refreshChrome({ structure: false });
+      return;
+    }
     const result = translatedDocument(start.before, start.ids,
       point.x - start.point.x, point.y - start.point.y, { snap: state.snap });
     start.error = result.error ?? null;
@@ -1373,13 +2000,19 @@ function pointerMove(event) {
   if (state.pointerMode === "marquee") {
     const start = state.pointerStart;
     start.current = point;
+    const position = worldToSection(point.x, point.y);
+    if (position.gridX !== start.gridX || position.gridY !== start.gridY) {
+      start.error = "Marquee selection is limited to one section.";
+      render();
+      return;
+    }
     start.moved ||= Math.hypot(point.x - start.anchor.x, point.y - start.anchor.y) > 2 / state.zoom;
     if (start.moved) {
       const rect = {
-        left: Math.min(start.anchor.x, point.x),
-        top: Math.min(start.anchor.y, point.y),
-        right: Math.max(start.anchor.x, point.x),
-        bottom: Math.max(start.anchor.y, point.y)
+        left: Math.min(start.anchor.x, point.x) - start.gridX * 2048,
+        top: Math.min(start.anchor.y, point.y) - start.gridY * 2048,
+        right: Math.max(start.anchor.x, point.x) - start.gridX * 2048,
+        bottom: Math.max(start.anchor.y, point.y) - start.gridY * 2048
       };
       const hits = state.document.objects.filter(object => {
         if (!isSelectable(object)) return false;
@@ -1392,14 +2025,57 @@ function pointerMove(event) {
     refreshChrome();
     return;
   }
-  if (state.tool === "place" && state.placeAssetId && !state.paletteDrag) {
-    state.preview = previewAt(state.placeAssetId, point);
+  if (state.tool === "paint" && state.placeAssetId && !isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId]) && !state.paletteDrag) {
+    state.preview = previewAtWorld(state.placeAssetId, point);
+    render();
+  } else if (state.tool === "paint" && !state.paletteDrag && isTerrainBrushAsset(ASSET_CATALOG[state.placeAssetId])) {
+    state.paintCursor = point;
     render();
   }
 }
 
-function pointerUp() {
+function pointerUp(event) {
+  if (state.tool === "fill" || state.pointerMode === "fill") {
+    if (event) traceFillPointer(event, "canvas");
+    else traceFill("canvas:pointerup", { synthetic: true });
+  }
   if (state.pointerMode === "pan") canvas.classList.remove("panning");
+  if (state.pointerMode === "boundary-grid") {
+    if (event) {
+      const point = worldPointFromClient(event.clientX, event.clientY);
+      state.pointerStart.current = { x: Math.floor(point.x / CELL), y: Math.floor(point.y / CELL) };
+    }
+    boundaryPreviewFromGesture(state.pointerStart);
+  } else if (state.pointerMode === "boundary-polygon") {
+    if (event) {
+      const point = worldPointFromClient(event.clientX, event.clientY);
+      const next = [Math.round(point.x / CELL), Math.round(point.y / CELL)];
+      const points = state.pointerStart.points;
+      if (points.at(-1)[0] !== next[0] || points.at(-1)[1] !== next[1]) points.push(next);
+    }
+    if (state.pointerStart.tooComplex) {
+      state.boundaryDraft = { boundary: null, cells: new Set(), type: "boundary-polygon",
+        points: state.pointerStart.points, error: "Polygon boundary exceeds 512 simplified points." };
+      refreshChrome({ structure: false });
+    } else boundaryPreviewFromGesture(state.pointerStart);
+  } else if (state.pointerMode === "brush") {
+    if (event) {
+      state.paintCursor = worldPointFromClient(event.clientX, event.clientY);
+      extendTerrainStroke(state.pointerStart.stroke, state.paintCursor);
+    }
+    finishTerrainStroke();
+  } else if (state.pointerMode === "fill") {
+    const point = event && worldPointFromClient(event.clientX, event.clientY);
+    if (point) {
+      state.pointerStart.end = point;
+      try { state.pointerStart.rectangle = currentFillRectangle(state.pointerStart, point); state.pointerStart.error = null; }
+      catch (error) { state.pointerStart.rectangle = null; state.pointerStart.error = error.message; }
+    }
+    state.fillPreview = state.pointerStart;
+    updateFillPreview();
+    if (state.fillPreview.error) setStatus(`Rectangle fill preview rejected: ${state.fillPreview.error}.`, true);
+    else setStatus(fillSummary(state.fillPreview.plan));
+  }
   if (state.pointerMode === "move") {
     const { before, id, error } = state.pointerStart;
     if (state.document !== before) {
@@ -1408,12 +2084,269 @@ function pointerUp() {
     } else if (error) {
       setStatus(error, true);
     }
-  } else if (state.pointerMode === "marquee" && !state.pointerStart.moved && !state.pointerStart.baseSelection.length) {
+  } else if (state.pointerMode === "marquee" && !state.pointerStart.error &&
+      !state.pointerStart.moved && !state.pointerStart.baseSelection.length) {
     setSelection([]);
   }
+  const marqueeError = state.pointerStart?.error;
   state.pointerMode = null;
   state.pointerStart = null;
+  if (marqueeError) setStatus(marqueeError, true);
   refreshChrome();
+  render();
+}
+
+function finishTerrainStroke() {
+  const gesture = state.pointerStart;
+  if (!gesture || gesture.mode !== "brush") return;
+  if (gesture.stroke.error) {
+    setStatus(`Terrain stroke rejected: ${gesture.stroke.error}. No sections changed.`, true);
+    return;
+  }
+  try {
+    const updates = planTerrainStroke(state.sections, gesture.stroke.cells.values(), {
+      assetId: gesture.assetId, assetCatalog: ASSET_CATALOG, layerState: state.layers.terrain,
+      createObject: createDesignObject, validate: validateFloorDocument
+    });
+    if (!updates.length) {
+      setStatus("Terrain stroke unchanged (identical cells).");
+      return;
+    }
+    pushSectionUndo(gesture.before);
+    for (const update of updates) {
+      const section = state.sections.find(item => item.sectionId === update.sectionId);
+      section.document = update.document;
+    }
+    state.document = activeSection().document;
+    refreshChrome();
+    setStatus(`Terrain stroke applied to ${updates.length} section(s). Undo with Ctrl+Z.`);
+  } catch (error) {
+    setStatus(`Terrain stroke rejected: ${error.message}. No sections changed.`, true);
+  }
+}
+
+function paintFootprintProblem(footprint) {
+  if (state.layers.terrain.locked || !state.layers.terrain.visible) {
+    return `Terrain is ${state.layers.terrain.locked ? "locked; unlock it" : "hidden; show it"} before painting.`;
+  }
+  for (let y = footprint.y; y < footprint.y + footprint.height; y += CELL) {
+    for (let x = footprint.x; x < footprint.x + footprint.width; x += CELL) {
+      const local = worldToSection(x, y);
+      const section = state.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
+      if (!section?.document) return `Section (${local.gridX}, ${local.gridY}) is missing or unloaded.`;
+      if (local.x + CELL > section.document.bounds.width || local.y + CELL > section.document.bounds.height) {
+        return "Brush extends outside the saved map bounds; no cells will be clipped.";
+      }
+    }
+  }
+  return null;
+}
+
+function refreshPaintSettings(asset, busy) {
+  const thumbnail = $("#paint-asset-thumbnail");
+  const assetId = asset ? state.placeAssetId : "";
+  if (thumbnail.dataset.assetId !== assetId) {
+    thumbnail.replaceChildren(...(asset ? [assetThumbnail(assetId, 48)] : []));
+    thumbnail.dataset.assetId = assetId;
+  }
+  thumbnail.hidden = !asset;
+  $("#paint-asset-name").textContent = asset?.label ?? "Choose a Paint asset from the palette";
+  const supported = isTerrainBrushAsset(asset);
+  $("#paint-brush-size").value = String(state.paintBrushSize);
+  $("#paint-brush-size").disabled = busy || !supported;
+  $("#paint-support").textContent = !asset ? "Choose an asset to see its Paint support."
+    : supported ? `${state.paintBrushSize} x ${state.paintBrushSize} cells (${state.paintBrushSize * CELL} x ${state.paintBrushSize * CELL} world px). ` +
+      "Drag to paint; one Undo restores the whole stroke across section seams. Red means locked, hidden or outside existing bounds."
+    : asset.type !== "terrain-tile"
+      ? `${asset.label} is ${OBJECT_TYPES[asset.type].label.toLowerCase()}, not terrain. ` +
+        "Single placement only: repeating objects, collision or gameplay starts is not terrain-cell replacement."
+      : asset.unique ? `${asset.label} is unique and cannot repeat in a brush.`
+        : `${asset.label} is not a grid-compatible 32 x 32 terrain tile; its footprint or pivot cannot replace single terrain cells.`;
+}
+
+function pushSectionUndo(documents) {
+  state.undo.push({ documents, selection: [...state.selectedIds], sectionId: state.activeSectionId });
+  if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
+  state.redo.length = 0;
+}
+
+function commitToolPreview(updates, before) {
+  const previous = {
+    documents: state.sections.map(({ sectionId, document }) => ({ sectionId, document })),
+    undo: [...state.undo], redo: [...state.redo], tool: state.tool,
+    boundaryDraft: state.boundaryDraft, fillPreview: state.fillPreview
+  };
+  const observingFill = fillDiagnostics.applying;
+  if (observingFill) traceFill("document-before", { documents: fillDiagnosticDocuments(), updates: updates.length });
+  try {
+    if (updates.length) pushSectionUndo(before);
+    for (const update of updates) {
+      state.sections.find(section => section.sectionId === update.sectionId).document = update.document;
+    }
+    state.document = activeSection().document;
+    if (state.boundaryDraft) state.tool = "select";
+    state.boundaryDraft = null;
+    state.fillPreview = null;
+    state.preview = null;
+    if (observingFill) traceFill("document-published", { documents: fillDiagnosticDocuments(),
+      changedSections: updates.map(update => update.sectionId), undo: state.undo.length });
+    refreshChrome();
+    if (observingFill) traceFill("commit-complete", { documents: fillDiagnosticDocuments(),
+      redraw: fillDiagnostics.lastRedraw });
+  } catch (error) {
+    for (const saved of previous.documents) {
+      const section = state.sections.find(section => section.sectionId === saved.sectionId);
+      section.document = saved.document;
+      if (section.scene) section.scene.document = null;
+    }
+    state.document = activeSection().document;
+    state.undo = previous.undo;
+    state.redo = previous.redo;
+    state.tool = previous.tool;
+    state.boundaryDraft = previous.boundaryDraft;
+    state.fillPreview = previous.fillPreview;
+    state.scene.document = null;
+    state.hierarchyKey = "";
+    if (observingFill) traceFill("document-rollback", { error: error.message, documents: fillDiagnosticDocuments() });
+    throw error;
+  }
+}
+
+function currentFillRectangle(fill, end = fill.end ?? fill.start) {
+  return fillRectangle(fill.start, end, ASSET_CATALOG[fill.assetId], Boolean(state.fillSettings.borderAssetId));
+}
+
+function fillPlan(fill) {
+  if (fill.before.length !== state.sections.length ||
+      fill.before.some(saved => state.sections.find(section => section.sectionId === saved.sectionId)?.document !== saved.document)) {
+    throw new Error("The level changed after this gesture began. Cancel and preview again; no sections were changed.");
+  }
+  return planFill(state.sections, fill.rectangle, { ...state.fillSettings, assetId: fill.assetId,
+    assetCatalog: ASSET_CATALOG, layers: state.layers, createObject: createDesignObject, validate: validateFloorDocument });
+}
+
+function fillSummary(plan) {
+  return `${plan.count} placement target(s), including ${plan.borderCount} border, in ${plan.sectionCount} section(s). ` +
+    `${plan.skipped} same-layer overlaps skipped; ${plan.overlaps - plan.skipped} allowed; ` +
+    `${plan.seamSkipped} seam-straddling slots skipped. Terrain replaces cells (identical tiles stay unchanged). Apply or Cancel.`;
+}
+
+function updateFillPreview() {
+  const fill = state.fillPreview;
+  if (!fill) return;
+  fill.plan = null;
+  try {
+    fill.rectangle = currentFillRectangle(fill);
+    fill.plan = fillPlan(fill);
+    fill.error = null;
+    fillDiagnostics.validation = "preview passed";
+  } catch (error) {
+    fill.error = error.message;
+    fillDiagnostics.validation = `preview rejected: ${error.message}`;
+  }
+  traceFill("preview-validation", { rectangle: fill.rectangle ?? null,
+    count: fill.plan?.count ?? null, skipped: fill.plan?.skipped ?? null,
+    updates: fill.plan?.updates?.length ?? null, result: fillDiagnostics.validation });
+}
+
+function refreshFillSettings(asset) {
+  const assetId = asset ? state.placeAssetId : "";
+  const thumbnail = $("#fill-asset-thumbnail");
+  if (thumbnail.dataset.assetId !== assetId) {
+    thumbnail.replaceChildren(...(asset ? [assetThumbnail(assetId, 48)] : []));
+    thumbnail.dataset.assetId = assetId;
+  }
+  thumbnail.hidden = !asset;
+  $("#fill-asset-name").textContent = asset?.label ?? "Choose a fill asset from the palette";
+  const pending = state.saving || isPlaying() || Boolean(state.pointerMode);
+  $("#fill-gap-x").value = state.fillSettings.gapX;
+  $("#fill-gap-y").value = state.fillSettings.gapY;
+  $("#fill-overlap").value = state.fillSettings.overlap;
+  $("#fill-collision").checked = state.fillSettings.collision;
+  $("#fill-collision-option").hidden = asset?.collision !== "optional";
+  for (const id of ["fill-gap-x", "fill-gap-y", "fill-overlap"]) {
+    $(`#${id}`).disabled = pending || isTerrainBrushAsset(asset);
+  }
+  $("#fill-collision").disabled = pending;
+  $("#fill-footprint").textContent = asset ? `World footprint: ${asset.size.width} x ${asset.size.height} px. ` +
+    "Artwork size is unchanged. Spacing is the gap between footprints; partial edge slots are left empty." : "";
+  const choices = Object.entries(ASSET_CATALOG).filter(([, definition]) => isBorderAsset(definition));
+  const borderSelect = $("#fill-border-asset");
+  const key = JSON.stringify(choices.map(([id, definition]) => [id, definition.label]));
+  if (borderSelect.dataset.choices !== key) {
+    borderSelect.replaceChildren(...choices.map(([id, definition]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = definition.label;
+      return option;
+    }));
+    borderSelect.dataset.choices = key;
+  }
+  $("#fill-border").checked = Boolean(state.fillSettings.borderAssetId);
+  $("#fill-border").disabled = pending || !choices.length;
+  borderSelect.disabled = pending || !state.fillSettings.borderAssetId;
+  if (state.fillSettings.borderAssetId) borderSelect.value = state.fillSettings.borderAssetId;
+}
+
+function applyFill() {
+  traceFill("apply-handler-entry", { previewExists: Boolean(state.fillPreview) });
+  const fill = state.fillPreview;
+  if (!fill || isPlaying() || state.saving) {
+    traceFill("apply-guard-return", { previewExists: Boolean(fill), play: state.play.phase, saving: state.saving });
+    return;
+  }
+  fillDiagnostics.applying = true;
+  fillDiagnostics.validation = "Apply pending";
+  try {
+    if (fill.error || !fill.rectangle) throw new Error(fill.error ?? "Drag a valid fill rectangle before applying.");
+    const plan = fillPlan(fill);
+    fillDiagnostics.validation = "Apply passed";
+    traceFill("apply-validation", { result: fillDiagnostics.validation, rectangle: fill.rectangle,
+      count: plan.count, skipped: plan.skipped, updates: plan.updates.length });
+    commitToolPreview(plan.updates, fill.before);
+    setStatus(plan.updates.length
+      ? `Rectangle fill applied to ${plan.updates.length} section(s). Undo with Ctrl+Z.`
+      : "Rectangle fill unchanged (no new placements or cell changes).");
+  } catch (error) {
+    const stage = fillDiagnostics.validation === "Apply passed" ? "commit/refresh" : "validation";
+    fillDiagnostics.validation = `${stage} rejected: ${error.message}`;
+    traceFill("apply-rejected", { stage, error: error.message });
+    fill.error = error.message;
+    setStatus(`Rectangle fill rejected: ${error.message}. No sections changed.`, true);
+    refreshAfterOperation();
+  } finally {
+    fillDiagnostics.applying = false;
+    updateFillDiagnostics();
+  }
+}
+
+function cancelFill() {
+  traceFill("cancel", { documents: fillDiagnosticDocuments() });
+  state.fillPreview = null;
+  state.preview = null;
+  state.tool = "select";
+  if (state.pointerMode === "fill") {
+    state.pointerMode = null;
+    state.pointerStart = null;
+  }
+  refreshChrome();
+  setStatus("Rectangle fill cancelled; no sections changed.");
+}
+
+function cancelPointerGesture() {
+  if (state.tool === "fill") traceFill("pointer-cancel", { rectangle: state.pointerStart?.rectangle ?? null });
+  const mode = state.pointerStart?.mode;
+  state.paintCursor = null;
+  state.pointerMode = null;
+  state.pointerStart = null;
+  if (mode === "fill") state.fillPreview = null;
+  if (mode === "boundary-grid" || mode === "boundary-polygon") state.boundaryDraft = null;
+  refreshChrome();
+  if (mode === "brush") setStatus("Terrain stroke cancelled; no sections changed.");
+  if (mode === "fill") setStatus("Rectangle fill cancelled; no sections changed.");
+  if (mode === "boundary-grid" || mode === "boundary-polygon") {
+    setStatus("Playable boundary drawing cancelled; no changes were made.");
+  }
 }
 
 // ---------------------------------------------------------------- palette
@@ -1453,6 +2386,8 @@ function configurePaletteView() {
 }
 
 function configurePalette() {
+  delete $("#paint-asset-thumbnail").dataset.assetId;
+  delete $("#fill-asset-thumbnail").dataset.assetId;
   const list = $("#asset-list");
   const view = state.paletteView;
   const thumbSize = PALETTE_VIEWS[view].thumb;
@@ -1529,8 +2464,13 @@ function configurePalette() {
 }
 
 function paletteDown(event, assetId, card) {
+  if (state.tool === "fill") traceFillPointer(event, `palette:${assetId}`);
   if (event.button !== 0 || isPlaying() || !state.document) return;
   event.preventDefault();
+  if (state.tool === "fill") {
+    armPlace(assetId);
+    return;
+  }
   card.setPointerCapture(event.pointerId);
   state.paletteDrag = { assetId, x: event.clientX, y: event.clientY, dragging: false };
 }
@@ -1544,12 +2484,13 @@ function paletteMove(event) {
   }
   if (!drag.dragging) return;
   state.preview = overCanvas(event.clientX, event.clientY)
-    ? previewAt(drag.assetId, worldPointFromClient(event.clientX, event.clientY))
+    ? previewAtWorld(drag.assetId, worldPointFromClient(event.clientX, event.clientY))
     : null;
   render();
 }
 
 function paletteUp(event) {
+  if (state.tool === "fill") traceFillPointer(event, "palette");
   const drag = state.paletteDrag;
   if (!drag) return;
   state.paletteDrag = null;
@@ -1559,7 +2500,7 @@ function paletteUp(event) {
     return;
   }
   if (overCanvas(event.clientX, event.clientY)) {
-    placeFromPreview(previewAt(drag.assetId, worldPointFromClient(event.clientX, event.clientY)));
+    placeFromPreview(previewAtWorld(drag.assetId, worldPointFromClient(event.clientX, event.clientY)));
   } else {
     setStatus("Placement cancelled: drop the asset onto the map.");
   }
@@ -1577,24 +2518,47 @@ function paletteCancel() {
 // ---------------------------------------------------------------- save
 
 async function save() {
-  if (!state.document || isPlaying() || state.saving) return false;
+  if (!state.document || isPlaying() || state.saving || state.fillPreview || state.boundaryDraft || state.pointerMode) return false;
   try {
     state.saving = true;
     const identity = { ...state.identity };
-    const document = validateFloorDocument(structuredClone(state.document));
+    const sections = state.sections.map(section => ({ sectionId: section.sectionId, revision: section.revision,
+      document: validateFloorDocument(structuredClone(section.document)) }));
     refreshChrome({ structure: false });
-    const response = await fetch(mapUrl(identity), {
+    const initialSave = !state.persisted && sections.length === 1;
+    const address = initialSave ? mapUrl(identity)
+      : mapUrl(identity).replace(/\/maps\/[^/]+$/, `/levels/${encodeURIComponent(identity.mapId)}/sections`);
+    const response = await fetch(address, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: identity.projectId, model: state.model, document })
+      body: JSON.stringify(initialSave ? { projectId: identity.projectId, model: state.model, document: sections[0].document }
+        : { operationId: `save-${crypto.randomUUID()}`, revision: state.sectionRevision, sections })
     });
-    const payload = await response.json();
+    let payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? `Save failed (${response.status}).`);
-    if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
-        payload.model !== state.model || payload.document?.id !== identity.mapId) {
-      throw new Error("The saved design identity did not match the requested project and map.");
+    if (initialSave) {
+      if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
+          payload.model !== state.model || payload.document?.id !== identity.mapId) {
+        throw new Error("The saved map identity did not match the requested initial level.");
+      }
+      payload = { projectId: payload.projectId, levelMapId: payload.mapId, model: payload.model, revision: 0,
+        sections: [{ ...activeSection(), revision: 0, document: payload.document }] };
     }
-    state.savedJson = JSON.stringify(validateFloorDocument(payload.document));
+    if (payload.projectId !== identity.projectId || payload.levelMapId !== identity.mapId ||
+        payload.model !== state.model || !Array.isArray(payload.sections) ||
+        !payload.sections.some(section => section.mapId === identity.mapId)) {
+      throw new Error("The saved level section identities did not match the requested level.");
+    }
+    state.sections = payload.sections.map(section => ({
+      ...section, document: validateFloorDocument(section.document)
+    }));
+    state.sectionRevision = payload.revision;
+    state.activeSectionId = state.sections.find(section => section.mapId === identity.mapId).sectionId;
+    state.document = activeSection().document;
+    for (const section of state.sections) section.savedJson = JSON.stringify(section.document);
+    state.sectionBaseline = JSON.stringify(sectionDocuments());
+    state.savedJson = JSON.stringify(state.document);
+    updateSectionPicker();
     state.persisted = true;
     await refreshLevels();
     setStatus("Map saved to the local Studio database.");
@@ -1645,30 +2609,45 @@ function teardownPlay() {
     state.zoom = play.view.zoom;
     state.cameraX = play.view.cameraX;
     state.cameraY = play.view.cameraY;
+    state.activeSectionId = play.view.sectionId;
+    state.selectedIds = new Set(play.view.selection);
     play.view = null;
   }
 }
 
 async function play() {
-  if (isPlaying() || state.saving || !state.document || !state.artwork) return;
+  if (isPlaying() || state.saving || state.switching || state.creating || state.levelBusy ||
+      !state.document || !state.artwork) return;
+  if (state.fillPreview || state.boundaryDraft || state.pointerMode) {
+    setStatus("Apply or cancel the current edit before Play.", true);
+    return;
+  }
   $("#play-error").hidden = true;
   let design;
+  let connected;
   try {
-    design = validateFloorDocument(structuredClone(state.document));
-    const problems = playStartProblems(design);
-    if (problems.length) throw new Error(problems.join(" "));
+    if (state.sections.length > 1) {
+      connected = createConnectedPreview(state.sections.map(section => ({
+        ...section, document: section.sectionId === state.activeSectionId ? state.document : section.document
+      })), { mapId: state.identity.mapId, model: state.model, assetCatalog: ASSET_CATALOG });
+    } else {
+      design = validateFloorDocument(structuredClone(state.document));
+      const problems = playStartProblems(design);
+      if (problems.length) throw new Error(problems.join(" "));
+    }
   } catch (error) {
     showPlayError(error.message);
     return;
   }
   const play = state.play;
-  play.phase = "starting";
-  play.view = { zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY };
-  studio.dataset.playState = "starting";
-  $("#play-loading").hidden = false;
-  setStatus("Starting Play with the edited map…");
-  refreshChrome({ structure: false });
   try {
+    play.phase = "starting";
+    play.view = { zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY,
+      sectionId: state.activeSectionId, selection: [...state.selectedIds] };
+    studio.dataset.playState = "starting";
+    $("#play-loading").hidden = false;
+    setStatus("Starting Play with the edited map…");
+    refreshChrome({ structure: false });
     // The runtime measures its world slot when mounting, so the host must be
     // visible and laid out first; mounting into a hidden host gave a 1×1 canvas.
     document.body.classList.add("is-playing");
@@ -1678,7 +2657,8 @@ async function play() {
     $("#stop").hidden = false;
     await nextFrame();
     await nextFrame();
-    play.game = await createLocalGame(state.model === generic.MODEL ? genericPreview(design, ASSET_CATALOG, state.artwork) : {
+    play.game = await createLocalGame(connected ? connected.options
+      : state.model === generic.MODEL ? genericPreview(design, ASSET_CATALOG, state.artwork) : {
       moduleFactory: createTowerGameModule(design, ASSET_CATALOG),
       settings: towerSettings,
       map: createFloorMap(design),
@@ -1688,7 +2668,8 @@ async function play() {
     });
     if (play.phase !== "starting") throw new Error("Play was cancelled.");
     play.mount = mountLocalPreview(playHost, play.game,
-      state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
+      connected ? connectedSkin(connected, state.artwork)
+        : state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
         : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG, state.playerControlMode), {
       onInputRejected: () => setStatus("The runtime rejected an input.", true)
     });
@@ -1712,13 +2693,15 @@ async function play() {
     studio.dataset.playState = "playing";
     $("#play-loading").hidden = true;
     playCanvas.focus({ preventScroll: true });
-    const playControls = state.model === generic.MODEL
+    const playControls = connected
+      ? "All level sections loaded. Arrows/WASD move; movement, camera and collision only."
+      : state.model === generic.MODEL
       ? "Arrows/WASD move the player."
       : "See the displayed controls for the selected mode.";
     setStatus(`Playing the edited map (unsaved edits included). ${playControls} Stop returns to editing.`);
   } catch (error) {
     teardownPlay();
-    refreshChrome();
+    refreshAfterOperation();
     showPlayError(`${error.message} Check the map for blocked spawns or invalid collisions, then press Play again.`);
   }
 }
@@ -1767,40 +2750,85 @@ const playInputCodes = new Set([
 ]);
 
 function configureEvents() {
-  worldWorkspace = configureWorldWorkspace(() => {
-    if (!state.document || isPlaying() || state.saving || state.switching || state.creating || state.levelBusy) {
-      setStatus("Open a saved level before using Worlds.", true);
-      return null;
-    }
-    return {
-      projectId: state.identity.projectId, mapId: state.identity.mapId, model: state.model,
-      draw: (ctx, document) => drawDesign(ctx, state.artwork, document, {
-        grid: floorDocumentGrid(document), mode: "editor", visible: visibleLayers()
-      }),
-      hitTest: (document, point) => hitTest(document, point, isSelectable),
-      objectBounds,
-      validate: validateFloorDocument,
-      assetCatalog: ASSET_CATALOG,
-      createObject: createDesignObject,
-      terrainLayer: () => ({ ...state.layers.terrain }),
-      setTerrainLayer: prefs => {
-        state.layers.terrain = { ...prefs };
-        saveLayerPrefs();
-        refreshChrome();
-      },
-      transform: (object, dx, dy) => {
-        const next = { x: Math.round(object.transform.x + dx), y: Math.round(object.transform.y + dy) };
-        return state.snap || ASSET_CATALOG[object.assetId].snap.forced ? snapTransform(object.assetId, next) : next;
-      }
-    };
+  $("#section-add").addEventListener("click", () => {
+    state.sectionPlacementDirection = null;
+    $("#section-placement").hidden = false;
+    updateSectionPicker();
+    [...$("#section-placement").querySelectorAll("[data-direction]")].find(button => !button.disabled)?.focus();
   });
+  $("#section-cancel").addEventListener("click", () => {
+    state.sectionPlacementDirection = null;
+    $("#section-placement").hidden = true;
+    $("#section-add").focus();
+  });
+  $("#section-confirm").addEventListener("click", () => addSection(state.sectionPlacementDirection));
+  $("#section-select").addEventListener("change", event => {
+    activateSection(state.sections.find(section => section.sectionId === event.target.value));
+  });
+  for (const button of $("#section-placement").querySelectorAll("[data-direction]")) {
+    button.addEventListener("click", () => {
+      state.sectionPlacementDirection = button.dataset.direction;
+      updateSectionPicker();
+    });
+  }
+  $("#editor-tool").addEventListener("change", event => setTool(event.target.value));
+  $("#paint-brush-size").addEventListener("change", event => {
+    if (state.pointerMode) {
+      setStatus("Finish or cancel the current stroke before changing brush size.", true);
+      refreshChrome({ structure: false });
+      return;
+    }
+    const size = Number(event.target.value);
+    if (![1, 2, 4, 8].includes(size)) {
+      setStatus("Brush size must be 1, 2, 4 or 8 cells.", true);
+      refreshChrome({ structure: false });
+      return;
+    }
+    state.paintBrushSize = size;
+    refreshChrome({ structure: false });
+  });
+  $("#fill-apply").addEventListener("click", applyFill);
+  $("#fill-cancel").addEventListener("click", cancelFill);
+  $("#fill-diagnostic-copy").addEventListener("click", copyFillDiagnostics);
+  $("#fill-actions").addEventListener("pointerdown", event => traceFillPointer(event, "fill-actions"), true);
+  $("#fill-actions").addEventListener("click", event => traceFill("fill-actions:click", { target: event.target.id }), true);
+  for (const type of ["error", "unhandledrejection"]) {
+    window.addEventListener(type, event => {
+      if (state.tool === "fill" || fillDiagnostics.applying) {
+        traceFill(type, { message: String(event.message ?? event.reason?.message ?? event.reason) });
+      }
+    });
+  }
+  $("#boundary-mode").addEventListener("change", event => {
+    state.boundaryMode = event.target.value === "polygon" ? "polygon" : "grid";
+    refreshChrome({ structure: false });
+  });
+  $("#boundary-apply").addEventListener("click", applyBoundary);
+  $("#boundary-reset").addEventListener("click", resetBoundary);
+  $("#boundary-cancel").addEventListener("click", cancelBoundaryPreview);
+  for (const id of ["fill-gap-x", "fill-gap-y", "fill-overlap", "fill-border", "fill-border-asset", "fill-collision"]) {
+    $(`#${id}`).addEventListener("change", () => {
+      state.fillSettings = {
+        gapX: $("#fill-gap-x").valueAsNumber, gapY: $("#fill-gap-y").valueAsNumber,
+        overlap: $("#fill-overlap").value,
+        borderAssetId: $("#fill-border").checked ? $("#fill-border-asset").value : null,
+        collision: $("#fill-collision").checked
+      };
+      updateFillPreview();
+      refreshChrome({ structure: false });
+    });
+  }
   new ResizeObserver(resize).observe(editorView);
   canvas.addEventListener("pointerdown", pointerDown);
   canvas.addEventListener("pointermove", pointerMove);
   canvas.addEventListener("pointerup", pointerUp);
-  canvas.addEventListener("pointercancel", pointerUp);
+  canvas.addEventListener("pointercancel", cancelPointerGesture);
   canvas.addEventListener("pointerleave", () => {
-    if (state.tool === "place" && !state.paletteDrag && state.preview) {
+    if (state.paintCursor) {
+      state.paintCursor = null;
+      render();
+    }
+    if (state.tool === "paint" && !state.paletteDrag && state.preview) {
       state.preview = null;
       render();
     }
@@ -1820,6 +2848,14 @@ function configureEvents() {
       else if (playInputCodes.has(event.code) ||
           ((event.ctrlKey || event.metaKey) && ["KeyA", "KeyD", "KeyS", "KeyY", "KeyZ"].includes(event.code)) ||
           event.code === "Delete" || event.code === "Backspace") event.preventDefault();
+      return;
+    }
+    if ((state.fillPreview || state.boundaryDraft ||
+        ["brush", "fill", "boundary-grid", "boundary-polygon"].includes(state.pointerMode)) &&
+        event.code !== "Escape") {
+      if (event.code === "Tab" || (event.target instanceof Element && event.target.closest("#tool-settings") &&
+          event.target.closest("button") && ["Enter", "Space"].includes(event.code))) return;
+      event.preventDefault();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
@@ -1858,6 +2894,18 @@ function configureEvents() {
       return;
     }
     if (event.code === "Escape") {
+      if (state.boundaryDraft || ["boundary-grid", "boundary-polygon"].includes(state.pointerMode)) {
+        cancelBoundaryPreview();
+        return;
+      }
+      if (state.pointerMode === "brush" || state.pointerMode === "fill") {
+        cancelPointerGesture();
+        return;
+      }
+      if (state.fillPreview) {
+        cancelFill();
+        return;
+      }
       if (state.paletteDrag) paletteCancel();
       setTool("select");
       return;
@@ -1881,8 +2929,6 @@ function configureEvents() {
   window.addEventListener("beforeunload", event => {
     if (state.document && dirty()) event.preventDefault();
   });
-  $("#select-tool").addEventListener("click", () => setTool("select"));
-  $("#place-tool").addEventListener("click", () => setTool("place"));
   $("#undo").addEventListener("click", undo);
   $("#redo").addEventListener("click", redo);
   $("#duplicate-selection").addEventListener("click", duplicateSelection);
@@ -1915,7 +2961,7 @@ function configureEvents() {
     $("#camera-zoom-value").textContent = `${Number(event.target.value).toFixed(1)}×`;
   });
   $("#camera-zoom").addEventListener("change", event => {
-    if (!state.document || isPlaying()) return;
+    if (!state.document || isPlaying() || state.fillPreview || state.boundaryDraft || state.pointerMode) return;
     const cameraZoom = Number(event.target.value);
     if (cameraZoom === state.document.cameraZoom) return;
     commitDocument(validateFloorDocument({ ...state.document, cameraZoom }));
@@ -2161,12 +3207,13 @@ function configureLevels() {
   });
   for (const action of ["add", "duplicate", "rename", "delete"]) {
     $(`#level-${action}`).addEventListener("click", () => {
+      $("#level-menu").open = false;
       state.levelAction = action;
       const deleting = action === "delete";
-      $("#level-title").textContent = { add: "Add blank level", duplicate: "Duplicate level", rename: "Rename level", delete: "Delete level?" }[action];
+      $("#level-title").textContent = { add: "Add Level", duplicate: "Duplicate level", rename: "Rename level", delete: "Delete level?" }[action];
       $("#level-description").textContent = deleting
         ? "The saved design stays in SQLite and can be recovered from Deleted levels."
-        : action === "add" ? "Uses this game's model, project assets and default settings, with safe starts and no copied layout."
+        : action === "add" ? "Creates a separate level in this game with one empty 2048 x 2048 section. No terrain, walls, props, items or starts are copied. The starting level is unchanged."
         : action === "duplicate" ? "Creates an independent saved design with a new stable map ID." : "Changes this level's name, not its ID.";
       $("#level-name-field").hidden = deleting;
       $("#level-name").disabled = deleting;
@@ -2185,7 +3232,10 @@ function configureLevels() {
       $("#level-dialog").showModal();
     });
   }
-  $("#level-start").addEventListener("click", () => runLevelAction("start"));
+  $("#level-start").addEventListener("click", () => {
+    $("#level-menu").open = false;
+    runLevelAction("start");
+  });
   $("#level-cancel").addEventListener("click", () => $("#level-dialog").close());
   $("#level-dialog").addEventListener("cancel", event => {
     if (state.levelBusy) event.preventDefault();
@@ -2225,8 +3275,8 @@ async function runLevelAction(action, values = {}, saveFirst = false) {
       const mapId = action === "delete"
         ? result.startingMapId : result.mapId;
       const identity = { projectId: state.identity.projectId, mapId };
-      const { payload, document: design, assets } = await fetchDesign(identity);
-      applyDesign(identity, payload, design, assets);
+      const { payload, document: design, assets, sectionData } = await fetchDesign(identity);
+      applyDesign(identity, payload, design, assets, sectionData);
     }
     await refreshLevels();
     $("#level-dialog").close();
@@ -2306,7 +3356,10 @@ async function createNewGame(saveFirst = false) {
     }
     const design = generic.validateFloorDocument(payload.document);
     const assets = await loadProjectAssets(payload.projectId, payload.model);
-    applyDesign({ projectId: payload.projectId, mapId: payload.mapId }, payload, design, assets);
+    applyDesign({ projectId: payload.projectId, mapId: payload.mapId }, payload, design, assets, {
+      revision: 0, sections: [{ sectionId: `section-${payload.mapId}`, mapId: payload.mapId,
+        gridX: 0, gridY: 0, revision: 0, document: design }]
+    });
     $("#new-dialog").close();
     setStatus(`Created ${payload.project.name}. Saved in SQLite; ready to edit.`);
   } catch (error) {
@@ -2450,7 +3503,46 @@ async function fetchDesign(identity, allowTemplate = false) {
   const modelId = payload.model ?? ASTRAEUM_MODEL;
   const model = modelId === generic.MODEL ? generic : towerProject;
   const assets = await loadProjectAssets(identity.projectId, modelId);
-  return { payload, assets, document: model.validateFloorDocument(payload.document ?? createFloorDocument(), assets.catalog) };
+  const document = model.validateFloorDocument(payload.document ?? createFloorDocument(), assets.catalog);
+  let sectionData;
+  if (payload.document) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(identity.projectId)}/levels/${encodeURIComponent(identity.mapId)}/sections`);
+    const result = await response.json();
+    if (response.ok) {
+      if (result.projectId !== identity.projectId || result.levelMapId !== identity.mapId ||
+          result.model !== modelId || !Array.isArray(result.sections) || !result.sections.length) {
+        throw new Error("The loaded level section set did not match the requested project, level, or model.");
+      }
+      const positions = new Set();
+      const ids = new Set();
+      for (const section of result.sections) {
+        const key = `${section.gridX},${section.gridY}`;
+        if (positions.has(key) || ids.has(section.sectionId) || section.document?.id !== section.mapId) {
+          throw new Error("The loaded level contains duplicate section identities or positions.");
+        }
+        positions.add(key);
+        ids.add(section.sectionId);
+      }
+      if (!result.sections.some(section => section.mapId === identity.mapId)) {
+        throw new Error("The loaded level section set does not include its original map.");
+      }
+      sectionData = result;
+    }
+    else if (response.status !== 404) throw new Error(result.error ?? `Level sections failed (${response.status}).`);
+  }
+  sectionData ??= { revision: 0, sections: [{
+    sectionId: `section-${identity.mapId}`, mapId: identity.mapId, gridX: 0, gridY: 0, revision: 0, document
+  }] };
+  sectionData.sections = sectionData.sections.map(section => ({
+    ...section, document: model.validateFloorDocument(section.document, assets.catalog),
+    savedJson: JSON.stringify(model.validateFloorDocument(section.document, assets.catalog))
+  }));
+  const rootSection = sectionData.sections.find(section => section.mapId === identity.mapId);
+  if (!rootSection) throw new Error("The level boundary owner is missing from its section set.");
+  if (rootSection.document.playableBoundary) {
+    validatePlayableBoundaryForSections(rootSection.document.playableBoundary, sectionData.sections);
+  }
+  return { payload, assets, document, sectionData };
 }
 
 function activateAssetCatalog(modelId, assets) {
@@ -2484,10 +3576,10 @@ function activateAssetCatalog(modelId, assets) {
   state.artwork = { ...state.artwork, imported: assets.images };
 }
 
-function applyDesign(identity, payload, design, assets) {
+function applyDesign(identity, payload, design, assets, sectionData) {
   const previous = { ...state, scene: { ...state.scene } };
   try {
-    installDesign(identity, payload, design, assets);
+    installDesign(identity, payload, design, assets, sectionData);
   } catch (error) {
     Object.assign(state, previous);
     state.scene.document = null;
@@ -2531,7 +3623,97 @@ function updateDesignChrome(payload) {
     : `Floor 1 artwork by Anh Nguyen (PixelLab)${state.importedAssets.length ? ` · ${state.importedAssets.length} imported images` : ""}`;
 }
 
-function installDesign(identity, payload, design, assets) {
+function updateSectionPicker(disabled = false) {
+  const select = $("#section-select");
+  const keys = state.sections.map(section => section.sectionId).join("|");
+  if (select.dataset.sections !== keys) {
+    select.replaceChildren(...state.sections.map((section, index) =>
+      new Option(`Section ${index + 1}${section.mapId === state.identity.mapId ? " (original)" : ""}`, section.sectionId)));
+    select.dataset.sections = keys;
+  }
+  select.value = state.activeSectionId ?? "";
+  const selected = activeSection();
+  for (const button of $("#section-placement").querySelectorAll("[data-direction]")) {
+    const direction = SECTION_DIRECTIONS[button.dataset.direction];
+    let reason = !selected ? "Select an existing section first."
+      : state.sections.length >= 16 ? "This level reached the 16-section limit." : "";
+    if (selected && !reason) {
+      const gridX = selected.gridX + direction.x, gridY = selected.gridY + direction.y;
+      if (state.sections.some(section => section.gridX === gridX && section.gridY === gridY)) {
+        reason = "Occupied by an existing section.";
+      } else {
+        try { sectionOrigin(gridX, gridY); }
+        catch (error) { reason = error.message; }
+      }
+    }
+    button.disabled = disabled || Boolean(reason);
+    if (reason && state.sectionPlacementDirection === button.dataset.direction) state.sectionPlacementDirection = null;
+    button.setAttribute("aria-pressed", String(state.sectionPlacementDirection === button.dataset.direction));
+    button.title = reason || `Add an empty section to the ${button.dataset.direction}.`;
+    button.textContent = `${button.dataset.direction[0].toUpperCase()}${button.dataset.direction.slice(1)}${reason.startsWith("Occupied") ? " (occupied)" : ""}`;
+  }
+  const direction = SECTION_DIRECTIONS[state.sectionPlacementDirection];
+  $("#section-confirm").disabled = disabled || !direction;
+  $("#section-placement-preview").textContent = direction && selected
+    ? `Add an empty section ${state.sectionPlacementDirection} at (${selected.gridX + direction.x}, ${selected.gridY + direction.y})?`
+    : "Select an available side. Nothing is created until you confirm.";
+}
+
+function activateSection(section) {
+  if (!section || section.sectionId === state.activeSectionId) return;
+  if (activeSection()) activeSection().document = state.document;
+  state.sectionPlacementDirection = null;
+  state.activeSectionId = section.sectionId;
+  state.document = section.document;
+  state.preview = null;
+  setSelection([]);
+  state.scene.document = null;
+  state.hierarchyKey = "";
+  refreshChrome();
+}
+
+async function addSection(directionName) {
+  if (!state.document || state.saving || state.switching || state.levelBusy || isPlaying()) return;
+  const direction = SECTION_DIRECTIONS[directionName];
+  try {
+    if (state.fillPreview || state.boundaryDraft || state.pointerMode) throw new Error("Finish or cancel the current edit before adding a section.");
+    if (!direction || !activeSection()) throw new Error("Choose a side of an existing section.");
+    const gridX = activeSection().gridX + direction.x, gridY = activeSection().gridY + direction.y;
+    sectionOrigin(gridX, gridY);
+    if (state.sections.some(section => section.gridX === gridX && section.gridY === gridY)) {
+      throw new Error("That side is occupied by an existing section.");
+    }
+    state.levelBusy = true;
+    refreshChrome({ structure: false });
+    $("#section-status").textContent = "Adding section…";
+    const response = await fetch(`/api/projects/${encodeURIComponent(state.identity.projectId)}/levels/${encodeURIComponent(state.identity.mapId)}/sections`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gridX, gridY, revision: state.sectionRevision })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Could not add section (${response.status}).`);
+    const localSections = new Map(state.sections.map(section => [section.sectionId, section]));
+    state.sections = result.sections.map(section => {
+      const local = localSections.get(section.sectionId);
+      return local ? { ...section, document: local.document, savedJson: local.savedJson, scene: local.scene } :
+        { ...section, savedJson: JSON.stringify(section.document) };
+    });
+    state.sectionRevision = result.revision;
+    state.document = activeSection().document;
+    $("#section-placement").hidden = true;
+    state.sectionPlacementDirection = null;
+    $("#section-status").textContent = `Added an empty section to the ${directionName}. Pan and zoom are unchanged.`;
+    $("#section-status").classList.remove("error");
+  } catch (error) {
+    $("#section-status").textContent = error.message;
+    $("#section-status").classList.add("error");
+  } finally {
+    state.levelBusy = false;
+    refreshAfterOperation();
+  }
+}
+
+function installDesign(identity, payload, design, assets, sectionData) {
   state.model = payload.model ?? ASTRAEUM_MODEL;
   activateAssetCatalog(state.model, assets);
   state.layers = loadLayerPrefs(state.model);
@@ -2548,7 +3730,23 @@ function installDesign(identity, payload, design, assets) {
   state.persisted = Boolean(payload.document);
   state.levels = [];
   state.startingMapId = null;
-  state.document = design;
+  state.sections = sectionData.sections;
+  state.fillPreview = null;
+  state.sectionPlacementDirection = null;
+  state.boundaryDraft = null;
+  state.boundaryMode = "grid";
+  state.fillSettings = { gapX: 0, gapY: 0, overlap: "skip", borderAssetId: null, collision: false };
+  $("#section-placement").hidden = true;
+  $("#section-status").textContent = "";
+  $("#section-status").classList.remove("error");
+  for (const section of state.sections) {
+    if (typeof section.savedJson !== "string") section.savedJson = JSON.stringify(section.document);
+  }
+  state.sectionRevision = sectionData.revision;
+  state.activeSectionId = state.sections.find(section => section.mapId === identity.mapId)?.sectionId ??
+    state.sections[0]?.sectionId;
+  state.document = state.sections.find(section => section.sectionId === state.activeSectionId)?.document ?? design;
+  state.sectionBaseline = JSON.stringify(sectionDocuments());
   state.savedJson = JSON.stringify(state.document);
   setSelection([]);
   state.undo = [];
@@ -2561,6 +3759,7 @@ function installDesign(identity, payload, design, assets) {
   updateDesignChrome(payload);
   configurePalette();
   centerCamera();
+  updateSectionPicker();
   refreshChrome();
   setStatus(payload.document
     ? migration && !migration.error && payload.migrations[0].createdAt && Date.now() - Date.parse(payload.migrations[0].createdAt) < 60_000
@@ -2589,8 +3788,8 @@ async function switchToSelected(saveFirst = false) {
         throw new Error(result.error ?? "Could not assign the Astraeum model.");
       }
     }
-    const { payload, document: design, assets } = await fetchDesign(identity);
-    applyDesign(identity, payload, design, assets);
+    const { payload, document: design, assets, sectionData } = await fetchDesign(identity);
+    applyDesign(identity, payload, design, assets, sectionData);
     $("#open-dialog").close();
   } catch (error) {
     openMessage(`Could not open map: ${error.message}`, true);
@@ -2618,20 +3817,23 @@ async function openFloor() {
     window.__studioTest = Object.freeze({
       document: () => structuredClone(state.document),
       identity: () => ({ ...state.identity }),
-      worldWorkspace: () => worldWorkspace.inspect(),
+      sections: () => structuredClone(state.sections.map(({ sectionId, mapId, gridX, gridY, revision, document }) =>
+        ({ sectionId, mapId, gridX, gridY, revision, document }))),
+      boundary: () => structuredClone(levelBoundary()),
       worldToClient(x, y) {
         const rect = canvas.getBoundingClientRect();
         return { x: rect.left + (x - state.cameraX) * state.zoom, y: rect.top + (y - state.cameraY) * state.zoom };
       },
       view: () => ({ zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY }),
+      selection: () => ({ sectionId: state.activeSectionId, ids: [...state.selectedIds] }),
       setView(view) {
         Object.assign(state, view);
         render();
       }
     });
   }
-  const { payload, document: design, assets } = await fetchDesign(state.identity, true);
-  applyDesign(state.identity, payload, design, assets);
+  const { payload, document: design, assets, sectionData } = await fetchDesign(state.identity, true);
+  applyDesign(state.identity, payload, design, assets, sectionData);
 }
 
 openFloor().catch(error => {

@@ -33,14 +33,14 @@ the bundled public game packages. It does not start the multiplayer backend or
 require an engine checkout. The kit is kept under the ignored
 `engine\kits\` directory and is not committed.
 
-Kit 0.2.0 keeps immutable dependencies in a versioned subdirectory there and
+Kit 0.3.0 keeps immutable dependencies in a versioned subdirectory there and
 editable files in `games\sample\`, outside the ignored kit directory. Previous
 versioned installations are retained on upgrade. Run these commands from this
 **Git root** (`multiplayer-game-studio\multiplayer-game-studio`), not its outer
 IntelliJ folder:
 
 ```powershell
-npm run setup -- --archive .\engine\archives\multiplayer-game-developer-kit-0.2.0-2717a9bc86c2.zip
+npm run setup -- --archive .\engine\archives\multiplayer-game-developer-kit-0.3.0-dca3ffc4561c.zip
 npm run verify
 npm run build
 npm run preview
@@ -92,7 +92,10 @@ soft-delete with recovery. Switching protects unsaved edits. At least one
 active level must remain; deleting the start requires a replacement in the
 same game. Blank levels use the existing model, assets and settings, never a
 copy of Floor 1. Play includes unsaved edits from the selected level and Stop
-returns without saving movement.
+returns without saving movement. Multi-section levels use the public connected
+runtime for keyboard movement, camera and collision; existing single-section
+gameplay remains unchanged. Native-browser connected acceptance is still
+blocked at startup; see `studio/docs/DEVELOPMENT.md` for current evidence.
 Generated `games/<project-id>/` directories contain code, assets and metadata,
 not duplicate maps. **Import Assets** accepts PNGs and PixelLab ZIPs into
 project-scoped catalogs; source bytes and credits are preserved, and imported
@@ -110,12 +113,12 @@ audio and shared libraries remain future work.
 ### Kit provenance and controller support
 
 The supplied ZIP SHA-256 is
-`dd5a978c54dc951dd48d767379482f8a28dbbdb0318866c73a7527459281218d`.
-In `kit.json`, `engineRevision` (`2717a9bc86c2b8db0865a2e37cffa609b0f8a208`)
+`afd63a865a23b60183d7be89c15811f68438a0186638caa509fb541bc3492517`.
+In `kit.json`, `engineRevision` (`dca3ffc4561c14e0e83968afceabf0e85cddc565`)
 identifies the exact committed engine revision used to build the kit.
 `engineSource.state` is `committed`, and `changedInputs` is empty; the manifest
 records SHA-256 hashes for the tracked package, sample, and builder inputs.
-The kit is version 0.2.0; its included public npm packages are version 0.1.0.
+The kit is version 0.3.0; its included public npm packages remain version 0.1.0.
 
 The included `@multiplayer-game/theme-sdk` package actually exports
 `readStandardGamepad`; it accepts connected standard-mapped pads, reads left

@@ -177,15 +177,20 @@ function drawWangTile(context, artwork, tile, x, y) {
  * autotile, exactly as the original game drew them. A corner counts as floor when
  * its cell has a visible terrain tile and no visible aligned wall.
  */
-function drawTerrainAndAlignedWalls(context, artwork, design, visible) {
+function drawTerrainAndAlignedWalls(context, artwork, design, visible, sampleCell) {
   const { floor, wall } = cellOccupancy(design);
   const rows = floor.length;
   const columns = floor[0].length;
-  const occupied = (x, y) => x >= 0 && y >= 0 && x < columns && y < rows &&
-    (floor[y][x] || (visible.walls && wall[y][x]));
+  const cell = sampleCell ?? ((x, y) => ({ floor: floor[y]?.[x], wall: wall[y]?.[x] }));
+  const occupied = (x, y) => {
+    const value = cell(x, y);
+    return value.floor || (visible.walls && value.wall);
+  };
   if (visible.terrain) {
-    const corner = (x, y) => occupied(x, y) &&
-      floor[y][x] && !(visible.walls && wall[y][x]) ? "1" : "0";
+    const corner = (x, y) => {
+      const value = cell(x, y);
+      return value.floor && !(visible.walls && value.wall) ? "1" : "0";
+    };
     for (let y = -1; y < rows; y += 1) {
       for (let x = -1; x < columns; x += 1) {
         if (![[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]].some(([cx, cy]) => occupied(cx, cy))) continue;
@@ -304,10 +309,10 @@ const ALL_VISIBLE = Object.freeze({
  * Returns the derived candle lights.
  */
 export function drawDesign(context, artwork, design, { grid, mode = "play",
-  visible = ALL_VISIBLE, decorations = true, assetCatalog = ASSET_CATALOG } = {}) {
+  visible = ALL_VISIBLE, decorations = true, assetCatalog = ASSET_CATALOG, sampleCell } = {}) {
   context.fillStyle = "#0b0910";
   context.fillRect(0, 0, design.bounds.width, design.bounds.height);
-  drawTerrainAndAlignedWalls(context, artwork, design, visible);
+  drawTerrainAndAlignedWalls(context, artwork, design, visible, sampleCell);
   const ordered = renderOrder(design);
   const draw = object => drawAsset(context, artwork, object.assetId, object.transform, { assetCatalog });
   // Off-grid walls cannot join the dual-grid autotile, so they use the solid-wall tile
