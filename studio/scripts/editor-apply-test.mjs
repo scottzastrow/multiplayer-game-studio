@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { resolve, relative } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import { register } from "node:module";
 import { connectedFixture } from "./connected-play-fixtures.mjs";
+import { ASSET_CATALOG } from "../../games/astraeum-tower/src/catalog.js";
 import * as towerProject from "../../games/astraeum-tower/src/project.js";
 import * as generic from "../../games/generic-grid-v1/src/project.js";
 import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
@@ -12,10 +18,13 @@ import * as paint from "../world-paint.js";
 import * as fill from "../world-fill.js";
 import * as coordinates from "../world-coordinates.js";
 import * as identity from "../project-identity.js";
+import { importedAssetDefinition } from "../project-assets.js";
 
 register("./public-runtime-loader.mjs", import.meta.url);
 const { createLocalGame } = await import("@multiplayer-game/local-preview");
 const { createConnectedPreview, connectedSkin } = await import("../extensions/connected-play.js");
+const { createTowerInteractionState, towerEncounterTuning, towerSettings } =
+  await import("../../games/astraeum-tower/src/game.js");
 
 // Execute the entire editor, replacing only browser/platform I/O, not its controllers or renderer.
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
@@ -24,16 +33,28 @@ const main = (await readFile(new URL("../src/main.js", import.meta.url), "utf8")
   .replaceAll("import.meta.env", "({ DEV: false })")
   .replaceAll("import.meta.url", JSON.stringify(new URL("../src/main.js", import.meta.url).href))
   .split("\nopenFloor().catch(")[0];
+assert.doesNotMatch(html, /id="export-game"|id="export-dialog"/,
+  "Studio does not offer an unsupported complete-game export action");
+assert.doesNotMatch(main, /export-game|export-credits|exporting/,
+  "the editor controller has no complete-game export flow");
+assert.match(html, /nearby runes enter automatically/);
+assert.match(html, /When all authored slimes are defeated, entering the rune's activation area starts the exit automatically/);
+assert.match(html, /Chests open automatically once when you approach within 46 px/);
+assert.match(ASSET_CATALOG["prop-stairs-rune"].playNote, /enter the rune's activation area to continue automatically/);
+assert.match(ASSET_CATALOG["item-chest"].playNote, /Opens automatically once within 46 px/);
 
 function drawingContext() {
   const calls = [];
   const stack = [];
   const context = { calls, fillStyle: "", strokeStyle: "",
+    createRadialGradient() { return { addColorStop() {} }; },
+    measureText(text) { return { width: text.length * 8 }; },
     save() { stack.push({ fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
     restore() { Object.assign(this, stack.pop()); }
   };
   for (const method of ["setTransform", "fillRect", "strokeRect", "drawImage", "beginPath", "closePath",
-    "moveTo", "lineTo", "stroke", "fill", "arc", "fillText", "setLineDash", "translate", "scale"]) {
+    "moveTo", "lineTo", "stroke", "fill", "arc", "ellipse", "fillText", "setLineDash", "translate", "scale",
+    "clearRect", "rotate", "quadraticCurveTo", "rect", "clip"]) {
     context[method] = function (...args) {
       calls.push({ method, args, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle });
     };
@@ -47,6 +68,7 @@ function browserFixture() {
       this.tagName = tagName.toLowerCase();
       this.children = [];
       this.dataset = {};
+      this.style = {};
       this.attributes = {};
       this.listeners = new Map();
       this.className = "";
@@ -108,14 +130,21 @@ function browserFixture() {
       return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
     }
     querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
-    addEventListener(type, handler) {
+    addEventListener(type, handler, options) {
       if (!this.listeners.has(type)) this.listeners.set(type, []);
       this.listeners.get(type).push(handler);
+      options?.signal?.addEventListener("abort", () => {
+        this.listeners.set(type, this.listeners.get(type).filter(listener => listener !== handler));
+      }, { once: true });
     }
     dispatch(type, data = {}) {
       const event = { target: this, preventDefault() { this.defaultPrevented = true; }, ...data };
       for (const handler of this.listeners.get(type) ?? []) handler(event);
       return event;
+    }
+    dispatchEvent(event) {
+      for (const handler of this.listeners.get(event.type) ?? []) handler(event);
+      return true;
     }
     click() {
       assert.ok(!this.disabled && !this.closest("[inert]") && !this.closest("[hidden]"),
@@ -127,19 +156,31 @@ function browserFixture() {
       for (const handler of this.listeners.get("click") ?? []) await handler({ target: this });
     }
     focus() { document.activeElement = this; }
+    remove() {
+      if (this.parentElement) this.parentElement.children =
+        this.parentElement.children.filter(child => child !== this);
+    }
     showModal() { this.open = true; }
     close() { this.open = false; }
     scrollIntoView() {}
     setPointerCapture(pointerId) { this.capturedPointer = pointerId; }
     hasPointerCapture(pointerId) { return this.capturedPointer === pointerId; }
     getBoundingClientRect() { return { left: 0, top: 0, right: 1200, bottom: 900, width: 1200, height: 900 }; }
-    getContext() { return this.context ??= drawingContext(); }
+    getContext() {
+      if (!this.context) {
+        this.context = drawingContext();
+        Object.defineProperty(this.context, "canvas", { value: this });
+      }
+      return this.context;
+    }
   }
   const document = new Element("document");
   document.createElement = tag => new Element(tag);
+  document.createTextNode = text => Object.assign(new Element("text"), { textContent: text });
   document.createDocumentFragment = () => new Element("fragment");
   const stack = [document];
-  for (const [, closing, tag, attributes] of html.matchAll(/<(\/?)([\w-]+)([^>]*)>/g)) {
+  for (const [, text, closing, tag, attributes] of html.matchAll(/([^<]+)|<(\/?)([\w-]+)([^>]*)>/g)) {
+    if (text) { stack.at(-1).textContent += text.trim(); continue; }
     if (closing) { stack.pop(); continue; }
     const node = new Element(tag);
     for (const [, name, value, bare] of attributes.matchAll(/([\w-]+)(?:="([^"]*)"|='([^']*)')?/g)) {
@@ -161,16 +202,21 @@ function browserFixture() {
 
 function editor(model) {
   const browser = browserFixture();
+  let fetchHandler = async () => { throw new Error("Unexpected editor fixture request."); };
   const sandbox = createContext({
-    ...browser, towerProject, generic, towerRender, ...boundaries, ...terrain, ...paint, ...fill, ...coordinates, ...identity,
+    ...browser, towerProject, generic, towerRender, towerEncounterTuning, towerSettings,
+    ...boundaries, ...terrain, ...paint, ...fill, ...coordinates, ...identity,
+    fetch: (...args) => fetchHandler(...args),
+    createTowerInteractionState,
     RUNTIME_MAP_CELL_SIZE: 32, RUNTIME_MAX_MAP_DIMENSION: 2048,
+    CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
     ARTWORK_CREDIT: "", structuredClone, TextEncoder, console,
     crypto: { randomUUID: () => "fixture-save-id" },
     localStorage: { getItem() { return null; }, setItem() {} },
     ResizeObserver: class { observe() {} }
   });
   runInContext(`${main}
-    globalThis.testEditor = { state, configureEvents, configurePalette, refreshChrome, activateAssetCatalog, render, play, stop, save };
+    globalThis.testEditor = { state, configureEvents, configurePalette, refreshChrome, activateAssetCatalog, render, play, stop, save, transitionExit, updateInspector, fetchDesign, installDesign };
   `, sandbox);
   const api = sandbox.testEditor;
   const { state } = api;
@@ -222,8 +268,31 @@ function editor(model) {
   const outline = () => $("#map-canvas").getContext().calls
     .filter(call => call.method === "stroke" && call.strokeStyle === "#66d6a1cc").length;
   const resetFrame = () => { $("#map-canvas").getContext().calls.length = 0; };
-  return { ...api, $, tool, asset, drag, key, activate, documents, outline, resetFrame, sandbox };
+  return { ...api, $, tool, asset, drag, key, activate, documents, outline, resetFrame, sandbox,
+    setFetch(handler) { fetchHandler = handler; } };
 }
+
+{
+  const e = editor(towerProject);
+  const { state, $ } = e;
+  const saved = state.sections[0].savedJson;
+  const chest = towerProject.createDesignObject("inspector-chest", "item-chest",
+    { x: 176, y: 152 }, 0);
+  state.document.objects.push(chest);
+  state.sections[0].document = state.document;
+  state.selectedId = chest.id;
+  state.selectedIds = new Set([chest.id]);
+  e.refreshChrome();
+  assert.equal($("#chest-inspector").hidden, false, "supported chest tiers appear in the Inspector");
+  assert.equal($("#chest-tier").value, "normal", "new chests default to the original normal tier");
+  assert.match($("#chest-tier-details").textContent, /2-4 items/);
+  $("#chest-tier").dispatch("change", { target: { value: "treasure" } });
+  assert.equal(state.document.objects.find(object => object.id === chest.id).interaction.tier, "treasure");
+  assert.match($("#chest-tier-details").textContent, /4-6 items/);
+  assert.equal(state.sections[0].savedJson, saved, "Inspector changes remain an unsaved draft");
+  assert.equal($("#save-state").classList.contains("dirty"), true);
+}
+console.log("Chest Inspector exposes the original normal/treasure loot tiers without changing the saved baseline.");
 
 for (const model of [generic, towerProject]) {
   const e = editor(model);
@@ -271,6 +340,63 @@ for (const model of [generic, towerProject]) {
   assert.equal($("#section-add").disabled, true);
 }
 console.log("Level menu: existing Add Level dialog, distinct Add Section flow, cancellation, dirty protection and busy controls passed in both models.");
+
+for (const model of [generic, towerProject]) {
+  const e = editor(model);
+  const { state, $ } = e;
+  const source = structuredClone(state.document);
+  const sourceJson = JSON.stringify(source);
+  const modelId = model === generic ? generic.MODEL : identity.ASTRAEUM_MODEL;
+  const mapId = "map-event-level";
+  const sectionId = "section-event-level";
+  const document = model.createEmptyLevelDocument(mapId, "UI-created empty level");
+  const requests = [];
+  const response = value => ({ ok: true, status: 200, async json() { return value; } });
+  e.setFetch(async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === "/api/projects/apply-project/levels" && options.method === "POST") {
+      return response({ mapId, startingMapId: "apply-map" });
+    }
+    if (url === `/api/projects/apply-project/maps/${mapId}`) {
+      return response({ projectId: "apply-project", mapId, model: modelId, document });
+    }
+    if (url === "/api/projects/apply-project/assets") return response({ assets: [] });
+    if (url === `/api/projects/apply-project/levels/${mapId}/sections`) {
+      return response({ projectId: "apply-project", levelMapId: mapId, model: modelId, revision: 0,
+        sections: [{ sectionId, mapId, gridX: 0, gridY: 0, revision: 0, document }],
+        archivedSections: [] });
+    }
+    if (url === "/api/projects/apply-project/levels") {
+      return response({ startingMapId: "apply-map", levels: [
+        { mapId: "apply-map", name: "Apply fixture", starting: true, supported: true },
+        { mapId, name: document.name, supported: true }
+      ] });
+    }
+    throw new Error(`Unexpected Add Level event request: ${url}`);
+  });
+  $("#level-add").click();
+  $("#level-name").value = document.name;
+  $("#level-form").dispatch("submit");
+  for (let attempt = 0; attempt < 20 && state.levelBusy; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(state.levelBusy, false, `${modelId} Add Level event completes`);
+  assert.equal($("#level-dialog").open, false);
+  const createRequest = requests.find(request => request.options.method === "POST");
+  assert.ok(createRequest, `${modelId} Add Level event sends its request`);
+  assert.deepEqual(JSON.parse(createRequest.options.body),
+    { action: "add", mapId: "apply-map", name: "UI-created empty level" });
+  assert.equal(JSON.stringify(source), sourceJson, "the current source draft remains unchanged");
+  assert.equal(state.identity.mapId, mapId);
+  assert.equal(state.sections.length, 1);
+  assert.deepEqual(state.document.bounds, { width: 2048, height: 2048 });
+  assert.deepEqual(state.document.objects, []);
+  await e.play();
+  assert.equal($("#play-error").hidden, false);
+  assert.match($("#play-error-message").textContent, /start/i,
+    `${modelId} Play explains that an empty level needs a player start`);
+}
+console.log("Registered Add Level form events create one empty full-size section for both models; Play reports missing starts.");
 
 for (const model of [generic, towerProject]) {
   const e = editor(model);
@@ -580,6 +706,56 @@ console.log("Remove Section save and Add Section draft Undo/Redo preserve archiv
   assert.equal(state.sections.find(section => section.sectionId === "root").savedArchived, true);
 }
 console.log("Lost-save response retries the same operation and preserves later undo as unsaved membership.");
+
+for (const failure of [
+  { status: 400, message: "Object stairs-rune-33-19 has unknown fields: exit." },
+  { status: 409, message: "Level sections changed since they were opened." },
+  { status: 503, message: "Service unavailable." },
+  { message: "Network connection lost." }
+]) {
+  const e = editor(towerProject);
+  const { state, $ } = e;
+  state.sectionRevision = 4;
+  state.sections[0].revision = 4;
+  state.sections[0].document = state.document = { ...state.document, name: "Keep unsaved exit draft" };
+  e.refreshChrome();
+  const draft = e.documents(), undo = state.undo.length, revision = state.sectionRevision;
+  const requests = [];
+  e.sandbox.fetch = async (address, options = {}) => {
+    requests.push(JSON.parse(options.body));
+    if (!failure.status) throw new Error(failure.message);
+    return { ok: false, status: failure.status, json: async () => ({ error: failure.message }) };
+  };
+  await $("#save").clickAsync();
+  assert.equal(requests.length, 1);
+  assert.equal($("#save-error").hidden, false);
+  assert.ok($("#save-error").textContent.includes(failure.message));
+  if (failure.status) assert.ok($("#save-error").textContent.includes(`HTTP ${failure.status}`));
+  assert.equal($("#save-state").textContent, "Save failed - unsaved");
+  assert.equal($("#save-state").classList.contains("error"), true);
+  assert.equal(e.documents(), draft);
+  assert.equal(state.undo.length, undo);
+  assert.equal(state.sectionRevision, revision);
+  assert.equal(Boolean(state.pendingSectionSave), !failure.status || failure.status >= 500);
+  $("#show-grid").dispatch("change", { target: { checked: false } });
+  e.refreshChrome();
+  assert.equal($("#save-error").hidden, false, "refresh and unrelated UI events cannot hide the Save error");
+  e.sandbox.fetch = async (address, options = {}) => {
+    if (options.method !== "PUT") return { ok: true, json: async () => ({ levels: [] }) };
+    const body = JSON.parse(options.body);
+    if (!failure.status || failure.status >= 500) assert.deepEqual(body, requests[0]);
+    return { ok: true, json: async () => ({
+      projectId: state.identity.projectId, levelMapId: state.identity.mapId, model: state.model,
+      revision: revision + 1, archivedSections: [],
+      sections: state.sections.map(section => ({ ...section, revision: section.revision + 1,
+        document: body.sections.find(item => item.sectionId === section.sectionId).document }))
+    }) };
+  };
+  assert.equal(await e.save(), true);
+  assert.equal($("#save-error").hidden, true);
+  assert.equal($("#save-error").textContent, "");
+  assert.equal($("#save-state").classList.contains("saved"), true);
+}
 
 for (const model of [generic, towerProject]) {
   const e = editor(model);
@@ -1324,8 +1500,13 @@ for (const model of [generic, towerProject]) {
   const viewBefore = { cameraX: state.cameraX, cameraY: state.cameraY, zoom: state.zoom,
     sectionId: state.activeSectionId, selection: [...state.selectedIds] };
   let runtime, disposed = false, failMount = false, stoppedTimer = false;
+  const connectedSkinModes = [];
   Object.assign(sandbox, {
-    createConnectedPreview, connectedSkin,
+    createConnectedPreview,
+    connectedSkin: (preview, artwork, mode) => {
+      if (state.model === identity.ASTRAEUM_MODEL) connectedSkinModes.push(mode);
+      return connectedSkin(preview, artwork, mode);
+    },
     requestAnimationFrame: callback => callback(),
     createLocalGame: async options => {
       assert.equal(options.map, undefined);
@@ -1336,7 +1517,8 @@ for (const model of [generic, towerProject]) {
     },
     mountLocalPreview: (_host, game, skinFactory) => {
       assert.equal(game, runtime);
-      assert.equal(skinFactory.metadata.acceptedModuleId, "studio-connected-movement");
+      assert.equal(skinFactory.metadata.acceptedModuleId,
+        state.model === identity.ASTRAEUM_MODEL ? "astraeum-tower-floor-one" : "studio-connected-movement");
       if (failMount) throw new Error("Injected connected mount failure");
       const playCanvas = sandbox.document.createElement("canvas");
       playCanvas.clientWidth = 800; playCanvas.clientHeight = 600;
@@ -1349,20 +1531,37 @@ for (const model of [generic, towerProject]) {
   sandbox.ResizeObserver = class { observe() {} disconnect() {} };
   e.refreshChrome();
   assert.equal($("#play").disabled, false, "valid connected Play is enabled");
-  await $("#play").clickAsync();
-  assert.equal(state.play.phase, "playing", $("#play-error-message").textContent);
-  assert.equal(runtime.snapshot.player.position.x, -48, "active neighbor does not override the authored root start");
-  runtime.sendInput("player", { type: "move", x: 1, y: 0 });
-  for (let tick = 0; tick < 24; tick++) runtime.step();
-  assert.equal(runtime.snapshot.player.position.x, 48, "main-editor Play is wired to the real connected runtime");
-  $("#stop").click();
-  assert.ok(disposed && stoppedTimer);
-  assert.equal(state.play.phase, "idle");
-  assert.deepEqual({ cameraX: state.cameraX, cameraY: state.cameraY, zoom: state.zoom,
-    sectionId: state.activeSectionId, selection: [...state.selectedIds] }, viewBefore);
-  assert.equal(e.documents(), documentsBefore, "Stop preserves unsaved edits in both sections");
-  assert.deepEqual(state.sections.map(section => section.savedJson), savedBefore, "Play never saves designs");
-  assert.equal(state.undo.length, 0);
+  const modes = model === towerProject
+    ? ["keyboard-only", "keyboard-mouse", "game-controller"]
+    : [null];
+  for (const mode of modes) {
+    if (mode) {
+      const selector = $("#player-control-mode");
+      selector.value = mode;
+      selector.dispatch("change", { target: selector });
+    }
+    await $("#play").clickAsync();
+    assert.equal(state.play.phase, "playing", $("#play-error-message").textContent);
+    const towerMode = state.model === identity.ASTRAEUM_MODEL;
+    const position = () => towerMode
+      ? { x: runtime.snapshot.player.x, y: runtime.snapshot.player.y }
+      : runtime.snapshot.player.position;
+    assert.equal(position().x, -48, "active neighbor does not override the authored root start");
+    runtime.sendInput(towerMode ? "aries" : "player", { type: "move", x: 1, y: 0 });
+    for (let tick = 0; tick < 24; tick++) runtime.step();
+    assert.equal(position().x, 48, "main-editor Play crosses the seam in the real connected runtime");
+    if (mode) assert.equal(connectedSkinModes.at(-1), mode, `Play forwards ${mode} to connectedSkin`);
+    $("#stop").click();
+    assert.ok(disposed && stoppedTimer);
+    assert.equal(state.play.phase, "idle");
+    assert.deepEqual({ cameraX: state.cameraX, cameraY: state.cameraY, zoom: state.zoom,
+      sectionId: state.activeSectionId, selection: [...state.selectedIds] }, viewBefore);
+    assert.equal(e.documents(), documentsBefore, "Stop preserves unsaved edits in both sections");
+    assert.deepEqual(state.sections.map(section => section.savedJson), savedBefore, "Play never saves designs");
+    assert.equal(state.undo.length, 0);
+  }
+  if (model === towerProject) assert.deepEqual(connectedSkinModes, modes,
+    "all Player Settings control modes reach the reused Tower skin");
   failMount = true;
   await $("#play").clickAsync();
   assert.equal(state.play.phase, "idle", "a failed mount cleans up the runtime");
@@ -1372,3 +1571,728 @@ for (const model of [generic, towerProject]) {
     sectionId: state.activeSectionId, selection: [...state.selectedIds] }, viewBefore);
 }
 console.log("Main-editor connected Play/Stop: both models load the complete level, retain unsaved edits, cross the seam, restore pan/zoom/selection and clean up mount failure (real runtime, browser-I/O fixture).");
+
+{
+  const e = editor(towerProject);
+  const { state, $, sandbox } = e;
+  const source = connectedFixture(identity.ASTRAEUM_MODEL);
+  const destination = connectedFixture(identity.ASTRAEUM_MODEL);
+  destination[0].mapId = destination[0].document.id = "destination-level";
+  destination[1].mapId = destination[1].document.id = "destination-neighbor";
+  destination[0].gridX = 0;
+  destination[1].gridX = 1;
+  destination[0].document.cameraZoom = 1.5;
+  const portal = towerProject.createDesignObject("authored-exit", "prop-stairs-rune",
+    { x: 1968, y: 1040 }, source[0].document.objects.length);
+  source[0].document.objects.push(portal);
+  state.sections = source.map(section => ({ ...section, savedJson: JSON.stringify(section.document) }));
+  state.identity.mapId = source[0].mapId;
+  state.activeSectionId = source[0].sectionId;
+  state.document = state.sections[0].document;
+  state.document.name = "Original unsaved draft";
+  state.selectedIds = new Set([portal.id]);
+  state.selectedId = portal.id;
+  state.levels = [
+    { mapId: source[0].mapId, name: "Source", supported: true },
+    { mapId: destination[0].mapId, name: "Destination", supported: true },
+    { mapId: "deleted-level", name: "Deleted", supported: true, deletedAt: "fixture" }
+  ];
+  let deleted = false, foreign = false, loading = null, tick;
+  let runtimes = [], previews = [], writes = 0;
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  sandbox.Event = class { constructor(type) { this.type = type; } };
+  sandbox.fetch = async (address, options = {}) => {
+    if (options.method && options.method !== "GET") writes++;
+    if (loading) await loading;
+    if (address.endsWith("/levels")) return {
+      ok: true, json: async () => ({ levels: state.levels.map(level =>
+        level.mapId === destination[0].mapId && deleted ? { ...level, deletedAt: "now" } : level) })
+    };
+    assert.ok(address.endsWith("/destination-level/sections"), `only current-game destination requested: ${address}`);
+    return { ok: true, json: async () => ({
+      projectId: foreign ? "another-game" : state.identity.projectId,
+      levelMapId: destination[0].mapId, model: identity.ASTRAEUM_MODEL, sections: destination
+    }) };
+  };
+  Object.assign(sandbox, {
+    createConnectedPreview,
+    createLocalGame: async options => {
+      const runtime = await createLocalGame(options);
+      runtimes.push(runtime);
+      return runtime;
+    },
+    connectedSkin: (preview, artwork, mode) => {
+      previews.push(preview);
+      return connectedSkin(preview, artwork, mode);
+    },
+    mountLocalPreview: () => {
+      const canvas = sandbox.document.createElement("canvas");
+      canvas.clientWidth = 800; canvas.clientHeight = 600;
+      $("#play-host").append(canvas);
+      return { dispose() {} };
+    },
+    requestAnimationFrame: callback => callback(),
+    ResizeObserver: class { observe() {} disconnect() {} }
+  });
+  sandbox.window.setInterval = callback => { tick = callback; return 1; };
+  sandbox.window.clearInterval = () => {};
+  Object.assign(state, { cameraX: -117, cameraY: 210, zoom: 0.75 });
+  e.refreshChrome();
+  assert.equal($("#exit-inspector").hidden, false, "authored rune is selectable and has an exit Inspector");
+  assert.equal(portal.exit, undefined, "merely selecting an existing rune never assigns a destination");
+  assert.deepEqual($("#exit-level").children.map(option => option.value),
+    ["", source[0].mapId, destination[0].mapId], "only available current-game levels are offered");
+  $("#exit-level").dispatch("change", { target: { value: destination[0].mapId } });
+  await settle();
+  assert.equal(state.document.objects.find(object => object.id === portal.id).exit.startId, null,
+    "choosing a level does not automatically choose its start");
+  assert.equal($("#exit-start").disabled, false);
+  const startValue = JSON.stringify([destination[0].sectionId, "authored-primary"]);
+  $("#exit-start").dispatch("change", { target: { value: startValue } });
+  await settle();
+  assert.match($("#exit-message").textContent, /arrival are valid/);
+  const draft = e.documents(), saved = state.sections.map(section => section.savedJson);
+  const undo = state.undo.length;
+  const view = { x: state.cameraX, y: state.cameraY, zoom: state.zoom,
+    section: state.activeSectionId, selection: [...state.selectedIds] };
+  runtimes = [];
+  previews = [];
+  await e.play();
+  assert.equal(state.play.phase, "playing");
+  const interactionState = state.play.interactionState;
+  assert.ok(interactionState?.collected instanceof Set, "Play creates run-local interaction state");
+  const sourceRuntime = state.play.game;
+  sourceRuntime.sendInput("aries", { type: "move", x: 1, y: 0 });
+  tick();
+  await settle();
+  assert.equal(state.play.phase, "playing", $("#status").textContent);
+  assert.equal(runtimes.length, 2, "an unlocked rune automatically causes exactly one replacement");
+  assert.equal(state.play.interactionState, interactionState,
+    "level transitions reuse the same runtime-only interaction ledger");
+  assert.equal(previews.at(-1).options.world.id, "destination-level");
+  assert.equal(previews.at(-1).options.world.sections.length, 2, "complete destination active section set loads");
+  assert.equal(previews.at(-1).requireNeutral, true);
+  assert.equal(previews.at(-1).primaryDocument.cameraZoom, 1.5, "destination zoom reaches the mounted Tower skin");
+  assert.equal(previews.at(-1).bounds.x, 0, "destination camera bounds replace the source bounds");
+  assert.equal(state.play.game.snapshot.player.x, 2000);
+  assert.equal(state.play.game.snapshot.player.y, 1048);
+  for (let index = 0; index < 10; index++) tick();
+  assert.equal(state.play.game.snapshot.player.x, 2000, "held source movement is cleared");
+  assert.equal(runtimes.length, 2, "standing at arrival cannot chain transitions");
+  await e.transitionExit({ sequence: 1, destination: {
+    levelId: source[0].mapId, sectionId: source[0].sectionId, startId: "authored-primary"
+  } });
+  assert.equal(previews.at(-1).options.world.id, source[0].mapId, "an explicit return uses the original level");
+  assert.equal(previews.at(-1).primaryDocument.name, "Original unsaved draft",
+    "returning to the original level uses the captured unsaved draft, not its saved map");
+  assert.equal(state.play.game.snapshot.player.x, -48);
+  for (let index = 0; index < 3; index++) tick();
+  assert.equal(runtimes.length, 3, "returning beside an unlocked exit cannot automatically bounce again");
+  e.stop();
+  assert.equal(state.play.interactionState, null, "Stop discards runtime-only interaction state");
+  assert.equal(e.documents(), draft);
+  assert.deepEqual(state.sections.map(section => section.savedJson), saved);
+  assert.equal(state.undo.length, undo);
+  assert.deepEqual({ x: state.cameraX, y: state.cameraY, zoom: state.zoom,
+    section: state.activeSectionId, selection: [...state.selectedIds] }, view,
+  "Stop restores the exact original unsaved draft and view, not the destination or gameplay state");
+  assert.equal(writes, 0, "Play, transition, Inspector validation and Stop never save");
+
+  await e.play();
+  const request = { sequence: 1, destination: null };
+  await e.transitionExit(request);
+  assert.match($("#status").textContent, /no complete destination/);
+  assert.equal(state.play.phase, "playing", "invalid exits leave the source running");
+  request.sequence++;
+  request.destination = { levelId: destination[0].mapId, sectionId: "root", startId: "deleted-start" };
+  await e.transitionExit(request);
+  assert.match($("#status").textContent, /player start is missing/);
+  request.sequence++;
+  request.destination.startId = "authored-primary";
+  deleted = true;
+  await e.transitionExit(request);
+  assert.match($("#status").textContent, /missing, deleted or unsupported/);
+  deleted = false;
+  request.sequence++;
+  foreign = true;
+  await e.transitionExit(request);
+  assert.match($("#status").textContent, /current game/);
+  foreign = false;
+  request.sequence++;
+  let release;
+  loading = new Promise(resolve => { release = resolve; });
+  const pending = e.transitionExit(request);
+  assert.equal(state.play.phase, "transitioning");
+  e.stop();
+  const count = runtimes.length;
+  loading = null;
+  release();
+  await pending;
+  assert.equal(state.play.phase, "idle", "Stop cancels an in-flight transition");
+  assert.equal(runtimes.length, count, "late destination responses cannot resurrect Play");
+  assert.equal(e.documents(), draft);
+  assert.equal(writes, 0);
+  state.sections = state.sections.slice(0, 1);
+  state.document = state.sections[0].document;
+  await e.play();
+  assert.equal(state.play.phase, "playing");
+  assert.equal(previews.at(-1).options.world.sections.length, 1,
+    "a single-section level with an authored stairs exit also uses progression");
+  e.stop();
+}
+console.log("Astraeum editor progression: explicit scoped destination/start authoring, full-level replacement, safe failure/retry, input clearing, one activation, cancelled load and exact Stop restoration passed (disposable real-runtime fixture; no browser).");
+
+{
+  const e = editor(towerProject);
+  const { state, $, sandbox } = e;
+  const sections = connectedFixture(identity.ASTRAEUM_MODEL);
+  const add = (section, id, assetId, x) => {
+    const object = towerProject.createDesignObject(id, assetId,
+      { x, y: 1040 }, section.document.objects.length);
+    section.document.objects.push(object);
+    return object;
+  };
+  const portal = add(sections[0], "input-exit", "prop-stairs-rune", 1968);
+  portal.exit = { levelId: "input-destination", sectionId: "root", startId: "authored-primary" };
+  add(sections[0], "source-slime", "spawn-slime", 1968);
+  add(sections[1], "neighbor-slime", "spawn-slime", 48);
+  const destination = connectedFixture(identity.ASTRAEUM_MODEL);
+  destination[0].mapId = destination[0].document.id = "input-destination";
+  destination[1].mapId = destination[1].document.id = "input-destination-neighbor";
+  destination[0].gridX = 0;
+  destination[1].gridX = 1;
+  add(destination[0], "arrival-rune", "prop-stairs-rune", 1968).exit = {
+    levelId: sections[0].mapId, sectionId: "root", startId: "authored-primary"
+  };
+  state.sections = sections.map(section => ({ ...section, savedJson: JSON.stringify(section.document) }));
+  state.identity.mapId = sections[0].mapId;
+  state.activeSectionId = sections[1].sectionId;
+  state.document = state.sections[1].document;
+  state.document.name = "Keep this dirty neighbor";
+  state.selectedIds = new Set(["floor-0-992"]);
+  state.playerControlMode = "keyboard-only";
+  state.levels = [
+    { mapId: sections[0].mapId, name: "Source", supported: true },
+    { mapId: "input-destination", name: "Input Destination", supported: true }
+  ];
+  Object.assign(state, { cameraX: -117, cameraY: 210, zoom: 0.75 });
+  const draft = e.documents(), saved = state.sections.map(section => section.savedJson);
+  const history = JSON.stringify({ undo: state.undo, redo: state.redo });
+  const view = { x: state.cameraX, y: state.cameraY, zoom: state.zoom,
+    section: state.activeSectionId, selection: [...state.selectedIds] };
+  let tick, mounted, writes = 0, missingStart = true;
+  const requests = [], dispatched = [], prompts = [];
+  sandbox.Event = class { constructor(type) { this.type = type; } };
+  sandbox.fetch = async (address, options = {}) => {
+    if (options.method && options.method !== "GET") writes++;
+    requests.push(address);
+    if (address.endsWith("/levels")) return { ok: true, json: async () => ({ levels: state.levels }) };
+    assert.ok(address.endsWith("/input-destination/sections"));
+    const loaded = structuredClone(destination);
+    if (missingStart) loaded[0].document.objects.find(object => object.assetId === "spawn-aries").id = "changed";
+    return { ok: true, json: async () => ({
+      projectId: state.identity.projectId, levelMapId: "input-destination",
+      model: identity.ASTRAEUM_MODEL, sections: loaded
+    }) };
+  };
+  const globals = Object.fromEntries(["document", "window", "navigator", "CustomEvent"].map(name =>
+    [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: sandbox.document },
+    window: { configurable: true, value: sandbox.window },
+    navigator: { configurable: true, value: { getGamepads: () => [] } },
+    CustomEvent: { configurable: true, value: sandbox.CustomEvent }
+  });
+  Object.assign(sandbox, {
+    createConnectedPreview, connectedSkin, createLocalGame,
+    requestAnimationFrame: callback => callback(),
+    ResizeObserver: class { observe() {} disconnect() {} },
+    // Substitute layout/animation I/O, but mount the real skin and its registered input handlers.
+    mountLocalPreview: (host, game, factory) => {
+      const slots = new Map(["world", "hud", "controls"].map(name => {
+        const element = sandbox.document.createElement("section");
+        host.append(element);
+        return [name, element];
+      }));
+      const skin = factory.mount({ slots, dispatchInput(input) {
+        dispatched.push(input);
+        assert.equal(game.sendInput("aries", input), true);
+      } });
+      const canvas = slots.get("world").querySelector("canvas");
+      canvas.clientWidth = 800; canvas.clientHeight = 600;
+      skin.handleViewport(800, 600, 1);
+      const render = () => { skin.handleSnapshot(game.snapshot); skin.render(); };
+      render();
+      const unsubscribe = game.subscribe(render);
+      mounted = { skin, canvas, render };
+      return { dispose() { unsubscribe(); skin.dispose(); } };
+    }
+  });
+  sandbox.window.setInterval = callback => { tick = callback; return 1; };
+  sandbox.window.clearInterval = () => {};
+  const key = (type, code, extra = {}) => {
+    const target = mounted.canvas;
+    if (type === "keydown") target.dispatch(type, { code, ...extra });
+    sandbox.window.dispatch(type, { target, code, ...extra });
+  };
+  const step = count => { for (let n = 0; n < count; n++) tick(); };
+  const prompt = () => $("#play-host").querySelector('[data-testid="astraeum-exit-prompt"]')?.textContent;
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    e.refreshChrome();
+    await $("#play").clickAsync();
+    assert.equal(state.play.phase, "playing", $("#play-error-message").textContent);
+    prompts.push(prompt());
+    step(1);
+    assert.equal(state.play.game.snapshot.exitRequest, null);
+    key("keydown", "KeyA"); step(1); key("keyup", "KeyA");
+    key("keydown", "Space"); step(38); key("keyup", "Space");
+    assert.equal(state.play.game.snapshot.enemies.length, 1, "neighbor-section slime still locks the rune");
+    prompts.push(prompt());
+    key("keydown", "KeyD"); step(1); key("keyup", "KeyD");
+    const source = state.play.game;
+    key("keydown", "Space"); step(38); key("keyup", "Space");
+    assert.equal(source.snapshot.enemies.length, 0);
+    assert.equal(source.snapshot.exitUnlocked, true);
+    assert.equal(source.snapshot.exitRequest.exitId, "root:input-exit");
+    assert.equal(prompt(), "Loading the exit destination...");
+    await settle();
+    assert.equal(state.play.game, source, "invalid destination retains the source encounter");
+    assert.match($("#status").textContent, /player start is missing/);
+    mounted.render();
+    prompts.push(prompt());
+    const attempts = requests.length;
+    step(60);
+    await settle();
+    assert.equal(requests.length, attempts, "a failed automatic transition never retries every tick");
+    assert.equal(source.snapshot.exitRequest.sequence, 1);
+    missingStart = false;
+    key("keydown", "KeyD"); step(12); key("keyup", "KeyD");
+    assert.equal(prompt(), "", "nearby prompt clears outside activation range");
+    key("keydown", "KeyA"); step(12); key("keyup", "KeyA");
+    await settle();
+    assert.notEqual(state.play.game, source, "leaving and re-entering retries the real destination load automatically");
+    assert.equal(state.play.game.snapshot.player.x, 2000);
+    assert.equal(state.play.game.snapshot.player.y, 1048, "destination uses the exact authored feet position");
+    step(60);
+    assert.equal(state.play.game.snapshot.exitRequest, null);
+    assert.equal(prompt(), "Enter the rune to continue", "arrival on an unlocked return rune cannot bounce");
+    assert.ok(!dispatched.some(input => input.type === "activate-exit"), "no Interact input is sent");
+    assert.ok(requests.some(address => address.endsWith("/input-destination/sections")));
+    $("#stop").click();
+    assert.equal(state.play.phase, "idle");
+    assert.equal(e.documents(), draft);
+    assert.deepEqual(state.sections.map(section => section.savedJson), saved);
+    assert.equal(JSON.stringify({ undo: state.undo, redo: state.redo }), history);
+    assert.deepEqual({ x: state.cameraX, y: state.cameraY, zoom: state.zoom,
+      section: state.activeSectionId, selection: [...state.selectedIds] }, view);
+    assert.equal(writes, 0);
+    console.log("Registered editor Play -> combat/remote slime -> already-on-rune unlock -> automatic validation/error -> no repeated requests -> re-entry retry -> destination (2000,1048) without arrival bounce -> Stop draft/view restoration passed.");
+    assert.equal(prompts[0], "Defeat 2 remaining slimes");
+    assert.equal(prompts[1], "Defeat 1 remaining slime");
+    assert.match(prompts[2], /player start is missing/);
+  } finally {
+    if (state.play.phase !== "idle") e.stop();
+    for (const [name, descriptor] of Object.entries(globals)) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+}
+
+{
+  const e = editor(towerProject);
+  const { state, $ } = e;
+  const design = structuredClone(towerProject.DEFAULT_FLOOR_DOCUMENT);
+  state.identity.mapId = design.id;
+  state.sections = [{ sectionId: "root", mapId: design.id, gridX: 0, gridY: 0,
+    document: design, savedJson: JSON.stringify(design) }];
+  state.document = design;
+  e.refreshChrome();
+  const before = e.documents();
+  const selectAt = point => e.drag([[point.x, point.y], [point.x, point.y]]);
+  const rune = design.objects.find(object => object.assetId === "prop-stairs-rune");
+  $(".inspector").scrollTop = 800;
+  selectAt(rune.transform);
+  assert.equal(state.selectedId, rune.id, "real canvas hit-test resolves a legacy placed rune's identity");
+  assert.equal($("#object-id").value, rune.id);
+  assert.match($("#object-type").textContent, /Prop/);
+  assert.equal($("#object-inspector").hidden, false);
+  assert.equal($("#exit-inspector").hidden, false);
+  assert.match($("#object-heading").textContent, /Stairs rune - level exit/);
+  assert.equal($(".inspector").scrollTop, 0, "selection brings the behavior-first Inspector into view");
+  assert.equal(Object.hasOwn(rune, "exit"), false, "selecting a legacy rune never assigns a destination");
+  const children = $("#object-inspector").children;
+  assert.ok(children.indexOf($("#exit-inspector")) < children.indexOf($("#object-id").parentElement),
+    "destination controls precede object metadata, transforms and long artwork notes");
+  assert.ok($(".inspector").children.indexOf($("#object-inspector")) <
+    $(".inspector").children.indexOf($(".map-settings[aria-label='Current map dimensions']")),
+  "map dimensions no longer bury selected-object authoring");
+  assert.match($("label[for='exit-level']").textContent, /this game/);
+  assert.match($("label[for='exit-start']").textContent, /Arrival player start/);
+  const aries = design.objects.find(object => object.assetId === "spawn-aries");
+  selectAt(aries.transform);
+  assert.equal(state.selectedId, aries.id);
+  assert.equal($("#exit-inspector").hidden, true);
+  assert.equal($("#combat-inspector").hidden, false);
+  assert.match($("#object-heading").textContent, /player start/);
+  assert.equal($("#combat-values").children[1].textContent, String(towerEncounterTuning.playerHp));
+  assert.equal($("#combat-values").querySelectorAll("input").length +
+    $("#combat-values").querySelectorAll("select").length, 0,
+    "fixed combat tuning is presented as outputs, never ineffective controls");
+  assert.match($("#combat-authoring-note").textContent, /not saved per object/);
+  const slime = design.objects.find(object => object.assetId === "spawn-slime");
+  selectAt(slime.transform);
+  assert.equal(state.selectedId, slime.id);
+  assert.match($("#object-heading").textContent, /enemy spawn/);
+  assert.equal($("#combat-values").children[1].textContent, String(towerEncounterTuning.slime.hp));
+  assert.equal($("#combat-values").children[3].textContent, String(towerEncounterTuning.slime.damage));
+  assert.match($("#object-behavior").textContent, /keeps stairs exits locked/);
+
+  const { door } = towerRender.fixedDecorations(state.artwork, towerProject.floorDocumentGrid(design), aries.transform);
+  assert.ok(door, "original Floor 1 produces a decorative door");
+  const bounds = towerRender.doorBounds(state.artwork, door);
+  selectAt({ x: bounds.x + bounds.width / 2, y: Math.max(0, bounds.y) + 1 });
+  assert.equal(state.selectedId, null, "clicking generated door artwork does not pretend it is a wall or authored object");
+  assert.equal($("#decoration-inspector").hidden, false);
+  assert.equal($("#object-inspector").hidden, true);
+  assert.equal($("#exit-inspector").hidden, true);
+  assert.equal($("#combat-inspector").hidden, true);
+  assert.equal(e.documents(), before, "selection/door inspection never changes a saved design");
+  assert.equal(state.undo.length, 0);
+
+  const group = $(`.tree-group[data-layer="props"]`);
+  group.open = true;
+  // Real browsers fire toggle after expanding; trigger its registered handler.
+  group.isConnected = true;
+  group.dispatch("toggle");
+  $(`.tree-item[data-object-id="${rune.id}"]`).click();
+  assert.equal($("#exit-inspector").hidden, false, "hierarchy selection also renders the exit controls");
+  assert.equal($("#decoration-inspector").hidden, true);
+  state.layers.props.locked = true;
+  e.refreshChrome();
+  assert.equal($(`.tree-item[data-object-id="${rune.id}"]`).disabled, true, "locked layers remain protected");
+  state.layers.props.locked = false;
+  e.refreshChrome();
+
+  const record = { name: "Decorative door rune character", width: 32, height: 32, category: "character" };
+  const assetId = `asset-${"a".repeat(64)}`;
+  const assets = { ...towerProject.ASSET_CATALOG, [assetId]: importedAssetDefinition(record) };
+  state.artwork.imported[assetId] = { naturalWidth: 32, naturalHeight: 32 };
+  e.activateAssetCatalog(state.model, { catalog: assets, records: [record], images: state.artwork.imported });
+  const artwork = towerProject.createDesignObject("imported-artwork", assetId, { x: 400, y: 200 }, 999, {}, assets);
+  state.document = { ...state.document, objects: [...state.document.objects, artwork] };
+  state.sections[0].document = state.document;
+  e.refreshChrome();
+  selectAt({ x: 400, y: 192 });
+  assert.equal(state.selectedId, artwork.id);
+  assert.match($("#object-heading").textContent, /decorative artwork/);
+  assert.match($("#object-behavior").textContent, /not an exit, player or enemy/);
+  assert.equal($("#exit-inspector").hidden, true);
+  assert.equal($("#combat-inspector").hidden, true);
+  assert.equal(Object.hasOwn(artwork, "exit"), false, "similar imported imagery is never converted into gameplay");
+}
+
+await mkdir(new URL("../data/", import.meta.url), { recursive: true });
+const inspectorDirectory = await mkdtemp(fileURLToPath(new URL("../data/inspector-check-", import.meta.url)));
+let inspectorDatabase;
+try {
+  const databasePath = `${inspectorDirectory}\\selection.sqlite`;
+  inspectorDatabase = new DatabaseSync(databasePath);
+  inspectorDatabase.exec("CREATE TABLE fixture (id TEXT PRIMARY KEY, payload TEXT NOT NULL)");
+  const e = editor(towerProject);
+  const { state, $, sandbox } = e;
+  state.sections = connectedFixture(identity.ASTRAEUM_MODEL).map(section => ({
+    ...section, revision: 0, savedJson: JSON.stringify(section.document)
+  }));
+  state.identity.mapId = state.sections[0].mapId;
+  state.activeSectionId = state.sections[0].sectionId;
+  state.document = state.sections[0].document;
+  state.sectionRevision = 0;
+  Object.assign(state, { cameraX: -160, cameraY: 800, zoom: 1 });
+  const destination = connectedFixture(identity.ASTRAEUM_MODEL);
+  destination[0].mapId = destination[0].document.id = "inspector-destination";
+  destination[1].mapId = destination[1].document.id = "inspector-destination-east";
+  destination[0].gridX = 0;
+  destination[1].gridX = 1;
+  const levels = [
+    { mapId: state.identity.mapId, name: "Source", supported: true },
+    { mapId: destination[0].mapId, name: "Destination", supported: true }
+  ];
+  state.levels = levels;
+  let writes = 0, tick;
+  const response = payload => ({ ok: true, json: async () => structuredClone(payload) });
+  const stored = () => JSON.parse(inspectorDatabase.prepare("SELECT payload FROM fixture WHERE id = 'source'").get().payload);
+  sandbox.fetch = async (address, options = {}) => {
+    if (options.method === "PUT") {
+      writes++;
+      const request = JSON.parse(options.body);
+      assert.equal(request.sections.length, 2, "Inspector Save uses the complete level transaction");
+      const sections = request.sections.map(section => {
+        const existing = state.sections.find(item => item.sectionId === section.sectionId);
+        return { sectionId: section.sectionId, mapId: existing.mapId, gridX: existing.gridX, gridY: existing.gridY,
+          document: towerProject.validateFloorDocument(section.document), revision: section.revision + 1 };
+      });
+      const payload = { projectId: state.identity.projectId, levelMapId: state.identity.mapId,
+        model: state.model, revision: 1, sections, archivedSections: [] };
+      inspectorDatabase.prepare("INSERT OR REPLACE INTO fixture VALUES ('source', ?)").run(JSON.stringify(payload));
+      return response(payload);
+    }
+    if (address.endsWith("/assets")) return response({ assets: [] });
+    if (address.endsWith("/levels")) return response({ levels, startingMapId: state.identity.mapId });
+    if (address.endsWith("/inspector-destination/sections")) return response({
+      projectId: state.identity.projectId, levelMapId: destination[0].mapId,
+      model: state.model, sections: destination, archivedSections: []
+    });
+    if (address.endsWith("/sections")) return response(stored());
+    if (address.endsWith(`/maps/${state.identity.mapId}`)) return response({
+      projectId: state.identity.projectId, mapId: state.identity.mapId, model: state.model,
+      document: stored().sections[0].document, migrations: []
+    });
+    throw new Error(`Unexpected Inspector fixture request: ${address}`);
+  };
+  let sequence = 0;
+  sandbox.crypto.randomUUID = () => `inspector-fixture-${++sequence}`;
+  sandbox.createConnectedPreview = createConnectedPreview;
+  sandbox.createLocalGame = createLocalGame;
+  e.refreshChrome();
+  const card = $('.asset-card[data-asset-id="prop-stairs-rune"]');
+  card.dispatch("keydown", { code: "Enter" });
+  e.drag([[80, 248], [80, 248]]);
+  const placedId = state.selectedId;
+  assert.equal(state.document.objects.find(object => object.id === placedId)?.assetId, "prop-stairs-rune",
+    "registered palette and placement events create a new canonical rune");
+  assert.equal($("#exit-inspector").hidden, false, "new rune immediately shows destination fields");
+  assert.equal(state.document.objects.find(object => object.id === placedId).exit, undefined);
+  e.tool("select");
+  // Select a different authored object, then click the new rune through real hit-testing.
+  $(".inspector").scrollTop = 700;
+  e.drag([[112, 248], [112, 248]]);
+  e.drag([[80, 248], [80, 248]]);
+  assert.equal(state.selectedId, placedId);
+  assert.equal($("#exit-inspector").hidden, false);
+  $("#exit-level").dispatch("change", { target: { value: destination[0].mapId } });
+  await new Promise(resolve => setImmediate(resolve));
+  const startValue = JSON.stringify(["root", "authored-primary"]);
+  $("#exit-start").dispatch("change", { target: { value: startValue } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match($("#exit-message").textContent, /arrival are valid/);
+  $(".inspector").scrollTop = 37;
+  e.refreshChrome();
+  assert.equal($(".inspector").scrollTop, 37, "same-object refresh does not steal the user's scroll/focus");
+  assert.equal(await e.save(), true, $("#status").textContent);
+  assert.equal(writes, 1);
+  const savedExit = stored().sections[0].document.objects.find(object => object.id === placedId).exit;
+  assert.deepEqual(savedExit, { levelId: destination[0].mapId, sectionId: "root", startId: "authored-primary" });
+  inspectorDatabase.close();
+  inspectorDatabase = new DatabaseSync(databasePath);
+  const identityBefore = { ...state.identity };
+  const reopened = await e.fetchDesign(identityBefore);
+  e.installDesign(identityBefore, reopened.payload, reopened.document, reopened.assets, reopened.sectionData);
+  await new Promise(resolve => setImmediate(resolve));
+  Object.assign(state, { cameraX: -160, cameraY: 800, zoom: 1 });
+  e.drag([[80, 248], [80, 248]]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.selectedId, placedId, "reopen then canvas selection resolves the persisted rune");
+  assert.equal($("#exit-inspector").hidden, false);
+  assert.equal($("#exit-level").value, savedExit.levelId);
+  assert.equal($("#exit-start").value, startValue);
+  Object.assign(sandbox, {
+    Event: class { constructor(type) { this.type = type; } },
+    requestAnimationFrame: callback => callback(),
+    connectedSkin,
+    ResizeObserver: class { observe() {} disconnect() {} },
+    mountLocalPreview: () => {
+      const canvas = sandbox.document.createElement("canvas");
+      canvas.clientWidth = 800; canvas.clientHeight = 600;
+      $("#play-host").append(canvas);
+      return { dispose() {} };
+    }
+  });
+  sandbox.window.setInterval = callback => { tick = callback; return 1; };
+  sandbox.window.clearInterval = () => {};
+  const beforePlay = e.documents();
+  await e.play();
+  assert.equal(state.play.phase, "playing");
+  tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.play.phase, "playing", $("#status").textContent);
+  assert.equal(state.play.game.snapshot.player.x, 2000, "Play consumes the reopened destination and selected arrival");
+  assert.equal(state.play.game.snapshot.player.y, 1048);
+  e.stop();
+  assert.equal(e.documents(), beforePlay);
+  assert.equal(writes, 1, "selection, reopen, Play, transition and Stop cannot save gameplay");
+} finally {
+  inspectorDatabase?.close();
+  await rm(inspectorDirectory, { recursive: true, force: true });
+}
+console.log("Inspector selection -> authored identity -> visible behavior-first fields -> change events -> Save -> SQLite close/reopen -> editor reopen/reselect -> real Play consumption passed for old/new runes; fixed combat outputs, generated doors and imported visual-only artwork remain non-converting (substituted I/O, no browser or server launch).");
+
+// Exercise the registered Inspector and Save events against a separately owned disposable API.
+{
+  const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const directory = await mkdtemp(resolve(root, "studio", "data", "rune-save-"));
+  const listener = createServer();
+  await new Promise((ok, fail) => listener.once("error", fail).listen(0, "127.0.0.1", ok));
+  const port = listener.address().port;
+  await new Promise((ok, fail) => listener.close(error => error ? fail(error) : ok()));
+  const origin = `http://127.0.0.1:${port}`;
+  const projectId = identity.ASTRAEUM_PROJECT_ID;
+  const sourceId = "rune-save-source", destinationId = "rune-save-destination";
+  const projectPath = `/api/projects/${projectId}`;
+  const sourcePath = `${projectPath}/levels/${sourceId}/sections`;
+  let output = "";
+  const service = spawn(process.execPath, ["--no-warnings", resolve(root, "studio", "server.mjs")], {
+    cwd: root,
+    env: { ...process.env, STUDIO_API_PORT: String(port),
+      STUDIO_DATABASE_PATH: relative(root, resolve(directory, "fixture.sqlite")),
+      STUDIO_GAMES_PATH: relative(root, resolve(directory, "games")) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  service.stdout.on("data", chunk => { output += chunk; });
+  service.stderr.on("data", chunk => { output += chunk; });
+  const request = async (path, method = "GET", body) => {
+    const response = await fetch(origin + path, { method,
+      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+    const payload = await response.json();
+    assert.ok(response.ok, `${method} ${path}: ${response.status} ${JSON.stringify(payload)}`);
+    return payload;
+  };
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (service.exitCode !== null) throw new Error(`Disposable API exited: ${output}`);
+      try {
+        const response = await fetch(`${origin}${projectPath}/maps/${sourceId}`);
+        if (response.ok) { ready = true; break; }
+      } catch {}
+      await new Promise(ok => setTimeout(ok, 100));
+    }
+    assert.ok(ready, `Disposable API did not start: ${output}`);
+    const source = towerProject.createBlankDocument(sourceId, "Source");
+    source.objects = [towerProject.createDesignObject("portal", "prop-stairs-rune", { x: 336, y: 336 }, 0)];
+    const destination = towerProject.createBlankDocument(destinationId, "Destination");
+    destination.objects = [towerProject.createDesignObject("arrival", "spawn-aries", { x: 336, y: 336 }, 0)];
+    for (const document of [source, destination]) {
+      await request(`${projectPath}/maps/${document.id}`, "PUT", { projectId, model: identity.ASTRAEUM_MODEL, document });
+    }
+    const sourceSections = await request(sourcePath);
+    await request(sourcePath, "POST", { gridX: 1, gridY: 0, revision: sourceSections.revision });
+    const e = editor(towerProject);
+    const { state, $, sandbox } = e;
+    const traffic = [];
+    let sequence = 0;
+    sandbox.crypto.randomUUID = () => `rune-save-${++sequence}`;
+    sandbox.fetch = async (address, options = {}) => {
+      const response = await fetch(origin + address, options);
+      if (options.method === "PUT") {
+        traffic.push({ address, request: JSON.parse(options.body), status: response.status,
+          response: await response.clone().json() });
+      }
+      return response;
+    };
+    const loaded = await e.fetchDesign({ projectId, mapId: sourceId });
+    e.installDesign({ projectId, mapId: sourceId }, loaded.payload, loaded.document, loaded.assets, loaded.sectionData);
+    state.levels = (await request(`${projectPath}/levels`)).levels;
+    state.selectedIds = new Set(["portal"]);
+    state.selectedId = "portal";
+    e.refreshChrome();
+    $("#camera-zoom").dispatch("change", { target: { value: "1.5" } });
+    const historyAfterZoom = state.undo.length;
+    $("#exit-level").dispatch("change", { target: { value: destinationId } });
+    await new Promise(ok => setTimeout(ok, 100));
+    assert.equal($("#save").disabled, false);
+    assert.equal(state.document.objects.find(object => object.id === "portal").exit.levelId, destinationId);
+    await $("#save").clickAsync();
+    assert.equal(traffic.length, 1, $("#status").textContent);
+    assert.equal(traffic[0].status, 200);
+    assert.equal($("#save-state").classList.contains("saved"), true, $("#status").textContent);
+    assert.equal(traffic[0].request.sections.length, 2);
+    assert.equal(traffic[0].request.sections.find(section => section.document.id === sourceId).document.cameraZoom, 1.5);
+    assert.equal(state.undo.length, historyAfterZoom + 1, "Save preserves unrelated-edit and destination history");
+    const sectionId = (await request(`${projectPath}/levels/${destinationId}/sections`)).sections[0].sectionId;
+    $("#exit-start").dispatch("change", { target: { value: JSON.stringify([sectionId, "arrival"]) } });
+    await new Promise(ok => setTimeout(ok, 100));
+    assert.equal($("#save").disabled, false);
+    await $("#save").clickAsync();
+    assert.equal(traffic.length, 2, $("#status").textContent);
+    assert.equal(traffic[1].status, 200);
+    assert.equal($("#save-state").classList.contains("saved"), true, $("#status").textContent);
+    const persisted = await request(sourcePath);
+    assert.deepEqual(persisted.sections[0].document.objects.find(object => object.id === "portal").exit,
+      { levelId: destinationId, sectionId, startId: "arrival" });
+    const reopened = await e.fetchDesign({ projectId, mapId: sourceId });
+    assert.deepEqual(reopened.sectionData.sections[0].document, persisted.sections[0].document);
+    assert.equal(reopened.sectionData.sections[0].document.cameraZoom, 1.5);
+    const longDestinationId = "d".repeat(121);
+    const longDestination = towerProject.createBlankDocument(longDestinationId, "Long ID destination");
+    longDestination.objects = [towerProject.createDesignObject("long-arrival", "spawn-aries", { x: 336, y: 336 }, 0)];
+    await request(`${projectPath}/maps/${longDestinationId}`, "PUT",
+      { projectId, model: identity.ASTRAEUM_MODEL, document: longDestination });
+    state.levels = (await request(`${projectPath}/levels`)).levels;
+    $("#exit-level").dispatch("change", { target: { value: longDestinationId } });
+    await new Promise(ok => setTimeout(ok, 100));
+    const longSectionId = (await request(`${projectPath}/levels/${longDestinationId}/sections`)).sections[0].sectionId;
+    assert.ok($("#exit-start").children.some(option =>
+      option.value === JSON.stringify([longSectionId, "long-arrival"])));
+    $("#exit-start").dispatch("change", { target: { value: JSON.stringify([longSectionId, "long-arrival"]) } });
+    assert.equal(state.document.objects.find(object => object.id === "portal").exit.sectionId, longSectionId);
+    await $("#save").clickAsync();
+    assert.equal(traffic.at(-1).status, 200, $("#status").textContent);
+    assert.equal($("#save-state").classList.contains("saved"), true, $("#status").textContent);
+    const longReopened = await e.fetchDesign({ projectId, mapId: sourceId });
+    assert.equal(longReopened.sectionData.sections.find(section => section.mapId === sourceId)
+      .document.objects.find(object => object.id === "portal").exit.sectionId, longSectionId);
+    const withSectionId = sectionId => ({
+      ...state.document, objects: state.document.objects.map(object => object.id === "portal"
+        ? { ...object, exit: { ...object.exit, sectionId } } : object)
+    });
+    const maximumSectionId = `section-${"a".repeat(128)}`;
+    assert.equal(towerProject.validateFloorDocument(withSectionId(maximumSectionId))
+      .objects.find(object => object.id === "portal").exit.sectionId, maximumSectionId);
+    assert.throws(() => towerProject.validateFloorDocument(withSectionId(`section-${"a".repeat(129)}`)),
+      /sectionId must be a valid ID/);
+    assert.throws(() => towerProject.validateFloorDocument(withSectionId(`section-${"a".repeat(120)}!`)),
+      /sectionId must be a valid ID/);
+    const beforeInvalid = e.documents(), historyBeforeInvalid = state.undo.length;
+    $("#exit-start").dispatch("change", { target: { value: "not-json" } });
+    assert.match($("#status").textContent, /Exit destination update failed:/);
+    assert.equal($("#status").classList.contains("error"), true);
+    assert.equal(e.documents(), beforeInvalid);
+    assert.equal(state.undo.length, historyBeforeInvalid);
+
+    const current = await request(sourcePath);
+    const external = await request(sourcePath, "PUT", { operationId: "external-change", revision: current.revision,
+      sections: current.sections.map(({ sectionId, revision, document }) => ({
+        sectionId, revision, document: document.id === sourceId ? { ...document, name: "External change" } : document
+      })), archivedSections: [] });
+    $("#exit-level").dispatch("change", { target: { value: destinationId } });
+    const conflictDraft = e.documents(), conflictUndo = state.undo.length;
+    await $("#save").clickAsync();
+    assert.equal(traffic.at(-1).status, 409);
+    assert.match($("#status").textContent, /Save failed:.*changed since they were opened/i);
+    assert.equal($("#status").classList.contains("error"), true);
+    assert.equal($("#save-state").classList.contains("dirty"), true);
+    assert.equal(e.documents(), conflictDraft);
+    assert.equal(state.undo.length, conflictUndo);
+    assert.deepEqual(await request(sourcePath), external, "conflict does not overwrite the concurrent save");
+    $("#undo").click();
+    assert.equal(state.document.objects.find(object => object.id === "portal").exit.sectionId, longSectionId);
+    $("#redo").click();
+    assert.equal(e.documents(), conflictDraft);
+    console.log("Disposable API editor Save evidence:", JSON.stringify(traffic.map(item => ({
+      requestRevision: item.request.revision, status: item.status, responseRevision: item.response.revision,
+      exit: item.request.sections.find(section => section.document.id === sourceId).document.objects
+        .find(object => object.id === "portal").exit
+    }))));
+  } finally {
+    if (service.exitCode === null && service.signalCode === null) {
+      await new Promise((ok, fail) => {
+        const timer = setTimeout(() => fail(new Error("Disposable API did not stop.")), 5000);
+        service.once("exit", () => { clearTimeout(timer); ok(); });
+        service.kill("SIGTERM");
+      });
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+}

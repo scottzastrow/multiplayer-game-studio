@@ -32,6 +32,7 @@
           <button id="new-game" class="button secondary" type="button" disabled>New Game</button>
           <button id="open-game" class="button secondary" type="button" disabled>Open Game</button>
           <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
+          <div id="save-error" role="alert" hidden></div>
           <button id="save" class="button secondary" disabled>Save</button>
           <button id="play" class="button primary" disabled>▶ Play</button>
           <button id="player-settings" class="button secondary" type="button" aria-haspopup="dialog">
@@ -233,7 +234,7 @@
               </div>
             </div>
             <div class="viewport-hint">Click selects · Shift-click toggles · Empty drag marquee · Drag palette assets to place · Ctrl+A visible/unlocked · Middle/Space-drag pans · Arrows nudge 5 px</div>
-            <p id="play-limitation" class="play-limitation" role="note" hidden>Connected Play loads all sections of this level for movement, camera and collision. Arrows/WASD move; combat, dodge and lighting are not simulated.</p>
+            <p id="play-limitation" class="play-limitation" role="note" hidden>Connected Play loads every active section. Astraeum stairs exits unlock after all authored slimes are defeated; nearby runes enter automatically. Configure destinations in the exit Inspector. Nearby chests open automatically once. Doors are decorative. Generic Grid uses movement, camera and collision only.</p>
           </div>
           <div id="play-host" class="play-host" hidden></div>
           <div id="play-loading" class="play-overlay" role="status" data-testid="play-loading" hidden><div class="spinner" aria-hidden="true"></div><span>Starting Play…</span></div>
@@ -246,27 +247,39 @@
         </section>
         <aside class="panel inspector">
           <div class="panel-title">Inspector</div>
-          <section class="map-settings" aria-label="Current map dimensions">
-            <strong>Map dimensions</strong>
-            <p>Expand only; new space starts empty.</p>
-            <div class="map-size-fields">
-              <label for="map-width">Map Width<input id="map-width" data-testid="map-width" type="number" min="64" max="2048" step="32"></label>
-              <label for="map-height">Map Height<input id="map-height" data-testid="map-height" type="number" min="64" max="2048" step="32"></label>
-            </div>
-            <div class="map-size-actions">
-              <button id="apply-map-size" class="button secondary" type="button" disabled>Apply expansion</button>
-              <button id="cancel-map-size" class="button secondary" type="button" disabled>Cancel</button>
-            </div>
-            <p id="map-size-error" role="alert"></p>
-            <button id="clear-level-contents" class="button danger" type="button" disabled>Clear Level Contents…</button>
+          <div id="empty-inspector" class="empty-note">Use Select, then click an object on the map or in the hierarchy. Stairs runes have exit settings; generated doors are decorative.</div>
+          <section id="decoration-inspector" class="map-settings" hidden>
+            <strong>Generated decorative door</strong>
+            <p>Not a level exit. This door is generated from the floor and Aries start, with no authored object ID or saved properties. Door interaction, destinations and individual door editing are unavailable. Select a Stairs rune to author a level exit.</p>
           </section>
-          <div id="migration-notice" class="migration-notice" data-testid="migration-notice" hidden><details id="migration-history"><summary>Migration history</summary><p id="migration-text"></p></details></div>
-          <div id="unresolved-summary" class="unresolved-summary" data-testid="unresolved-summary" hidden>
-            <span id="unresolved-count"></span>
-            <button id="next-unresolved" class="button secondary" type="button">Review next</button>
-          </div>
-          <div id="empty-inspector" class="empty-note">Select an object on the map or in the hierarchy.</div>
           <form id="object-inspector" hidden>
+            <strong id="object-heading"></strong>
+            <p id="object-behavior" class="play-note"></p>
+            <fieldset id="exit-inspector" class="behavior-fields" hidden>
+              <legend>Stairs rune - level exit</legend>
+              <label for="exit-level">Destination level (this game)</label>
+              <select id="exit-level" aria-describedby="exit-message"></select>
+              <label for="exit-start">Arrival player start (active section)</label>
+              <select id="exit-start" aria-describedby="exit-message"></select>
+              <p id="exit-message" role="status"></p>
+              <p>When all authored slimes are defeated, entering the rune's activation area starts the exit automatically. Destinations are assigned only by your edits; Save to persist.</p>
+            </fieldset>
+            <fieldset id="chest-inspector" class="behavior-fields" hidden>
+              <legend>Chest rewards</legend>
+              <label for="chest-tier">Loot tier
+                <select id="chest-tier">
+                  <option value="normal">Normal</option>
+                  <option value="treasure">Treasure</option>
+                </select>
+              </label>
+              <p id="chest-tier-details" role="status"></p>
+              <p>Chests open automatically once when you approach within 46 px. Contents spill out as pickups; treasures use the original big-chest loot pool. Save explicitly to persist this tier.</p>
+            </fieldset>
+            <section id="combat-inspector" class="behavior-fields" hidden>
+              <strong>Combat tuning (read-only)</strong>
+              <div id="combat-values" class="facts"></div>
+              <p id="combat-authoring-note"></p>
+            </section>
             <label>Object ID<input id="object-id" readonly></label>
             <section id="unresolved-panel" class="unresolved-panel" data-testid="unresolved-panel" hidden>
               <strong>Unresolved collision</strong>
@@ -314,6 +327,25 @@
             <label class="check"><input id="selection-collision" type="checkbox"> <span id="selection-collision-label">Collision</span></label>
             <button id="delete-selection" class="button danger wide" type="button">Delete selection</button>
           </section>
+          <section class="map-settings" aria-label="Current map dimensions">
+            <strong>Map dimensions</strong>
+            <p>Expand only; new space starts empty.</p>
+            <div class="map-size-fields">
+              <label for="map-width">Map Width<input id="map-width" data-testid="map-width" type="number" min="64" max="2048" step="32"></label>
+              <label for="map-height">Map Height<input id="map-height" data-testid="map-height" type="number" min="64" max="2048" step="32"></label>
+            </div>
+            <div class="map-size-actions">
+              <button id="apply-map-size" class="button secondary" type="button" disabled>Apply expansion</button>
+              <button id="cancel-map-size" class="button secondary" type="button" disabled>Cancel</button>
+            </div>
+            <p id="map-size-error" role="alert"></p>
+            <button id="clear-level-contents" class="button danger" type="button" disabled>Clear Level Contents…</button>
+          </section>
+          <div id="migration-notice" class="migration-notice" data-testid="migration-notice" hidden><details id="migration-history"><summary>Migration history</summary><p id="migration-text"></p></details></div>
+          <div id="unresolved-summary" class="unresolved-summary" data-testid="unresolved-summary" hidden>
+            <span id="unresolved-count"></span>
+            <button id="next-unresolved" class="button secondary" type="button">Review next</button>
+          </div>
         </aside>
       </main>
       <dialog id="level-dialog" aria-labelledby="level-title">

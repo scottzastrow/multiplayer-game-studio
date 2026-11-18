@@ -5,8 +5,9 @@ import {
 } from "@multiplayer-game/theme-sdk";
 import * as generic from "../../games/generic-grid-v1/src/project.js";
 import * as tower from "../../games/astraeum-tower/src/project.js";
-import { drawDesign as drawTower } from "../../games/astraeum-tower/src/design-render.js";
-import { drawPlayer } from "../../games/astraeum-tower/src/skin.js";
+import { drawDesign as drawTower, fixedDecorations } from "../../games/astraeum-tower/src/design-render.js";
+import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
+import { drawPlayer, towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
 import { ASTRAEUM_MODEL } from "../project-identity.js";
 import { sectionOrigin, worldToSection } from "../world-coordinates.js";
 import {
@@ -16,7 +17,8 @@ import {
 const CELL = MAP_CELL_SIZE;
 const metadata = Object.freeze({ id: "studio-connected-movement", version: "1.0.0", stateSchemaVersion: 1 });
 
-export function createConnectedPreview(sourceSections, { mapId, model, assetCatalog, rootDocument }) {
+export function createConnectedPreview(sourceSections, { mapId, model, assetCatalog, rootDocument,
+  arrival, playerState, interactionState, requireNeutral = false }) {
   if (![generic.MODEL, ASTRAEUM_MODEL].includes(model)) throw new Error("Unsupported connected Play model.");
   const isTower = model === ASTRAEUM_MODEL;
   const project = isTower ? tower : generic;
@@ -101,6 +103,9 @@ export function createConnectedPreview(sourceSections, { mapId, model, assetCata
   const primarySection = sections.find(section =>
     section.document.objects.some(object => object.assetId === requiredStarts[0]));
   const primary = primarySection.document.objects.find(object => object.assetId === requiredStarts[0]);
+  if (arrival && (arrival.sectionId !== primarySection.sectionId || arrival.startId !== primary.id)) {
+    throw new Error("The destination player start is missing, deleted or inactive. Select an active Aries start in the exit Inspector.");
+  }
   const startId = qualifyConnectedMapReference(primarySection.sectionId, isTower ? "aries-start" : primary.id);
   const bounds = {
     x: Math.min(...sections.map(section => section.origin.x)),
@@ -109,10 +114,23 @@ export function createConnectedPreview(sourceSections, { mapId, model, assetCata
     bottom: Math.max(...sections.map(section => section.origin.y + section.document.bounds.height))
   };
   const options = {
-    world, settings: { moveDistance: 4 }, seed: 1,
-    roster: [{ accountId: "player", username: "Player", joinedOrder: 0 }],
-    viewer: { accountId: "player", role: "player" },
-    moduleFactory: {
+    world,
+    settings: isTower ? towerSettings : { moveDistance: 4 },
+    seed: 1,
+    roster: [isTower
+      ? { accountId: "aries", username: "Aries", joinedOrder: 0 }
+      : { accountId: "player", username: "Player", joinedOrder: 0 }],
+    viewer: { accountId: isTower ? "aries" : "player", role: "player" },
+    moduleFactory: isTower
+      ? createTowerGameModule(primarySection.document, assetCatalog, {
+        mapId,
+        interactionState,
+        primaryStartId: startId,
+        playerState,
+        strictArrival: Boolean(arrival),
+        sections: sections.map(({ sectionId, origin, document }) => ({ sectionId, origin, document }))
+      })
+      : {
       metadata,
       validateSettings: settings => settings?.moveDistance === 4,
       create(context, settings) {
@@ -169,24 +187,27 @@ export function createConnectedPreview(sourceSections, { mapId, model, assetCata
     return { floor: occupancy?.floor[point.y / CELL]?.[point.x / CELL] ?? false,
       wall: occupancy?.wall[point.y / CELL]?.[point.x / CELL] ?? false };
   };
+  const drawWorld = (context, artwork) => {
+    for (const section of sections) {
+      context.save();
+      context.translate(section.origin.x, section.origin.y);
+      context.beginPath();
+      context.rect(0, 0, section.document.bounds.width, section.document.bounds.height);
+      context.clip();
+      if (isTower) {
+        drawTower(context, artwork, section.document, {
+          grid: tower.floorDocumentGrid(section.document, assetCatalog),
+          mode: "play", assetCatalog,
+          sampleCell: (x, y) => sampleCell(section, x, y)
+        });
+      } else generic.drawDesign(context, artwork, section.document, { mode: "play", assetCatalog });
+      context.restore();
+    }
+  };
   return {
     options, sections, bounds, cameraZoom: root.document.cameraZoom ?? 1,
-    drawWorld(context, artwork) {
-      for (const section of sections) {
-        context.save();
-        context.translate(section.origin.x, section.origin.y);
-        context.beginPath();
-        context.rect(0, 0, section.document.bounds.width, section.document.bounds.height);
-        context.clip();
-        if (isTower) {
-          drawTower(context, artwork, section.document, {
-            mode: "play", decorations: false, assetCatalog,
-            sampleCell: (x, y) => sampleCell(section, x, y)
-          });
-        } else generic.drawDesign(context, artwork, section.document, { mode: "play", assetCatalog });
-        context.restore();
-      }
-    },
+    isTower, primaryDocument: { ...primarySection.document, cameraZoom: root.document.cameraZoom ?? 1 },
+    assetCatalog, drawWorld, requireNeutral,
     drawActor(context, artwork, player, tick) {
       if (isTower) {
         drawPlayer(context, artwork, {
@@ -210,7 +231,32 @@ export function connectedCamera(bounds, position, width, height, zoom) {
     y: axis(position.y, bounds.y, bounds.bottom, height / zoom) };
 }
 
-export function connectedSkin(preview, artwork) {
+export function connectedSkin(preview, artwork, preferredControlMode) {
+  if (preview.isTower) {
+    const candles = [];
+    const placedLights = [];
+    for (const section of preview.sections) {
+      const start = section.document.objects.find(object => object.assetId === "spawn-aries")?.transform;
+      const decor = fixedDecorations(artwork,
+        tower.floorDocumentGrid(section.document, preview.assetCatalog), start);
+      candles.push(...decor.candles.map(candle => ({
+        ...candle.light,
+        x: candle.light.x + section.origin.x,
+        y: candle.light.y + section.origin.y
+      })));
+      placedLights.push(...tower.objectLights(section.document, preview.assetCatalog).map(light => ({
+        ...light, x: light.x + section.origin.x, y: light.y + section.origin.y
+      })));
+    }
+    const collisionCount = preview.options.world.sections.reduce(
+      (count, section) => count + section.map.collisions.length, 0
+    );
+    return towerSkinFactory(artwork, undefined, preview.primaryDocument, preview.assetCatalog,
+      preferredControlMode, {
+        bounds: preview.bounds, candles, placedLights, collisionCount, requireNeutral: preview.requireNeutral,
+        draw: context => preview.drawWorld(context, artwork)
+      });
+  }
   return {
     metadata: { id: "studio-connected-movement-skin", version: "1.0.0",
       acceptedModuleId: metadata.id, acceptedStateSchemaVersions: [1] },

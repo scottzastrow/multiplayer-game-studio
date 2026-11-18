@@ -75,6 +75,8 @@ button:disabled { opacity: .48; cursor: default; }
 .save-state { min-width: 86px; color: var(--muted); text-align: right; }
 .save-state.dirty { color: #e5ba65; }
 .save-state.saved { color: #8dcea0; }
+.save-state.error { color: #ffaaa8; }
+#save-error { position: fixed; z-index: 20; top: 60px; right: 12px; max-width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 80px); overflow: auto; padding: 10px 14px; white-space: normal; overflow-wrap: anywhere; color: #ffaaa8; border: 1px solid #7b4048; border-radius: 5px; background: #30242a; box-shadow: 0 2px 6px #0008; }
 .button { padding: 6px 11px; }
 .button.primary { border-color: #438dca; background: #3179b4; font-weight: 650; }
 .button.secondary { background: #373c45; }
@@ -196,6 +198,12 @@ button:disabled { opacity: .48; cursor: default; }
 #selection-inspector input[type="number"] { width: 100%; min-width: 0; padding: 6px 7px; color: #e7eaf0; border: 1px solid #444a54; border-radius: 4px; background: #21242a; }
 #object-inspector label { display: grid; gap: 5px; color: #bfc6d0; }
 #object-inspector input { width: 100%; min-width: 0; padding: 6px 7px; color: #e7eaf0; border: 1px solid #444a54; border-radius: 4px; background: #21242a; }
+#object-heading { color: #d7eaff; }
+.behavior-fields { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 9px; border: 1px solid #59616e; border-radius: 5px; }
+.behavior-fields legend { color: #d7eaff; }
+.behavior-fields p { margin: 0; color: #b9c1cc; font-size: 12px; }
+.behavior-fields select { width: 100%; min-width: 0; padding: 6px; color: inherit; background: #21242a; border: 1px solid #59616e; border-radius: 4px; }
+.behavior-fields select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .position-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 9px; border: 1px solid #424751; border-radius: 5px; }
 .position-fields legend { padding: 0 4px; color: #aeb7c3; }
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; color: #bfc6d0; }

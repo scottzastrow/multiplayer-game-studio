@@ -32,7 +32,12 @@ let {
 } = towerProject;
 import * as towerRender from "../../games/astraeum-tower/src/design-render.js";
 let { drawAsset, drawDesign } = towerRender;
-import { createTowerGameModule, towerSettings } from "../../games/astraeum-tower/src/game.js";
+import {
+  createTowerGameModule,
+  createTowerInteractionState,
+  towerSettings,
+  towerEncounterTuning
+} from "../../games/astraeum-tower/src/game.js";
 import { towerSkinFactory } from "../../games/astraeum-tower/src/skin.js";
 import {
   MAX_MAP_DIMENSION as RUNTIME_MAX_MAP_DIMENSION,
@@ -65,9 +70,9 @@ const layerPrefsKey = model => model === generic.MODEL ? "web-studio.generic-gri
 const PALETTE_VIEW_KEY = "web-studio.palette-view.v1";
 const PLAYER_CONTROL_MODE_KEY = "web-studio.player-control-mode.v1";
 const PLAYER_CONTROL_MODES = Object.freeze({
-  "keyboard-only": { label: "Keyboard Only", bindings: "WASD: Move · Arrow keys: Dodge · Space: Attack." },
-  "keyboard-mouse": { label: "Keyboard + Mouse", bindings: "Arrow keys move · Pointer aims · Left click attacks · Hold right mouse + arrow to dodge." },
-  "game-controller": { label: "Game Controller", bindings: "Left stick moves · Right stick aims · RT attacks · Hold B/Circle + left-stick direction to dodge." }
+  "keyboard-only": { label: "Keyboard Only", bindings: "WASD: Move · Arrow keys: Dodge · Space: Attack · H: Use herb · Chests open automatically nearby." },
+  "keyboard-mouse": { label: "Keyboard + Mouse", bindings: "Arrow keys move · Pointer aims · Left click attacks · Hold right mouse + arrow to dodge · H: Use herb · Chests open automatically nearby." },
+  "game-controller": { label: "Game Controller", bindings: "Left stick moves · Right stick aims · RT attacks · Hold B/Circle + left-stick direction to dodge · Y: Use herb · Chests open automatically nearby." }
 });
 const PALETTE_VIEWS = Object.freeze({
   large: { label: "Large", thumb: 72 },
@@ -109,6 +114,7 @@ const state = {
   mapSizeDraft: null,
   identity: { projectId: ASTRAEUM_PROJECT_ID, mapId: ASTRAEUM_FLOOR_1_MAP_ID },
   saving: false,
+  saveError: null,
   switching: false,
   creating: false,
   levelBusy: false,
@@ -127,6 +133,7 @@ const state = {
   artwork: null,
   selectedId: null,
   selectedIds: new Set(),
+  inspectedDecoration: null,
   sections: [],
   archivedSections: [],
   activeSectionId: null,
@@ -404,6 +411,7 @@ function levelBounds() {
 }
 
 function setSelection(ids, preferredId = null) {
+  state.inspectedDecoration = null;
   const available = new Set(state.document?.objects.map(object => object.id) ?? []);
   state.selectedIds = new Set([...ids].filter(id => available.has(id)));
   state.selectedId = preferredId && state.selectedIds.has(preferredId)
@@ -505,6 +513,8 @@ const activeSection = () => state.sections.find(section => section.sectionId ===
 const allSections = () => [...state.sections, ...state.archivedSections];
 const rootSection = () => allSections().find(section => section.mapId === state.identity.mapId);
 const usesConnectedPreview = () => state.sections.length > 0 && (state.sections.length > 1 ||
+  (state.model === ASTRAEUM_MODEL && state.sections.some(section =>
+    section.document.objects.some(object => object.assetId === "prop-stairs-rune"))) ||
   !state.sections.some(section => section.mapId === state.identity.mapId));
 const sectionDocuments = () => state.sections.map(section => section.document);
 function boundarySections() {
@@ -670,18 +680,24 @@ function refreshChrome({ structure = true } = {}) {
   const isDirty = loaded && (dirty() || !state.persisted);
   updatePlayerSettings();
   updateMapSettings();
-  $("#save-state").textContent = !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
+  $("#save-state").textContent = state.saveError ? "Save failed - unsaved" :
+    !loaded ? "Not loaded" : isDirty ? "● Unsaved changes" : "✓ Saved";
   $("#save-state").className = `save-state ${isDirty || !loaded ? "dirty" : "saved"}`;
+  $("#save-state").classList.toggle("error", Boolean(state.saveError));
+  $("#save-error").textContent = state.saveError ?? "";
+  $("#save-error").hidden = !state.saveError;
   $("#save").disabled = !loaded || (!isDirty && state.persisted) || isPlaying() || Boolean(state.fillPreview);
   $("#save").disabled ||= state.saving;
+  const pendingGesture = Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
   $("#open-game").disabled = isPlaying() || state.saving || state.switching || !state.artwork;
   $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
   $("#import-assets").disabled = !loaded || isPlaying() || state.saving || state.switching || state.creating;
-  const pendingGesture = Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
   for (const id of ["open-game", "new-game", "import-assets", "save"]) $(`#${id}`).disabled ||= pendingGesture;
   $("#play").disabled = !loaded || isPlaying() || state.saving || !state.artwork || pendingGesture;
   $("#play").title = usesConnectedPreview()
-    ? "Play all sections of this level (movement, camera and collision only)."
+    ? state.model === ASTRAEUM_MODEL
+      ? "Play all sections with combat and authored stairs exits. Doors are decorative."
+      : "Play all sections of this level (movement, camera and collision only)."
     : pendingGesture ? "Apply or cancel the current edit before Play." : "Play this level.";
   $("#play-limitation").hidden = !usesConnectedPreview();
   for (const id of ["save", "play", "open-game", "new-game", "import-assets"]) {
@@ -932,12 +948,181 @@ function updateHierarchy() {
   tree.querySelector(".tree-item.selected")?.scrollIntoView({ block: "nearest" });
 }
 
+let exitInspectorSelection = null;
+let exitInspectorVersion = 0;
+let inspectorIdentity = "";
+
+function updateBehaviorInspector(object) {
+  const asset = object && ASSET_CATALOG[object.assetId];
+  const tower = state.model === ASTRAEUM_MODEL;
+  const aries = tower && object?.assetId === "spawn-aries";
+  const slime = tower && object?.assetId === "spawn-slime";
+  const chest = tower && asset?.interaction?.kind === "chest";
+  $("#combat-inspector").hidden = !aries && !slime;
+  $("#chest-inspector").hidden = !chest;
+  if (!object) return;
+  $("#object-heading").textContent = aries ? "Aries - player start" : slime ? "Slime - enemy spawn"
+    : tower && object.assetId === "prop-stairs-rune" ? "Stairs rune - level exit"
+      : asset.imported ? `${asset.label} - decorative artwork` : asset.label;
+  if (chest) {
+    const tier = object.interaction?.tier ?? asset.interaction.defaultTier;
+    $("#chest-tier").value = tier;
+    $("#chest-tier-details").textContent = tier === "treasure"
+      ? "4-6 items · rare pool: herb, sapphire, ruby, emerald, mana crystal (weighted twice), or amethyst · Floor 1 gold baseline: 24-39."
+      : "2-4 items · original pool: herb (weighted twice), mushroom, amethyst (weighted twice), sapphire, ruby, or emerald · Floor 1 gold baseline: 10-16.";
+  }
+  $("#object-behavior").textContent = aries
+    ? "Authored player spawn, not a live character. Edit its start position below. Control mode and level camera zoom are in Player Settings."
+    : slime ? "Authored enemy spawn. Its position and presence are editable; every living authored slime in active sections keeps stairs exits locked."
+      : asset.imported ? "Visual artwork only - not an exit, player or enemy, regardless of its image or name. No destination, AI, combat, animation or interaction settings are supported. " +
+        (tower ? "Place a built-in Stairs portal, Aries start or Slime spawn for gameplay; this artwork is not converted."
+          : "Use built-in gameplay assets supported by this game's runtime; this artwork is not converted.")
+        : asset.playNote;
+  if (!aries && !slime) return;
+  const tuning = towerEncounterTuning;
+  const values = aries ? [
+    ["Starting / max HP", tuning.playerHp], ["Starting / max stamina", tuning.stamina],
+    ["Movement (px / frame)", towerSettings.playerSpeed],
+    ["Halberd base damage", tuning.halberd.damage], ["Halberd range (px)", tuning.halberd.range],
+    ["Attack cooldown (frames)", tuning.halberd.cooldownFrames],
+    ["Dodge cost", tuning.dodge.staminaCost], ["Dodge duration (frames)", tuning.dodge.durationFrames],
+    ["Hit invulnerability (frames)", tuning.invulnerabilityFrames]
+  ] : [
+    ["HP", tuning.slime.hp], ["Contact damage", tuning.slime.damage],
+    ["Base speed (px / frame)", tuning.slime.speed], ["Aggro range (px)", tuning.slime.aggro],
+    ["Hop period (frames)", tuning.slime.hopPeriod], ["Hop duration (frames)", tuning.slime.hopFrames],
+    ["Hop speed multiplier", tuning.slime.hopMultiplier]
+  ];
+  $("#combat-values").replaceChildren(...values.flatMap(([label, value]) => {
+    const name = document.createElement("span"), output = document.createElement("output");
+    name.textContent = label;
+    output.textContent = String(value);
+    return [name, output];
+  }));
+  $("#combat-authoring-note").textContent = "Fixed by the current Tower combat module, not saved per object. " +
+    "Per-character HP, stamina, damage, speed, weapons, AI, drops and abilities cannot be authored here. " +
+    (aries ? "Level transitions carry current HP/stamina/facing; these are new-run defaults." : "Each Play/level entry creates a fresh slime encounter.");
+}
+
+async function loadExitLevel(levelId) {
+  const projectId = state.identity.projectId;
+  const response = await fetch(levelsUrl(projectId));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Could not check destination levels. Retry the exit.");
+  const level = payload.levels?.find(level => level.mapId === levelId && !level.deletedAt);
+  if (!level || !level.supported) {
+    throw new Error("The destination level is missing, deleted or unsupported. Select an available level in this game's exit Inspector.");
+  }
+  if (state.identity.projectId !== projectId) throw new Error("The current game changed. Select the exit again.");
+  if (levelId === state.identity.mapId) {
+    return state.play.sourceLevel ??
+      { mapId: levelId, sections: state.sections, rootDocument: rootSection()?.document };
+  }
+  const sectionResponse = await fetch(`${levelsUrl(projectId)}/${encodeURIComponent(levelId)}/sections`);
+  const data = await sectionResponse.json();
+  if (!sectionResponse.ok) throw new Error(data.error ?? "Could not load the destination's complete section set. Retry or select another level.");
+  if (data.projectId !== projectId || data.levelMapId !== levelId || data.model !== ASTRAEUM_MODEL ||
+      !Array.isArray(data.sections) || !data.sections.length) {
+    throw new Error("The destination must be an Astraeum level in the current game with active sections.");
+  }
+  if ([...data.sections, ...(data.archivedSections ?? [])].some(section =>
+    section.document?.id !== section.mapId)) {
+    throw new Error("A destination section document does not match its saved identity. Reopen or repair that level.");
+  }
+  const root = [...data.sections, ...(data.archivedSections ?? [])].find(section => section.mapId === levelId);
+  if (!root) throw new Error("The destination boundary owner is missing. Reopen or repair that level before using this exit.");
+  return { mapId: levelId, sections: data.sections, rootDocument: root.document,
+    revision: data.revision, persisted: true, dirty: false };
+}
+
+function exitPreview(level, destination, playerState, interactionState) {
+  if (!destination?.levelId || !destination.sectionId || !destination.startId) {
+    throw new Error("This exit has no complete destination. In its Inspector, select a destination level and player start.");
+  }
+  return createConnectedPreview(level.sections, {
+    mapId: level.mapId, rootDocument: level.rootDocument, model: ASTRAEUM_MODEL,
+    assetCatalog: ASSET_CATALOG, arrival: destination, playerState, interactionState,
+    requireNeutral: true
+  });
+}
+
+function updateExitInspector(object) {
+  const visible = state.model === ASTRAEUM_MODEL && object?.assetId === "prop-stairs-rune";
+  $("#exit-inspector").hidden = !visible;
+  if (!visible) {
+    exitInspectorSelection = null;
+    exitInspectorVersion++;
+    return;
+  }
+  if (exitInspectorSelection?.object === object && exitInspectorSelection.projectId === state.identity.projectId &&
+      exitInspectorSelection.levels === state.levels) return;
+  exitInspectorSelection = { object, projectId: state.identity.projectId, levels: state.levels };
+  const version = ++exitInspectorVersion;
+  const destination = object.exit;
+  const levels = $("#exit-level"), starts = $("#exit-start"), message = $("#exit-message");
+  levels.replaceChildren(new Option("Choose a destination level", ""));
+  for (const level of state.levels.filter(level => !level.deletedAt && level.supported)) {
+    levels.append(new Option(level.name, level.mapId));
+  }
+  if (destination?.levelId && !state.levels.some(level =>
+    level.mapId === destination.levelId && !level.deletedAt && level.supported)) {
+    levels.append(new Option(`Missing/deleted level: ${destination.levelId}`, destination.levelId));
+  }
+  levels.value = destination?.levelId ?? "";
+  starts.replaceChildren(new Option("Choose a player start", ""));
+  starts.disabled = true;
+  message.textContent = destination?.levelId ? "Checking destination..." :
+    "Select a level and an active Aries start. No destination is assigned automatically.";
+  if (!destination?.levelId) return;
+  void (async () => {
+    try {
+      const level = await loadExitLevel(destination.levelId);
+      if (version !== exitInspectorVersion) return;
+      for (const section of level.sections) {
+        for (const start of section.document.objects.filter(object => object.assetId === "spawn-aries")) {
+          starts.append(new Option(`${section.document.name}: ${start.id} (${start.transform.x}, ${start.transform.y})`,
+            JSON.stringify([section.sectionId, start.id])));
+        }
+      }
+      starts.disabled = starts.children.length === 1;
+      if (starts.disabled) {
+        message.textContent = "No active Aries start. Open the destination and place exactly one Aries start, then reselect this exit.";
+        return;
+      }
+      const selected = destination.sectionId && destination.startId
+        ? JSON.stringify([destination.sectionId, destination.startId]) : "";
+      starts.value = selected;
+      if (!selected) {
+        message.textContent = "Select the destination's active Aries start.";
+        return;
+      }
+      const preview = exitPreview(level, destination);
+      const probe = await createLocalGame(preview.options);
+      probe.dispose();
+      if (version === exitInspectorVersion) message.textContent = "Destination and arrival are valid. All active sections will load; HP and stamina carry over.";
+    } catch (error) {
+      if (version === exitInspectorVersion) {
+        message.textContent = `Exit needs attention: ${error.message} Open the destination to repair its active sections/start, or choose another destination.`;
+      }
+    }
+  })();
+}
+
 function updateInspector() {
   updateUnresolvedSummary();
   const object = selectedObject();
   const selected = selectedObjects();
   const multiple = selected.length > 1;
-  $("#empty-inspector").hidden = selected.length > 0;
+  const decoration = state.inspectedDecoration?.sectionId === state.activeSectionId;
+  const identity = `${state.identity.projectId}/${state.identity.mapId}/${state.activeSectionId}/${decoration ? "generated-door" : [...state.selectedIds].join(",")}`;
+  if (identity !== inspectorIdentity) {
+    $(".inspector").scrollTop = 0;
+    inspectorIdentity = identity;
+  }
+  $("#decoration-inspector").hidden = !decoration;
+  updateBehaviorInspector(multiple ? null : object);
+  updateExitInspector(multiple ? null : object);
+  $("#empty-inspector").hidden = selected.length > 0 || decoration;
   $("#object-inspector").hidden = selected.length !== 1;
   $("#selection-inspector").hidden = !multiple;
   if (multiple) {
@@ -2005,6 +2190,20 @@ function pointerDown(event) {
     return;
   }
   const object = hitTest(state.document, point, isSelectable);
+  if (state.model === ASTRAEUM_MODEL && state.layers.terrain.visible && state.layers.walls.visible &&
+      !["item", "spawn", "collision"].includes(object?.type)) {
+    const start = state.document.objects.find(object => object.assetId === "spawn-aries")?.transform;
+    const { door } = towerRender.fixedDecorations(state.artwork, floorDocumentGrid(state.document), start);
+    const bounds = door && towerRender.doorBounds(state.artwork, door);
+    if (bounds && point.x >= bounds.x && point.x < bounds.x + bounds.width &&
+        point.y >= bounds.y && point.y < bounds.y + bounds.height) {
+      setSelection([]);
+      state.inspectedDecoration = { sectionId: state.activeSectionId };
+      refreshChrome();
+      setStatus("Decorative door: generated artwork, not an authored object or level exit. Select a stairs rune for exit settings.");
+      return;
+    }
+  }
   if (!object) {
     state.pointerMode = "marquee";
     state.pointerStart = {
@@ -2626,6 +2825,7 @@ async function save() {
   if (!state.document || isPlaying() || state.saving || state.fillPreview || state.boundaryDraft || state.pointerMode) return false;
   try {
     state.saving = true;
+    state.saveError = null;
     const identity = { ...state.identity };
     const sections = state.sections.map(section => ({ sectionId: section.sectionId, revision: section.revision,
       ...(section.isNew ? { mapId: section.mapId, gridX: section.gridX, gridY: section.gridY } : {}),
@@ -2648,7 +2848,7 @@ async function save() {
     let payload = await response.json();
     if (!response.ok) {
       if (response.status < 500) state.pendingSectionSave = null;
-      throw new Error(payload.error ?? `Save failed (${response.status}).`);
+      throw new Error(`HTTP ${response.status}: ${payload.error ?? "Save request rejected."}`);
     }
     if (initialSave) {
       if (payload.projectId !== identity.projectId || payload.mapId !== identity.mapId ||
@@ -2698,8 +2898,9 @@ async function save() {
     setStatus("Map saved to the local Studio database.");
     return true;
   } catch (error) {
-    setStatus(`Save failed: ${error.message}${state.pendingSectionSave
-      ? " Retry Save to reconcile the same operation before switching." : ""}`, true);
+    state.saveError = `Save failed: ${error.message}${state.pendingSectionSave
+      ? " Retry Save to reconcile the same operation before switching." : ""}`;
+    setStatus(state.saveError, true);
     return false;
   } finally {
     state.saving = false;
@@ -2710,7 +2911,6 @@ async function save() {
 // ---------------------------------------------------------------- play
 
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
-
 function showPlayError(message) {
   $("#play-error-message").textContent = message;
   $("#play-error").hidden = false;
@@ -2731,7 +2931,8 @@ function teardownPlay() {
       // A game that failed mid-step disposes itself.
     }
   }
-  Object.assign(play, { phase: "idle", game: null, mount: null, timer: null, resizeObserver: null });
+  Object.assign(play, { phase: "idle", game: null, mount: null, timer: null, resizeObserver: null,
+    run: null, sourceLevel: null, interactionState: null });
   playHost.replaceChildren();
   playHost.hidden = true;
   $("#play-loading").hidden = true;
@@ -2750,6 +2951,72 @@ function teardownPlay() {
   }
 }
 
+async function transitionExit(request) {
+  const play = state.play, run = play.run, source = play.game;
+  if (play.phase !== "playing" || !run || request.sequence === play.exitSequence) return;
+  play.exitSequence = request.sequence;
+  play.phase = "transitioning";
+  window.dispatchEvent(new Event("studio:tower-transition"));
+  source.sendInput("aries", { type: "clear" });
+  setStatus("Loading the exit destination...");
+  window.dispatchEvent(new CustomEvent("studio:tower-exit-status", {
+    detail: { exitId: request.exitId, message: "Loading the exit destination..." }
+  }));
+  let destinationGame;
+  let replaced = false;
+  try {
+    const destination = request.destination;
+    if (!destination?.levelId || !destination.sectionId || !destination.startId) {
+      throw new Error("This exit has no complete destination. In its Inspector, select a destination level and player start.");
+    }
+    const level = await loadExitLevel(destination.levelId);
+    if (play.run !== run) return;
+    const preview = exitPreview(level, destination, source.snapshot.player, play.interactionState);
+    destinationGame = await createLocalGame(preview.options);
+    if (play.run !== run) {
+      destinationGame.dispose();
+      return;
+    }
+    // Validate the entire destination and exact arrival before retiring the source.
+    play.mount.dispose();
+    source.dispose();
+    playHost.replaceChildren();
+    play.game = destinationGame;
+    play.mount = null;
+    replaced = true;
+    const destinationSkin = connectedSkin(preview, state.artwork, state.playerControlMode);
+    play.mount = mountLocalPreview(playHost, destinationGame,
+      destinationSkin, {
+        onInputRejected: () => setStatus("The runtime rejected an input.", true)
+      });
+    const canvas = playHost.querySelector("canvas");
+    if (!canvas || canvas.clientWidth < 2 || canvas.clientHeight < 2) {
+      throw new Error("The destination Play view has no visible size. Enlarge the window and try Play again.");
+    }
+    play.exitSequence = 0;
+    play.phase = "playing";
+    canvas.focus({ preventScroll: true });
+    setStatus(`Playing ${level.rootDocument.name}. All active sections loaded; HP and stamina preserved. Release held controls before continuing. Stop returns to the original draft.`);
+  } catch (error) {
+    if (play.run !== run) return;
+    if (replaced) {
+      teardownPlay();
+      refreshChrome();
+      showPlayError(`Destination could not mount: ${error.message}`);
+    } else {
+      destinationGame?.dispose();
+      play.phase = "playing";
+      window.dispatchEvent(new Event("studio:tower-transition"));
+      source.sendInput("aries", { type: "clear" });
+      const message = `Exit failed: ${error.message} Stop to edit its destination, or leave the rune and re-enter to retry.`;
+      setStatus(message, true);
+      window.dispatchEvent(new CustomEvent("studio:tower-exit-status", {
+        detail: { exitId: request.exitId, message }
+      }));
+    }
+  }
+}
+
 async function play() {
   if (isPlaying() || state.saving || state.switching || state.creating || state.levelBusy ||
       !state.document || !state.artwork) return;
@@ -2760,12 +3027,13 @@ async function play() {
   $("#play-error").hidden = true;
   let design;
   let connected;
+  const interactionState = state.model === ASTRAEUM_MODEL ? createTowerInteractionState() : null;
   try {
     if (usesConnectedPreview()) {
       connected = createConnectedPreview(state.sections.map(section => ({
         ...section, document: section.sectionId === state.activeSectionId ? state.document : section.document
       })), { mapId: state.identity.mapId, model: state.model, assetCatalog: ASSET_CATALOG,
-        rootDocument: rootSection()?.document });
+        rootDocument: rootSection()?.document, interactionState });
     } else {
       design = validateFloorDocument(structuredClone(state.document));
       const problems = playStartProblems(design);
@@ -2778,6 +3046,17 @@ async function play() {
   const play = state.play;
   try {
     play.phase = "starting";
+    play.run = {};
+    play.interactionState = interactionState;
+    play.exitSequence = 0;
+    play.sourceLevel = structuredClone({
+      mapId: state.identity.mapId,
+      revision: state.persisted ? state.sectionRevision : null,
+      persisted: state.persisted, dirty: dirty(),
+      sections: state.sections.map(({ sectionId, mapId, gridX, gridY, revision, document }) =>
+        ({ sectionId, mapId, gridX, gridY, revision, document })),
+      rootDocument: rootSection()?.document
+    });
     play.view = { zoom: state.zoom, cameraX: state.cameraX, cameraY: state.cameraY,
       sectionId: state.activeSectionId, selection: [...state.selectedIds] };
     studio.dataset.playState = "starting";
@@ -2795,7 +3074,10 @@ async function play() {
     await nextFrame();
     play.game = await createLocalGame(connected ? connected.options
       : state.model === generic.MODEL ? genericPreview(design, ASSET_CATALOG, state.artwork) : {
-      moduleFactory: createTowerGameModule(design, ASSET_CATALOG),
+      moduleFactory: createTowerGameModule(design, ASSET_CATALOG, {
+        mapId: state.identity.mapId,
+        interactionState
+      }),
       settings: towerSettings,
       map: createFloorMap(design),
       seed: 1,
@@ -2803,10 +3085,10 @@ async function play() {
       viewer: { accountId: "aries", role: "player" }
     });
     if (play.phase !== "starting") throw new Error("Play was cancelled.");
-    play.mount = mountLocalPreview(playHost, play.game,
-      connected ? connectedSkin(connected, state.artwork)
-        : state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
-        : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG, state.playerControlMode), {
+    const playSkin = connected ? connectedSkin(connected, state.artwork, state.playerControlMode)
+      : state.model === generic.MODEL ? genericSkin(design, ASSET_CATALOG, state.artwork)
+      : towerSkinFactory(state.artwork, undefined, design, ASSET_CATALOG, state.playerControlMode);
+    play.mount = mountLocalPreview(playHost, play.game, playSkin, {
       onInputRejected: () => setStatus("The runtime rejected an input.", true)
     });
     // The runtime re-measures only on window resize; forward layout changes too.
@@ -2817,8 +3099,11 @@ async function play() {
       throw new Error("The Play view has no visible size. Enlarge the browser window and try again.");
     }
     play.timer = window.setInterval(() => {
+      if (play.phase !== "playing") return;
       try {
         play.game.step();
+        const request = play.game.snapshot.exitRequest;
+        if (request) void transitionExit(request);
       } catch (error) {
         teardownPlay();
         refreshChrome();
@@ -2830,7 +3115,9 @@ async function play() {
     $("#play-loading").hidden = true;
     playCanvas.focus({ preventScroll: true });
     const playControls = connected
-      ? "All level sections loaded. Arrows/WASD move; movement, camera and collision only."
+      ? state.model === ASTRAEUM_MODEL
+        ? "All level sections loaded. Defeat all slimes, then enter an authored stairs rune to continue automatically. Doors are decorative."
+        : "All level sections loaded. Arrows/WASD move; movement, camera and collision only."
       : state.model === generic.MODEL
       ? "Arrows/WASD move the player."
       : "See the displayed controls for the selected mode.";
@@ -2882,7 +3169,7 @@ function ignoredShortcutTarget(target) {
 
 const playInputCodes = new Set([
   "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-  "KeyW", "KeyA", "KeyS", "KeyD", "KeyL", "Space"
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyL", "KeyH", "Space"
 ]);
 
 function configureEvents() {
@@ -3182,6 +3469,38 @@ function configureEvents() {
     }
   });
   $("#object-inspector").addEventListener("submit", event => event.preventDefault());
+  $("#chest-tier").addEventListener("change", event => {
+    const object = selectedObject();
+    if (object?.assetId !== "item-chest" || isPlaying()) return;
+    try {
+      commitDocument(replaceObject(state.document, object.id, {
+        interaction: { tier: event.target.value }
+      }));
+      setStatus("Updated chest loot tier in the draft. Save explicitly to persist it.");
+    } catch (error) {
+      setStatus(`Chest loot tier update failed: ${error.message}`, true);
+      refreshAfterOperation();
+    }
+  });
+  for (const id of ["exit-level", "exit-start"]) {
+    $(`#${id}`).addEventListener("change", event => {
+      const object = selectedObject();
+      if (object?.assetId !== "prop-stairs-rune" || isPlaying()) return;
+      try {
+        const [sectionId, startId] = id === "exit-start" && event.target.value
+          ? JSON.parse(event.target.value) : [null, null];
+        const exit = id === "exit-level"
+          ? { levelId: event.target.value || null, sectionId: null, startId: null }
+          : { levelId: object.exit?.levelId ?? null, sectionId, startId };
+        commitDocument(replaceObject(state.document, object.id, { exit }));
+        setStatus("Exit destination updated in the draft. Save explicitly to persist it.");
+      } catch (error) {
+        exitInspectorSelection = null;
+        setStatus(`Exit destination update failed: ${error.message}`, true);
+        refreshAfterOperation();
+      }
+    });
+  }
   for (const [axis, field] of [["x", $("#object-x")], ["y", $("#object-y")]]) {
     field.addEventListener("change", () => {
       const object = selectedObject();
@@ -3368,7 +3687,7 @@ function configureLevels() {
       $("#level-title").textContent = { add: "Add Level", duplicate: "Duplicate level", rename: "Rename level", delete: "Delete level?" }[action];
       $("#level-description").textContent = deleting
         ? "The saved design stays in SQLite and can be recovered from Deleted levels."
-        : action === "add" ? "Creates a separate level in this game with one empty 2048 x 2048 section. No terrain, walls, props, items or starts are copied. The starting level is unchanged."
+        : action === "add" ? "Creates a separate level in this game with one empty 2048 x 2048 section. No terrain, walls, props, enemies, items, exits or starts are generated or copied. The starting level is unchanged."
         : action === "duplicate" ? "Creates an independent saved design with a new stable map ID." : "Changes this level's name, not its ID.";
       $("#level-name-field").hidden = deleting;
       $("#level-name").disabled = deleting;
@@ -3995,6 +4314,7 @@ function installDesign(identity, payload, design, assets, sectionData) {
   state.sections = sectionData.sections;
   state.archivedSections = sectionData.archivedSections ?? [];
   state.pendingSectionSave = null;
+  state.saveError = null;
   state.fillPreview = null;
   state.sectionPlacementDirection = null;
   closeSectionRemoval();

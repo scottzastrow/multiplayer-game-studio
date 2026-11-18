@@ -270,12 +270,19 @@ export function drawAsset(context, artwork, assetId, transform, { alpha = 1, ass
   return bounds;
 }
 
+export function doorBounds(artwork, door) {
+  return {
+    x: Math.round(door.x - artwork.door.width / 2),
+    y: Math.round(door.y - artwork.door.height),
+    width: artwork.door.width,
+    height: artwork.door.height
+  };
+}
+
 function drawDecorations(context, artwork, decor) {
   if (decor.door) {
-    const { door } = decor;
-    context.drawImage(artwork.door,
-      Math.round(door.x - artwork.door.width / 2),
-      Math.round(door.y - artwork.door.height));
+    const bounds = doorBounds(artwork, decor.door);
+    context.drawImage(artwork.door, bounds.x, bounds.y);
   }
   for (const web of decor.webs) {
     const image = artwork.web;
@@ -303,10 +310,9 @@ const ALL_VISIBLE = Object.freeze({
 });
 
 /**
- * Draws a design in render order. mode "play" draws only what Play shows; mode
- * "editor" also draws editor-only objects (items, spawns, the stairs rune and
- * collision boxes). Derived decorations draw after props, as in the original.
- * Returns the derived candle lights.
+ * Draws a design in render order. Mode "editor" also draws editor-only objects
+ * (items, spawns and collision boxes). Derived decorations draw after props,
+ * as in the original. Returns the derived candle lights.
  */
 export function drawDesign(context, artwork, design, { grid, mode = "play",
   visible = ALL_VISIBLE, decorations = true, assetCatalog = ASSET_CATALOG, sampleCell } = {}) {

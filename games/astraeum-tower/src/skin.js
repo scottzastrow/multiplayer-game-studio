@@ -14,7 +14,7 @@ import {
   validateFloorDocument
 } from "./project.js";
 import { readStandardGamepad } from "@multiplayer-game/theme-sdk";
-import { drawDesign, loadArtwork } from "./design-render.js";
+import { drawAsset, drawDesign, loadArtwork } from "./design-render.js";
 
 export { loadArtwork };
 
@@ -51,15 +51,15 @@ function normalizedVector(x, y) {
   return magnitude ? { x: x / magnitude, y: y / magnitude } : null;
 }
 
-function cameraOffset(player, width, height, map, zoom) {
+function cameraOffset(player, width, height, map, zoom, bounds = null) {
   const viewWidth = width / zoom;
   const viewHeight = height / zoom;
-  const axis = (position, viewSize, worldSize) => viewSize >= worldSize
-    ? (worldSize - viewSize) / 2
-    : Math.max(0, Math.min(worldSize - viewSize, position - viewSize / 2));
+  const axis = (position, viewSize, min, max) => max - min <= viewSize
+    ? (min + max - viewSize) / 2
+    : Math.max(min, Math.min(max - viewSize, position - viewSize / 2));
   return {
-    x: axis(player.x, viewWidth, map.bounds.width),
-    y: axis(player.y, viewHeight, map.bounds.height)
+    x: axis(player.x, viewWidth, bounds?.x ?? 0, bounds?.right ?? map.bounds.width),
+    y: axis(player.y, viewHeight, bounds?.y ?? 0, bounds?.bottom ?? map.bounds.height)
   };
 }
 
@@ -126,6 +126,76 @@ function drawSlime(context, slime) {
     context.fillRect(x - width / 2, top, Math.round(width * slime.hp / slime.maxHp), 3);
   }
   context.restore();
+}
+
+function drawChests(context, artwork, interactions = {}, assetCatalog = ASSET_CATALOG, openedArtwork) {
+  for (const chest of interactions.chests ?? []) {
+    if (chest.opened && !openedArtwork.has(chest.assetId)) {
+      const asset = assetCatalog[chest.assetId];
+      const { image, region } = asset.artwork;
+      const cached = document.createElement("canvas");
+      cached.width = region.width;
+      cached.height = region.height;
+      const cachedContext = cached.getContext("2d");
+      if (!cachedContext) throw new Error("Canvas 2D chest rendering is unavailable.");
+      cachedContext.save();
+      try {
+        cachedContext.filter = "brightness(0.5) saturate(0.6)";
+        cachedContext.drawImage(artwork[image], region.x, region.y, region.width, region.height,
+          0, 0, region.width, region.height);
+      } finally {
+        cachedContext.restore();
+      }
+      openedArtwork.set(chest.assetId, {
+        artwork: { ...artwork, [image]: cached },
+        assetCatalog: { ...assetCatalog, [chest.assetId]: {
+          ...asset, artwork: { ...asset.artwork, region: { ...region, x: 0, y: 0 } }
+        } }
+      });
+    }
+    const opened = chest.opened ? openedArtwork.get(chest.assetId) : null;
+    drawAsset(context, opened?.artwork ?? artwork, chest.assetId, chest.transform,
+      { assetCatalog: opened?.assetCatalog ?? assetCatalog });
+    if (chest.opened || chest.tier !== "treasure") continue;
+    context.save();
+    context.globalCompositeOperation = "lighter";
+    context.fillStyle = "rgba(160,112,255,0.6)";
+    context.beginPath();
+    context.ellipse(chest.transform.x, chest.transform.y - 16, 8, 4, 0, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  }
+}
+
+function drawLoot(context, artwork, interactions = {}, assetCatalog = ASSET_CATALOG) {
+  const colors = {
+    herb: "#7fe06a", mushroom: "#5fe0d8", amethyst: "#b98af0",
+    sapphire: "#5f9ff5", ruby: "#ff5a6a", emerald: "#4fe08a",
+    mana: "#6ff0ff", gold: "#ffd84a"
+  };
+  for (const item of interactions.items ?? []) {
+    if (item.assetId && assetCatalog[item.assetId]) {
+      drawAsset(context, artwork, item.assetId,
+        { x: item.x, y: item.y - (item.height ?? 0) }, { assetCatalog });
+      continue;
+    }
+    const x = Math.round(item.x);
+    const y = Math.round(item.y - (item.height ?? 0));
+    context.save();
+    context.fillStyle = colors[item.kind] ?? "#ffffff";
+    context.beginPath();
+    if (item.kind === "gold") {
+      context.ellipse(x, y, 4, 3, 0, 0, Math.PI * 2);
+    } else {
+      context.moveTo(x, y - 6);
+      context.lineTo(x + 5, y);
+      context.lineTo(x, y + 6);
+      context.lineTo(x - 5, y);
+      context.closePath();
+    }
+    context.fill();
+    context.restore();
+  }
 }
 
 function drawWeaponAttack(context, player) {
@@ -320,13 +390,17 @@ export function towerSkinFactory(
   lightingOptions = towerLightingSettings,
   project = DEFAULT_FLOOR_DOCUMENT,
   assetCatalog = ASSET_CATALOG,
-  preferredControlMode = CONTROL_MODES.keyboardMouse
+  preferredControlMode = CONTROL_MODES.keyboardMouse,
+  connectedWorld = null
 ) {
   const initialLightingSettings = createTowerLightingSettings(lightingOptions);
   const design = validateFloorDocument(project, assetCatalog);
   const grid = floorDocumentGrid(design, assetCatalog);
-  const map = createFloorMap(design, assetCatalog);
-  const placedLights = objectLights(design, assetCatalog);
+  const map = connectedWorld
+    ? { bounds: { width: connectedWorld.bounds.right - connectedWorld.bounds.x,
+      height: connectedWorld.bounds.bottom - connectedWorld.bounds.y } }
+    : createFloorMap(design, assetCatalog);
+  const placedLights = connectedWorld?.placedLights ?? objectLights(design, assetCatalog);
   return Object.freeze({
     metadata: Object.freeze({
       id: "astraeum-tower-floor-one-skin",
@@ -344,6 +418,7 @@ export function towerSkinFactory(
       }
 
       const world = document.createElement("section");
+      world.style.position = "relative";
       const canvas = document.createElement("canvas");
       canvas.dataset.testid = "astraeum-world";
       canvas.dataset.mapWidth = String(grid[0].length);
@@ -352,7 +427,7 @@ export function towerSkinFactory(
       canvas.dataset.worldWidth = String(map.bounds.width);
       canvas.dataset.worldHeight = String(map.bounds.height);
       canvas.dataset.cameraZoom = String(design.cameraZoom);
-      canvas.dataset.collisionRectangles = String(map.collisions.length);
+      canvas.dataset.collisionRectangles = String(connectedWorld?.collisionCount ?? map.collisions.length);
       canvas.dataset.importedAssetIds = JSON.stringify(design.objects
         .filter(object => assetCatalog[object.assetId].imported).map(object => object.assetId));
       canvas.setAttribute("role", "img");
@@ -361,19 +436,38 @@ export function towerSkinFactory(
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) throw new Error("Canvas 2D rendering is unavailable.");
       context.imageSmoothingEnabled = false;
-      const background = document.createElement("canvas");
-      background.width = map.bounds.width;
-      background.height = map.bounds.height;
-      const backgroundContext = background.getContext("2d", { alpha: false });
-      if (!backgroundContext) throw new Error("Canvas 2D background rendering is unavailable.");
-      backgroundContext.imageSmoothingEnabled = false;
-      const candles = drawDesign(backgroundContext, artwork, design, { grid, map, mode: "play", assetCatalog });
+      const openedChestArtwork = new Map();
+      let background;
+      let candles;
+      if (connectedWorld) {
+        candles = connectedWorld.candles;
+      } else {
+        background = document.createElement("canvas");
+        background.width = map.bounds.width;
+        background.height = map.bounds.height;
+        const backgroundContext = background.getContext("2d", { alpha: false });
+        if (!backgroundContext) throw new Error("Canvas 2D background rendering is unavailable.");
+        backgroundContext.imageSmoothingEnabled = false;
+        candles = drawDesign(backgroundContext, artwork, design, { grid, map, mode: "play", assetCatalog });
+      }
 
       const position = document.createElement("output");
       position.dataset.testid = "astraeum-position";
       const hud = document.createElement("output");
       hud.dataset.testid = "astraeum-hud";
       hud.textContent = "Aries · 2 px/frame at 60 fps · Wall collision enabled";
+      const exitPrompt = document.createElement("output");
+      exitPrompt.dataset.testid = "astraeum-exit-prompt";
+      exitPrompt.setAttribute("role", "status");
+      exitPrompt.hidden = true;
+      Object.assign(exitPrompt.style, {
+        position: "absolute", zIndex: "5", left: "50%", transform: "translateX(-50%)",
+        width: "max-content", maxWidth: "90%", padding: "8px 12px",
+        boxSizing: "border-box", overflowWrap: "anywhere",
+        border: "1px solid #b79bff", borderRadius: "6px",
+        background: "#17121ff2", color: "#f0e9fb", font: "bold 15px sans-serif",
+        textAlign: "center", pointerEvents: "none"
+      });
       let controlMode = Object.values(CONTROL_MODES).includes(preferredControlMode)
         ? preferredControlMode : CONTROL_MODES.keyboardMouse;
       const help = document.createElement("p");
@@ -391,7 +485,7 @@ export function towerSkinFactory(
         canvas.dataset.playerLightSoftness = String(lightingSettings.playerLightSoftness);
         canvas.dataset.fullyLit = String(lightingSettings.fullyLit);
       });
-      world.append(canvas);
+      world.append(canvas, exitPrompt);
       worldSlot.append(world);
       hudSlot.append(hud, position);
 
@@ -399,12 +493,15 @@ export function towerSkinFactory(
       const keys = new Set();
       const suppressedKeys = new Set();
       let current;
+      let exitStatus = null;
       let disposed = false;
       let attackHeld = false;
+      let controllerHerbHeld = false;
       let rightMouseHeld = false;
       let rightMouseNeedsRelease = false;
       let controllerDodgeArmed = false;
       let controllerConnected = false;
+      let controllerNeedsNeutral = Boolean(connectedWorld?.requireNeutral);
       let playerSettingsOpen = false;
       let windowFocused = true;
       let viewportWidth = 1;
@@ -437,16 +534,23 @@ export function towerSkinFactory(
         for (const code of keys) suppressedKeys.add(code);
         keys.clear();
         attackHeld = false;
+        controllerHerbHeld = false;
         rightMouseNeedsRelease ||= rightMouseHeld;
         rightMouseHeld = false;
         controllerDodgeArmed = false;
         controllerConnected = false;
+        controllerNeedsNeutral = true;
         sendMovement(0, 0);
         host.dispatchInput({ type: "clear" });
       };
       window.addEventListener("studio:player-settings-open", () => {
         playerSettingsOpen = true;
         neutral();
+      }, { signal: listener.signal });
+      window.addEventListener("studio:tower-transition", neutral, { signal: listener.signal });
+      window.addEventListener("studio:tower-exit-status", event => {
+        exitStatus = event.detail;
+        updateExitPrompt();
       }, { signal: listener.signal });
       window.addEventListener("studio:player-settings-close", () => {
         playerSettingsOpen = false;
@@ -460,6 +564,7 @@ export function towerSkinFactory(
       canvas.addEventListener("keydown", event => {
         if (event.target !== canvas || disposed || !windowFocused || playerSettingsOpen) return;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.repeat) return;
         if (suppressedKeys.has(event.code)) {
           event.preventDefault();
           return;
@@ -476,7 +581,8 @@ export function towerSkinFactory(
         const isAttackKey = mode === CONTROL_MODES.keyboardOnly
           ? event.code === "Space"
           : false;
-        if (!isMoveKey && !isDodgeKey && !isAttackKey) return;
+        const isHerbKey = event.code === "KeyH";
+        if (!isMoveKey && !isDodgeKey && !isAttackKey && !isHerbKey) return;
         event.preventDefault();
         if (isMoveKey && !keys.has(event.code)) {
           keys.add(event.code);
@@ -496,6 +602,7 @@ export function towerSkinFactory(
           keys.add(event.code);
           sendAttack(true);
         }
+        if (isHerbKey) host.dispatchInput({ type: "use-herb", pressed: true });
       }, { signal: listener.signal });
       window.addEventListener("keyup", event => {
         if (suppressedKeys.delete(event.code)) return;
@@ -561,12 +668,30 @@ export function towerSkinFactory(
 
       function updateHelp() {
         if (controlMode === CONTROL_MODES.keyboardOnly) {
-          help.textContent = "Keyboard Only — WASD: Move · Arrow keys: Dodge · Space: Attack.";
+          help.textContent = "Keyboard Only — WASD: Move · Arrow keys: Dodge · Space: Attack · H: Use herb. Chests open automatically nearby.";
         } else if (controlMode === CONTROL_MODES.keyboardMouse) {
-          help.textContent = "Keyboard + Mouse — arrows move · pointer aims · left click attacks · hold right mouse + arrow to dodge.";
+          help.textContent = "Keyboard + Mouse — arrows move · pointer aims · left click attacks · hold right mouse + arrow to dodge · H: Use herb. Chests open automatically nearby.";
         } else {
-          help.textContent = "Game Controller — left stick moves · right stick aims · RT attacks · hold B/Circle + left-stick direction to dodge.";
+          help.textContent = "Game Controller — left stick moves · right stick aims · RT attacks · hold B/Circle + left-stick direction to dodge · Y: Use herb. Chests open automatically nearby.";
         }
+        help.textContent += " Exit: defeat all slimes, then enter the violet stairs rune to continue automatically. Doors are decorative.";
+        updateExitPrompt();
+      }
+
+      function updateExitPrompt() {
+        const nearby = current?.nearbyExit;
+        let message = "";
+        if (nearby && current.player?.hp > 0) {
+          const remaining = current.enemies.length;
+          const destination = nearby.destination;
+          message = remaining ? `Defeat ${remaining} remaining slime${remaining === 1 ? "" : "s"}`
+            : exitStatus?.exitId === nearby.id ? exitStatus.message
+            : !destination?.levelId || !destination.sectionId || !destination.startId
+              ? "Exit has no complete destination. Stop and select a destination level and player start in its Inspector."
+              : "Enter the rune to continue";
+        }
+        exitPrompt.textContent = message;
+        exitPrompt.hidden = !message;
       }
 
       function tryKeyboardMouseDodge() {
@@ -608,12 +733,21 @@ export function towerSkinFactory(
             controllerStatus.textContent = `Controller ${input.status}${input.id ? `: ${input.id}` : ""}`;
             if (input.status === "connected" && pad) {
               controllerConnected = true;
-              sendMovement(input.movement.x, input.movement.y);
-              sendAim(input.aim);
-              sendAttack(input.fire);
               const dodgeButton = Boolean(pad.buttons[1]?.pressed || (pad.buttons[1]?.value ?? 0) >= 0.5);
-              if (!dodgeButton) controllerDodgeArmed = true;
-              else if (controllerDodgeArmed &&
+              const useHerb = Boolean(pad.buttons[3]?.pressed || (pad.buttons[3]?.value ?? 0) >= 0.5);
+              if (!input.movement.x && !input.movement.y && !input.aim && !input.fire &&
+                  !dodgeButton && !useHerb) controllerNeedsNeutral = false;
+              if (!controllerNeedsNeutral) {
+                sendMovement(input.movement.x, input.movement.y);
+                sendAim(input.aim);
+                sendAttack(input.fire);
+                if (useHerb && !controllerHerbHeld) {
+                  host.dispatchInput({ type: "use-herb", pressed: true });
+                }
+                controllerHerbHeld = useHerb;
+              }
+              if (!dodgeButton && !controllerNeedsNeutral) controllerDodgeArmed = true;
+              else if (!controllerNeedsNeutral && controllerDodgeArmed &&
                   Math.hypot(input.movement.x, input.movement.y) > 0) {
                 controllerDodgeArmed = false;
                 pulseDodge(input.movement);
@@ -632,13 +766,17 @@ export function towerSkinFactory(
           const players = current.players ?? [player];
           const enemies = current.enemies ?? [];
           canvas.dataset.simulationTick = String(current.tick);
-          const camera = cameraOffset(player, viewportWidth, viewportHeight, map, design.cameraZoom);
+          const camera = cameraOffset(player, viewportWidth, viewportHeight, map, design.cameraZoom,
+            connectedWorld?.bounds);
           context.clearRect(0, 0, canvas.width, canvas.height);
           context.imageSmoothingEnabled = false;
           context.save();
           context.setTransform(pixelRatio * design.cameraZoom, 0, 0, pixelRatio * design.cameraZoom,
             -camera.x * pixelRatio * design.cameraZoom, -camera.y * pixelRatio * design.cameraZoom);
-          context.drawImage(background, 0, 0);
+          if (connectedWorld) connectedWorld.draw(context);
+          else context.drawImage(background, 0, 0);
+          drawChests(context, artwork, current.interactions, assetCatalog, openedChestArtwork);
+          drawLoot(context, artwork, current.interactions, assetCatalog);
           for (const slime of enemies) drawSlime(context, slime);
           for (const activePlayer of players) drawPlayer(context, artwork, activePlayer);
           for (const activePlayer of players) drawWeaponAttack(context, activePlayer);
@@ -704,7 +842,17 @@ export function towerSkinFactory(
           canvas.dataset.playerLightSoftness = String(lightingSettings.playerLightSoftness);
           canvas.dataset.fullyLit = String(lightingSettings.fullyLit);
           position.textContent = `Aries position: ${player.x.toFixed(1)}, ${player.y.toFixed(1)} · HP ${player.hp}/${player.maxHp} · Stamina ${player.stamina.toFixed(1)}`;
-          hud.textContent = `Aries · HP ${player.hp}/${player.maxHp} · Stamina ${Math.floor(player.stamina)} · Slimes ${enemies.length}`;
+          canvas.dataset.exitUnlocked = String(current.exitUnlocked ?? enemies.length === 0);
+          updateExitPrompt();
+          exitPrompt.style.top = `${Math.max(8, Math.min(viewportHeight - 100,
+            (player.y - camera.y) * design.cameraZoom + 20))}px`;
+          const inventory = current.inventory ?? {};
+          const gems = ["amethyst", "sapphire", "ruby", "emerald", "mana"]
+            .reduce((sum, kind) => sum + (inventory[kind] ?? 0), 0);
+          hud.textContent = `Aries · HP ${player.hp}/${player.maxHp} · Stamina ${Math.floor(player.stamina)} · ` +
+            `Herbs ${inventory.herb ?? 0} · Mushrooms ${inventory.mushroom ?? 0} · Gems ${gems} · Gold ${inventory.gold ?? 0} · ` +
+            `Slimes remaining ${enemies.length} · ` +
+            (current.exitCount ? `Exit ${current.exitUnlocked ? "unlocked - enter the rune" : "locked"}` : "No authored exit");
         },
         handleViewport(width, height, devicePixelRatio) {
           viewportWidth = Math.max(1, Math.floor(width));

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   DESIGN_FORMAT_VERSION,
   createBlankDocument,
+  createEmptyLevelDocument,
   migrateFloorDocumentV1,
   validateFloorDocument
 } from "../games/astraeum-tower/src/project.js";
@@ -720,9 +721,10 @@ function addLevelSection(projectId, levelMapId, input) {
     const mapId = `map-${randomUUID()}`;
     const sectionId = `section-${randomUUID()}`;
     const name = `${current.sections[0].document.name} section`;
-    const starter = current.model === generic.MODEL ? generic.createDocument(mapId, name) : createBlankDocument(mapId, name);
+    const starter = current.model === generic.MODEL
+      ? generic.createEmptyLevelDocument(mapId, name) : createEmptyLevelDocument(mapId, name);
     const validate = current.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument;
-    const document = validate({ ...starter, objects: [] });
+    const document = validate(starter);
     const now = new Date().toISOString();
     database.prepare("INSERT INTO maps (project_id, map_id, document_json, updated_at, model) VALUES (?, ?, ?, ?, ?)")
       .run(projectId, mapId, JSON.stringify(document), now, current.model);
@@ -971,13 +973,9 @@ function changeLevels(projectId, input) {
         advanceLevelRevision(projectId, mapId);
       } else {
         mapId = `map-${randomUUID()}`;
-        const starter = input.action === "duplicate" ? { ...original, id: mapId, name }
-          : source.model === generic.MODEL ? generic.createDocument(mapId, name)
-          : createBlankDocument(mapId, name);
-        const document = input.action === "add"
-          ? (source.model === generic.MODEL ? generic.validateFloorDocument : validateFloorDocument)
-            ({ ...starter, objects: [] }, assetCatalogFor(projectId, source.model))
-          : starter;
+        const document = input.action === "duplicate" ? { ...original, id: mapId, name }
+          : source.model === generic.MODEL ? generic.createEmptyLevelDocument(mapId, name)
+          : createEmptyLevelDocument(mapId, name);
         saveMap.run(projectId, mapId, JSON.stringify(document), now, source.model);
       }
     } else if (input.action === "start") {

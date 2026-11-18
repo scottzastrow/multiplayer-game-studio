@@ -1,5 +1,6 @@
 import { sectionOrigin, worldToSection } from "../world-coordinates.js";
-import { extendTerrainStroke, isTerrainBrushAsset, planTerrainStroke, TERRAIN_CELL_SIZE } from "../world-terrain.js";
+import { extendTerrainStroke, isTerrainBrushAsset, planTerrainStroke, terrainRectangle,
+  terrainRectangleCells, TERRAIN_CELL_SIZE } from "../world-terrain.js";
 
 export function configureWorldWorkspace(getEditor) {
   const $ = selector => document.querySelector(selector);
@@ -13,6 +14,7 @@ export function configureWorldWorkspace(getEditor) {
   let camera = { x: 0, y: 0, zoom: 0.25 };
   let selection = null;
   let pointer = null;
+  let fillPreview = null;
   let space = false;
   let busy = false;
   let pending = null;
@@ -40,18 +42,26 @@ export function configureWorldWorkspace(getEditor) {
     return result;
   }
   function update() {
+    const editing = Boolean(pointer || fillPreview);
     $("#world-zoom-label").textContent = `${Math.round(camera.zoom * 100)}%`;
-    $("#world-save").disabled = busy || Boolean(pointer) || (!dirty() && !pending);
-    $("#world-undo").disabled = busy || Boolean(pointer) || Boolean(pending) || !undo.length;
-    $("#world-redo").disabled = busy || Boolean(pointer) || Boolean(pending) || !redo.length;
-    $("#world-close").disabled = busy || Boolean(pointer);
-    for (const id of ["world-zoom-in", "world-zoom-out", "world-select-tool", "world-brush-tool", "world-brush-asset",
+    $("#world-save").disabled = busy || editing || (!dirty() && !pending);
+    $("#world-undo").disabled = busy || editing || Boolean(pending) || !undo.length;
+    $("#world-redo").disabled = busy || editing || Boolean(pending) || !redo.length;
+    $("#world-close").disabled = busy || editing;
+    $("#world-fill-apply").disabled = busy || Boolean(pointer) || !fillPreview || Boolean(fillPreview.error);
+    $("#world-fill-cancel").disabled = busy || Boolean(pointer) || !fillPreview;
+    for (const id of ["world-zoom-in", "world-zoom-out", "world-select-tool", "world-brush-tool", "world-fill-tool", "world-brush-asset",
       "world-terrain-visible", "world-terrain-locked"]) {
-      $(`#${id}`).disabled = busy || Boolean(pointer) || Boolean(pending);
+      $(`#${id}`).disabled = busy || editing || Boolean(pending);
     }
     $("#world-brush-tool").disabled ||= !$("#world-brush-asset").value;
+    $("#world-fill-tool").disabled ||= !$("#world-brush-asset").value;
     $("#world-select-tool").setAttribute("aria-pressed", String(tool === "select"));
     $("#world-brush-tool").setAttribute("aria-pressed", String(tool === "brush"));
+    $("#world-fill-tool").setAttribute("aria-pressed", String(tool === "fill"));
+    const preview = pointer?.mode === "fill" ? pointer : fillPreview;
+    $("#world-fill-preview").textContent = preview?.error ? `Rectangle preview: ${preview.error}` :
+      preview?.rectangle ? `Rectangle preview: ${preview.rectangle.cellCount} cell(s), ${preview.rectangle.sectionCount} section(s).` : "";
     draw();
   }
   function draw() {
@@ -113,6 +123,15 @@ export function configureWorldWorkspace(getEditor) {
         context.strokeRect(cell.x, cell.y, TERRAIN_CELL_SIZE, TERRAIN_CELL_SIZE);
       }
     }
+    const fill = pointer?.mode === "fill" ? pointer : fillPreview;
+    if (fill?.rectangle) {
+      const { x, y, columns, rows } = fill.rectangle;
+      context.fillStyle = fill.error ? "#ff667060" : "#66ccff60";
+      context.strokeStyle = fill.error ? "#ff6670" : "#66ccff";
+      context.lineWidth = 2 / camera.zoom;
+      context.fillRect(x, y, columns * TERRAIN_CELL_SIZE, rows * TERRAIN_CELL_SIZE);
+      context.strokeRect(x, y, columns * TERRAIN_CELL_SIZE, rows * TERRAIN_CELL_SIZE);
+    }
     if (selection) {
       const section = world.sections.find(item => item.sectionId === selection.sectionId);
       const object = section?.document.objects.find(item => item.id === selection.objectId);
@@ -140,13 +159,13 @@ export function configureWorldWorkspace(getEditor) {
     update();
   }
   function applyHistory(from, to) {
-    if (busy || pointer || pending || !from.length) return;
+    if (busy || pointer || fillPreview || pending || !from.length) return;
     to.push(snapshot());
     restore(from.pop());
     status("Workspace history restored.");
   }
   function setZoom(value, x = canvas.clientWidth / 2, y = canvas.clientHeight / 2) {
-    if (pointer || busy || pending) return;
+    if (pointer || fillPreview || busy || pending) return;
     const worldX = camera.x + x / camera.zoom;
     const worldY = camera.y + y / camera.zoom;
     camera.zoom = Math.max(0.1, Math.min(4, value));
@@ -155,7 +174,7 @@ export function configureWorldWorkspace(getEditor) {
     update();
   }
   canvas.addEventListener("pointerdown", event => {
-    if (!world || busy || pending || pointer) return;
+    if (!world || busy || pending || pointer || fillPreview) return;
     canvas.focus();
     if (event.button === 1 || (event.button === 0 && space)) {
       pointer = { mode: "pan", x: event.clientX, y: event.clientY, camera: { ...camera } };
@@ -165,6 +184,9 @@ export function configureWorldWorkspace(getEditor) {
         pointer = { mode: "brush", before: snapshot(), assetId: $("#world-brush-asset").value,
           stroke: { cells: new Map(), last: null, error: null } };
         extendTerrainStroke(pointer.stroke, worldPoint);
+      } else if (tool === "fill") {
+        pointer = { mode: "fill", before: snapshot(), assetId: $("#world-brush-asset").value, start: worldPoint };
+        updateRectangle(pointer, worldPoint);
       } else {
         const local = worldToSection(worldPoint.x, worldPoint.y);
         const section = world.sections.find(item => item.gridX === local.gridX && item.gridY === local.gridY);
@@ -182,6 +204,11 @@ export function configureWorldWorkspace(getEditor) {
   });
   canvas.addEventListener("pointermove", event => {
     if (!pointer) return;
+    if (pointer.mode === "fill") {
+      updateRectangle(pointer, point(event));
+      update();
+      return;
+    }
     if (pointer.mode === "brush") {
       for (const sample of event.getCoalescedEvents?.() ?? []) extendTerrainStroke(pointer.stroke, point(sample));
       extendTerrainStroke(pointer.stroke, point(event));
@@ -207,28 +234,46 @@ export function configureWorldWorkspace(getEditor) {
     }
     update();
   });
+  function updateRectangle(fill, end) {
+    try {
+      fill.rectangle = terrainRectangle(fill.start, end);
+      fill.error = null;
+    } catch (error) {
+      fill.rectangle = null;
+      fill.error = error.message;
+    }
+  }
+  function commitTerrain(before, assetId, cells, label) {
+    try {
+      const updates = planTerrainStroke(world.sections, cells, {
+        assetId, assetCatalog: editor.assetCatalog, layerState: editor.terrainLayer(),
+        createObject: editor.createObject, validate: editor.validate
+      });
+      if (updates.length) {
+        undo.push(before);
+        if (undo.length > 100) undo.shift();
+        redo = [];
+        for (const update of updates) {
+          world.sections.find(section => section.sectionId === update.sectionId).document = update.document;
+        }
+        status(`${label} applied to ${updates.length} section(s).`);
+      } else status(`${label} unchanged (identical cells).`);
+    } catch (error) { status(`${label} rejected: ${error.message}`, true); }
+  }
   function finish(cancelled) {
     if (!pointer) return;
+    if (pointer.mode === "fill") {
+      if (cancelled) status("Rectangle fill cancelled; no sections changed.");
+      else if (pointer.error) status(`Rectangle fill rejected: ${pointer.error}`, true);
+      else {
+        fillPreview = pointer;
+        status("Review the rectangle, then Apply or Cancel.");
+      }
+    }
     if (pointer.mode === "brush") {
       if (cancelled) status("Terrain stroke cancelled; no sections changed.");
-      else {
-        try {
-          if (pointer.stroke.error) throw new Error(pointer.stroke.error);
-          const updates = planTerrainStroke(world.sections, pointer.stroke.cells.values(), {
-            assetId: pointer.assetId, assetCatalog: editor.assetCatalog, layerState: editor.terrainLayer(),
-            createObject: editor.createObject, validate: editor.validate
-          });
-          if (updates.length) {
-            undo.push(pointer.before);
-            if (undo.length > 100) undo.shift();
-            redo = [];
-            for (const update of updates) {
-              world.sections.find(section => section.sectionId === update.sectionId).document = update.document;
-            }
-            status(`Terrain stroke applied to ${updates.length} section(s).`);
-          } else status("Terrain stroke unchanged (identical cells).");
-        } catch (error) { status(`Terrain stroke rejected: ${error.message}`, true); }
-      }
+      else if (pointer.stroke.error) status(`Terrain stroke rejected: ${pointer.stroke.error}`, true);
+      else commitTerrain(pointer.before, pointer.assetId, pointer.stroke.cells.values(), "Terrain stroke");
     }
     if (pointer.mode === "move") {
       if (cancelled || pointer.invalid) {
@@ -246,6 +291,7 @@ export function configureWorldWorkspace(getEditor) {
   }
   canvas.addEventListener("pointerup", event => {
     if (pointer?.mode === "brush") extendTerrainStroke(pointer.stroke, point(event));
+    if (pointer?.mode === "fill") updateRectangle(pointer, point(event));
     finish(false);
   });
   canvas.addEventListener("pointercancel", () => finish(true));
@@ -256,9 +302,10 @@ export function configureWorldWorkspace(getEditor) {
     setZoom(camera.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX - rect.left, event.clientY - rect.top);
   }, { passive: false });
   workspace.addEventListener("keydown", event => {
-    if (event.code === "Escape" && pointer?.mode === "brush") {
+    if (event.code === "Escape" && (pointer?.mode === "brush" || pointer?.mode === "fill" || fillPreview)) {
       event.preventDefault();
-      finish(true);
+      if (pointer) finish(true);
+      else cancelFill();
       return;
     }
     if (event.code === "Space" && event.target === canvas) { space = true; event.preventDefault(); }
@@ -268,13 +315,27 @@ export function configureWorldWorkspace(getEditor) {
   });
   workspace.addEventListener("keyup", event => { if (event.code === "Space") space = false; });
   window.addEventListener("blur", () => { space = false; });
-  window.addEventListener("beforeunload", event => { if (dirty() || pending) event.preventDefault(); });
+  window.addEventListener("beforeunload", event => { if (dirty() || pending || pointer || fillPreview) event.preventDefault(); });
   $("#world-zoom-in").addEventListener("click", () => setZoom(camera.zoom * 1.2));
   $("#world-zoom-out").addEventListener("click", () => setZoom(camera.zoom / 1.2));
   $("#world-undo").addEventListener("click", () => applyHistory(undo, redo));
   $("#world-redo").addEventListener("click", () => applyHistory(redo, undo));
   $("#world-select-tool").addEventListener("click", () => { tool = "select"; update(); });
   $("#world-brush-tool").addEventListener("click", () => { tool = "brush"; update(); });
+  $("#world-fill-tool").addEventListener("click", () => { tool = "fill"; update(); });
+  function cancelFill() {
+    fillPreview = null;
+    status("Rectangle fill cancelled; no sections changed.");
+    update();
+  }
+  $("#world-fill-cancel").addEventListener("click", cancelFill);
+  $("#world-fill-apply").addEventListener("click", () => {
+    if (!fillPreview || pointer || busy || pending) return;
+    const fill = fillPreview;
+    fillPreview = null;
+    commitTerrain(fill.before, fill.assetId, terrainRectangleCells(fill.rectangle), "Rectangle fill");
+    update();
+  });
   for (const id of ["world-terrain-visible", "world-terrain-locked"]) {
     $(`#${id}`).addEventListener("change", () => {
       editor.setTerrainLayer({ visible: $("#world-terrain-visible").checked, locked: $("#world-terrain-locked").checked });
@@ -283,7 +344,7 @@ export function configureWorldWorkspace(getEditor) {
     });
   }
   async function save() {
-    if (!world || busy || pointer || (!dirty() && !pending)) return;
+    if (!world || busy || pointer || fillPreview || (!dirty() && !pending)) return;
     if (!pending) pending = { operationId: `save-${crypto.randomUUID()}`, revision: world.revision,
       sections: world.sections.map(section => ({ sectionId: section.sectionId, revision: section.revision,
         document: structuredClone(section.document) })) };
@@ -303,7 +364,7 @@ export function configureWorldWorkspace(getEditor) {
   }
   $("#world-save").addEventListener("click", save);
   function close() {
-    if (busy || pointer) return;
+    if (busy || pointer || fillPreview) return;
     if (pending) { status("Retry the pending save before closing; its outcome is unknown.", true); return; }
     if (dirty() && !window.confirm("Discard unsaved world changes? Cancel keeps the workspace open.")) return;
     workspace.close();
@@ -313,7 +374,8 @@ export function configureWorldWorkspace(getEditor) {
   $("#world-close").addEventListener("click", close);
   workspace.addEventListener("cancel", event => {
     event.preventDefault();
-    if (pointer?.mode === "brush") finish(true);
+    if (pointer?.mode === "brush" || pointer?.mode === "fill") finish(true);
+    else if (fillPreview) cancelFill();
     else close();
   });
   new ResizeObserver(() => draw()).observe(canvas);
@@ -331,6 +393,7 @@ export function configureWorldWorkspace(getEditor) {
     undo = [];
     redo = [];
     pending = null;
+    fillPreview = null;
     tool = "select";
     $("#world-brush-asset").replaceChildren(...Object.entries(editor.assetCatalog)
       .filter(([, asset]) => isTerrainBrushAsset(asset)).map(([id, asset]) => new Option(asset.label, id)));
@@ -381,7 +444,8 @@ export function configureWorldWorkspace(getEditor) {
   return Object.freeze({
     inspect: () => world && ({
       world: structuredClone(world), selection: structuredClone(selection), camera: { ...camera },
-      dirty: Boolean(dirty()), undoCount: undo.length, redoCount: redo.length, gesture: pointer?.mode ?? null
+      dirty: Boolean(dirty()), undoCount: undo.length, redoCount: redo.length, gesture: pointer?.mode ?? null,
+      fillPreview: structuredClone(fillPreview?.rectangle ?? null)
     })
   });
 }

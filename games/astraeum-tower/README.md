@@ -9,12 +9,15 @@ The local preview loads the exact 36 × 22 Floor 1 grid and its original Aries
 art. Studio Play offers three control modes, with the selected bindings shown
 above the canvas. The standalone preview uses Keyboard + Mouse.
 
-- **Keyboard Only:** WASD: Move · Arrow keys: Dodge · Space: Attack.
+- **Keyboard Only:** WASD: Move · Arrow keys: Dodge · Space: Attack · H:
+  use a healing herb. Chests open automatically nearby.
 - **Keyboard + Mouse:** arrow keys move, the pointer aims, left click attacks,
-  and holding right mouse plus a directional arrow dodges.
+  holding right mouse plus a directional arrow dodges, and H uses a healing
+  herb. Chests open automatically nearby.
 - **Game Controller:** the left stick moves, the right stick aims, right trigger
-  attacks, and B/Circle plus a left-stick direction dodges. Stick movement
-  keeps its analog magnitude through the public standard-gamepad adapter.
+  attacks, B/Circle plus a left-stick direction dodges, and Y uses a healing
+  herb. Chests open automatically nearby. Stick movement keeps its analog
+  magnitude through the public standard-gamepad adapter.
 
 Short attack presses are buffered to the next simulation step. Dodge preserves
 Anh's 14-frame speed curve (6.2 px/frame at the start, tapering to 45%),
@@ -86,9 +89,27 @@ original hit windows deal 10 then 20 damage. Both phases use the original
 procedural bright thrust and sweeping crescent visuals, not invented sprite
 frames. Damage numbers, hit sparks, knockback, and death particles are
 procedural; the slime is drawn as a static Canvas shape, without invented
-sprite or attack frames. The preview has this
-one-player encounter only; player death/respawn, spells, other enemies, loot,
-chest interactions, and floor completion remain pending. Input and health
+sprite or attack frames. The preview has this one-player encounter only;
+player death/respawn, spells and other enemies remain pending. Collectible
+herbs, glowcaps and gems auto-collect once; herbs enter inventory and H restores
+up to 30 HP without consuming one at full health. Chests open once when Aries
+approaches within 46 world pixels; no Interact input is required. Normal chests
+spill 2-4 weighted original items and 10-16 Floor 1 baseline
+gold; Treasure tier spills 4-6 items from the original rare pool and 24-39
+gold. Drops magnetize and auto-collect after their original delay. The Inspector
+authors Normal or Treasure tier; new chests default to Normal. Inventory and
+opened/collected state persist across level transitions/revisits within one
+Play run and are discarded on Stop/new Play; saved designs are never mutated.
+Barrels, crates and pots remain decorative: the original defines no attack,
+durability or drop behavior for them. Studio Play supports explicitly authored
+stairs exits with an all-active-slimes lock and automatic entry (no Interact).
+An unlock while standing on a rune activates it; arrival runes and failed
+attempts require leaving and re-entering before another transition.
+The standalone encounter has no level
+catalog and reports that routing requires Studio. See
+`studio/docs/DEVELOPMENT.md`, "Astraeum authored level progression", for the
+read-only original-game finding, Inspector workflow, state policy and focused
+checks. Input and health
 state are keyed by account ID as groundwork only; multiplayer is not supported
 or verified.
 
@@ -113,4 +134,7 @@ from visible thrust/sweep Canvas captures in all four facings, and checks
 movement-only input, short taps, dodge re-arming, stamina/cooldown rejection,
 neutral-stick behavior, disconnect, blur, UI focus, Play focus, and shortcut
 isolation. Set `STUDIO_ATTACK_EVIDENCE_DIR` to save the four-direction weapon
-captures. Physical-controller behavior remains unverified.
+captures. `npm run astraeum:interactions:test` exercises interactions with a
+disposable public runtime, including both connected seam axes and revisits; it
+does not establish native-browser acceptance. Physical-controller hardware
+remains unverified.

@@ -31,7 +31,9 @@ function asset(definition) {
     ? { width: definition.artwork.region.width, height: definition.artwork.region.height }
     : { width: 20, height: 20 });
   return Object.freeze({ collision: "none", collisionBox: null, legacyMarker: null, unique: false,
-    alpha: 1, light: null, ...definition, size: Object.freeze(size) });
+    alpha: 1, light: null, ...definition,
+    interaction: definition.interaction ? Object.freeze({ ...definition.interaction }) : null,
+    size: Object.freeze(size) });
 }
 
 function region(image, file, x, y, width, height) {
@@ -61,7 +63,7 @@ export const ASSET_CATALOG = Object.freeze({
     artwork: region("barrel", "barrel.png", 0, 0, 22, 30),
     pivot: { x: 11, y: 28 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -9, y: -8, width: 18, height: 8 },
-    play: "implemented", playNote: "Rendered in Play. Collision is optional (off for the original Floor 1 props).",
+    play: "implemented", playNote: "Decorative in Play. The original game defines no attack rule, durability or drops. Collision is optional (off for the original Floor 1 props).",
     details: "22 × 30 · optional 18 × 8 collision"
   }),
   "prop-crate": asset({
@@ -69,7 +71,7 @@ export const ASSET_CATALOG = Object.freeze({
     artwork: region("crate", "crate.png", 0, 0, 28, 30),
     pivot: { x: 14, y: 28 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -12, y: -10, width: 24, height: 10 },
-    play: "implemented", playNote: "Rendered in Play. Collision is optional (off for the original Floor 1 props).",
+    play: "implemented", playNote: "Decorative in Play. The original game defines no attack rule, durability or drops. Collision is optional (off for the original Floor 1 props).",
     details: "28 × 30 · optional 24 × 10 collision"
   }),
   "prop-pots": asset({
@@ -77,7 +79,7 @@ export const ASSET_CATALOG = Object.freeze({
     artwork: region("pots", "pots.png", 0, 0, 30, 29),
     pivot: { x: 15, y: 27 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -12, y: -8, width: 24, height: 8 },
-    play: "implemented", playNote: "Rendered in Play. Collision is optional (off for the original Floor 1 props).",
+    play: "implemented", playNote: "Decorative in Play. The original game defines no attack rule, durability or drops. Collision is optional (off for the original Floor 1 props).",
     details: "30 × 29 · optional 24 × 8 collision"
   }),
   "prop-candle": asset({
@@ -91,47 +93,52 @@ export const ASSET_CATALOG = Object.freeze({
   "prop-stairs-rune": asset({
     type: "prop", label: "Stairs portal", legacyMarker: ">", unique: false, repeatable: false,
     artwork: region("rune", "rune.png", 0, 0, 114, 113),
-    alpha: 0.85, playVisible: false,
+    alpha: 0.85,
     pivot: { x: 57, y: 48 }, snap: { x: 16, y: 16, forced: true },
     light: { offsetY: 8, radius: 70, color: "#a070ff", steady: true },
-    play: "partial", playNote: "Play emits the original violet light only; the rune and the floor exit are not implemented.",
-    details: "114 × 113 rune · light only in Play"
+    play: "implemented", playNote: "Level exit: after defeating all authored slimes, enter the rune's activation area to continue automatically. Select a destination level and Aries start in the Inspector. Unconfigured exits report an error; doors remain decorative.",
+    details: "114 × 113 rune · violet light · authored level exit"
   }),
   "item-chest": asset({
     type: "item", label: "Treasure chest", legacyMarker: "C",
+    interaction: { kind: "chest", defaultTier: "normal" },
     artwork: region("chest", "chest.png", 0, 0, 40, 37),
     pivot: { x: 20, y: 34 }, snap: { x: 16, y: 24, forced: false },
     collision: "optional", collisionBox: { x: -16, y: -10, width: 32, height: 10 },
-    play: "editor-only", playNote: "Not shown in Play; chest interaction and loot are not implemented.",
-    details: "40 × 37 · no gameplay yet"
+    play: "implemented", playNote: "Opens automatically once within 46 px. Normal chests use the original Floor 1 loot table; choose Normal or Treasure tier in the Inspector.",
+    details: "40 × 37 · opens once when Aries approaches within 46 px"
   }),
   "item-herb": asset({
     type: "item", label: "Healing herb", legacyMarker: "h",
+    interaction: { kind: "pickup", item: "herb", count: 1, planted: true },
     artwork: region("herb", "herb.png", 0, 0, 32, 38), size: { width: 19, height: 22 },
     pivot: { x: 10, y: 22 }, snap: { x: 16, y: 24, forced: false },
-    play: "editor-only", playNote: "Not shown in Play; pickups are not implemented.",
-    details: "drawn 19 × 22 · no gameplay yet"
+    play: "implemented", playNote: "Auto-collected once nearby. Press H to use one and restore up to 30 HP; a full-health use does not consume it.",
+    details: "drawn 19 × 22 · +1 herb · H restores up to 30 HP"
   }),
   "item-mushroom": asset({
     type: "item", label: "Glowcap mushroom", legacyMarker: "m", artwork: null,
+    interaction: { kind: "pickup", item: "mushroom", count: 1 },
     placeholder: { glyph: "m", color: "#5fe0d8" },
     pivot: { x: 10, y: 20 }, snap: { x: 16, y: 24, forced: false },
-    play: "editor-only", playNote: "Not shown in Play; pickups are not implemented. Drawn in code in the original, so no artwork was extracted.",
-    details: "no artwork · no gameplay yet"
+    play: "implemented", playNote: "Auto-collected once nearby and added to the original run inventory; no Studio use effect is defined.",
+    details: "no artwork · +1 inventory item"
   }),
   "item-amethyst": asset({
     type: "item", label: "Amethyst", legacyMarker: "a",
+    interaction: { kind: "pickup", item: "amethyst", count: 1 },
     artwork: region("amethyst", "amethyst.png", 0, 0, 24, 29), size: { width: 11, height: 13 },
     pivot: { x: 6, y: 13 }, snap: { x: 16, y: 24, forced: false },
-    play: "editor-only", playNote: "Not shown in Play; pickups are not implemented.",
-    details: "drawn 11 × 13 · no gameplay yet"
+    play: "implemented", playNote: "Auto-collected once nearby and added to the original gem inventory.",
+    details: "drawn 11 × 13 · +1 gem"
   }),
   "item-sapphire": asset({
     type: "item", label: "Sapphire", legacyMarker: "z",
+    interaction: { kind: "pickup", item: "sapphire", count: 1 },
     artwork: region("sapphire", "sapphire.png", 0, 0, 20, 28), size: { width: 9, height: 13 },
     pivot: { x: 5, y: 13 }, snap: { x: 16, y: 24, forced: false },
-    play: "editor-only", playNote: "Not shown in Play; pickups are not implemented.",
-    details: "drawn 9 × 13 · no gameplay yet"
+    play: "implemented", playNote: "Auto-collected once nearby and added to the original gem inventory.",
+    details: "drawn 9 × 13 · +1 gem"
   }),
   "spawn-aries": asset({
     type: "spawn", label: "Aries start", legacyMarker: "P", unique: true, required: true,
@@ -144,8 +151,8 @@ export const ASSET_CATALOG = Object.freeze({
     type: "spawn", label: "Slime spawn", legacyMarker: "s", artwork: null,
     placeholder: { glyph: "s", color: "#7fd36b" },
     pivot: { x: 10, y: 10 }, snap: { x: 16, y: 16, forced: true },
-    play: "implemented", playNote: "Spawns the original Floor 1 green slime: hop-chase movement and 12 contact damage. Its static procedural drawing uses no sprite frames.",
-    details: "procedural slime · 36 HP · hop-chase · contact damage"
+    play: "implemented", playNote: "Spawns the original green slime: 36 HP, hop-chase movement and 12 contact damage. The Halberd can damage and defeat it; its static procedural drawing uses no sprite frames.",
+    details: "procedural slime · 36 HP · hop-chase · contact damage and combat"
   }),
   "collision-box": asset({
     type: "collision", label: "Collision box", artwork: null, size: { width: 32, height: 32 },

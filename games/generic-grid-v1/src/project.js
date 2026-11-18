@@ -94,6 +94,15 @@ export function createDocument(id, name, bounds = DEFAULT_DIMENSIONS) {
     ]
   });
 }
+export function createEmptyLevelDocument(id, name, bounds = DEFAULT_DIMENSIONS) {
+  validateDimensions(bounds);
+  return validateFloorDocument({
+    formatVersion: 1, id, name, cellSize: MAP_CELL_SIZE, bounds: { ...bounds },
+    cameraZoom: DEFAULT_CAMERA_ZOOM,
+    layers: DESIGN_LAYERS.map(layer => ({ ...layer })),
+    objects: []
+  });
+}
 export function validateFloorDocument(document, assetCatalog = ASSET_CATALOG) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     throw new TypeError("Generic document must be an object.");

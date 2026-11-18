@@ -10,6 +10,7 @@ import {
   boundaryContainsCircle,
   validatePlayableBoundary
 } from "../../../studio/playable-boundaries.js";
+import { isProjectMapId } from "../../../studio/project-identity.js";
 
 export const MAP_CELL_SIZE = 32;
 export const DESIGN_FORMAT_VERSION = 2;
@@ -28,7 +29,7 @@ export const FLOOR1_BOUNDS = Object.freeze({
 const DESIGN_ID = "astraeum-tower-floor-1";
 const DESIGN_NAME = "Damp Corridors";
 const IDENTIFIER = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
-const OBJECT_KEYS = new Set(["id", "type", "assetId", "layer", "order", "transform", "collision", "migration"]);
+const OBJECT_KEYS = new Set(["id", "type", "assetId", "layer", "order", "transform", "collision", "migration", "exit", "interaction"]);
 const LAYER_ORDER = Object.freeze(Object.fromEntries(DESIGN_LAYERS.map(layer => [layer.id, layer.order])));
 
 export { ASSET_CATALOG, DESIGN_LAYERS, OBJECT_TYPES };
@@ -125,7 +126,7 @@ export function createDesignObject(id, assetId, transform, order, { collision } 
   const asset = assetCatalog[assetId];
   if (!asset) fail(`Unknown asset ${assetId}.`);
   const withCollision = collision ?? asset.collision === "required";
-  return {
+  const object = {
     id,
     type: asset.type,
     assetId,
@@ -134,6 +135,10 @@ export function createDesignObject(id, assetId, transform, order, { collision } 
     transform: { x: transform.x, y: transform.y },
     collision: withCollision && asset.collisionBox ? { ...asset.collisionBox } : null
   };
+  if (asset.interaction?.kind === "chest") {
+    object.interaction = { tier: asset.interaction.defaultTier };
+  }
+  return object;
 }
 
 // ---------------------------------------------------------------- unresolved collision
@@ -316,6 +321,13 @@ export function createBlankDocument(id, name, bounds = { width: MAX_MAP_DIMENSIO
   return validateFloorDocument(design);
 }
 
+export function createEmptyLevelDocument(id, name, bounds = { width: MAX_MAP_DIMENSION, height: MAX_MAP_DIMENSION }) {
+  const design = emptyDesign(bounds);
+  design.id = id;
+  design.name = name;
+  return validateFloorDocument(design);
+}
+
 function validateFormatOne(document) {
   if (!document || document.formatVersion !== 1 || document.id !== DESIGN_ID ||
       document.name !== DESIGN_NAME || document.cellSize !== MAP_CELL_SIZE ||
@@ -434,6 +446,28 @@ function validateObject(input, index, mapBounds, assetCatalog = ASSET_CATALOG) {
       fail(`Object ${id} migration note is invalid.`);
     }
     object.migration = { ...migration };
+  }
+  if (input.interaction !== undefined) {
+    if (asset.interaction?.kind !== "chest") {
+      fail(`Object ${id} does not support editable interaction properties.`);
+    }
+    exactKeys(input.interaction, ["tier"], `Object ${id} interaction`);
+    if (!["normal", "treasure"].includes(input.interaction.tier)) {
+      fail(`Object ${id} chest tier must be normal or treasure.`);
+    }
+    object.interaction = { tier: input.interaction.tier };
+  }
+  if (input.exit !== undefined) {
+    if (assetId !== "prop-stairs-rune") fail(`Object ${id}: only a stairs portal can have an exit destination.`);
+    exactKeys(input.exit, ["levelId", "sectionId", "startId"], `Exit ${id} destination`);
+    for (const [key, value] of Object.entries(input.exit)) {
+      const generatedRootSection = key === "sectionId" && typeof value === "string" &&
+        value.startsWith("section-") && isProjectMapId(value.slice("section-".length));
+      if (value !== null && (typeof value !== "string" || (!IDENTIFIER.test(value) && !generatedRootSection))) {
+        fail(`Exit ${id} ${key} must be a valid ID or null. Select its destination in the Inspector.`);
+      }
+    }
+    object.exit = { ...input.exit };
   }
   return object;
 }

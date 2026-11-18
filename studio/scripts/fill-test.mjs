@@ -216,15 +216,18 @@ try {
     return main.slice(start, end);
   };
   const editor = {
-    state: { sections: structuredClone(seamBefore), undo: [], redo: [], selectedIds: new Set(),
+    state: { sections: structuredClone(seamBefore), archivedSections: [], undo: [], redo: [], selectedIds: new Set(),
       activeSectionId: seamBefore[0].sectionId, scene: {}, fillSettings: { gapX: 10, gapY: 2 },
       layers: structuredClone(layers), pointerMode: null },
     ASSET_CATALOG: tower.ASSET_CATALOG, HISTORY_LIMIT: 100,
     createDesignObject: tower.createDesignObject, validateFloorDocument: tower.validateFloorDocument,
     planFill, structuredClone, isPlaying: () => false, isSelectable: () => true,
-    refreshChrome() {}, refreshAfterOperation() {}, setStatus() {}
+    fillDiagnostics: { applying: false },
+    refreshChrome() {}, refreshAfterOperation() {}, setStatus() {}, traceFill() {},
+    fillDiagnosticDocuments: () => [], updateFillDiagnostics() {}
   };
   editor.activeSection = () => editor.state.sections.find(s => s.sectionId === editor.state.activeSectionId);
+  editor.allSections = () => editor.state.sections;
   editor.setSelection = ids => { editor.state.selectedIds = new Set(ids); };
   const begin = () => {
     editor.state.document = editor.activeSection().document;
@@ -232,7 +235,7 @@ try {
       before: editor.state.sections.map(({ sectionId, document }) => ({ sectionId, document })) };
   };
   begin();
-  const controller = ["pushSectionUndo", "commitToolPreview", "fillPlan", "applyFill", "restoreHistory", "undo", "redo"]
+  const controller = ["pushSectionUndo", "commitToolPreview", "fillPlan", "applyFill", "restoreHistory", "applyHistory", "undo", "redo"]
     .map(functionSource).join("\n");
   runInNewContext(`${controller}\napplyFill();`, editor);
   assert.equal(editor.state.undo.length, 1, "actual main-editor Apply pushes exactly one history entry");

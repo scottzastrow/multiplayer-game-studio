@@ -21,9 +21,15 @@ const mounted = mountLocalPreview(root, game, towerSkinFactory(artwork), {
   onInputRejected: () => { status.textContent = "The game module rejected an input action."; }
 });
 
+let exitSequence = 0;
 const timer = window.setInterval(() => {
   try {
     game.step();
+    const request = game.snapshot.exitRequest;
+    if (request && request.sequence !== exitSequence) {
+      exitSequence = request.sequence;
+      status.textContent = "Level routing requires Studio Play's current-game level catalog. Open this game in Studio and configure the stairs exit's destination level and player start in its Inspector.";
+    }
   } catch (error) {
     window.clearInterval(timer);
     status.textContent = `Local simulation failed: ${error instanceof Error ? error.message : String(error)}`;

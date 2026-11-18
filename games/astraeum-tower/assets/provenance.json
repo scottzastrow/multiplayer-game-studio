@@ -1,6 +1,12 @@
 {
   "artworkCredit": "Anh Nguyen (PixelLab)",
   "projectCredit": "SEIS 606 - Project 1 - Astraeum Tower",
+  "sourceDocument": {
+    "path": "reference/astraeum-tower-original/dungeon/index.html",
+    "sha256": "ea6d26341cbdf71a80980b846c24fb649512cbabd63e7295e70a3a74a38e9d27",
+    "bytes": 1000112,
+    "distribution": "Original supplied source retained locally; not a runtime dependency or included in this handoff. The extracted artwork below is versioned."
+  },
   "extraction": "Base64 data URIs decoded without image transformation from reference/astraeum-tower-original/dungeon/index.html.",
   "assets": [
     {

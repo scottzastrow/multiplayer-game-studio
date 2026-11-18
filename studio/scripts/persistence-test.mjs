@@ -135,6 +135,9 @@ try {
   second.objects.reverse();
   const otherMap = structuredClone(first);
   otherMap.id = "second-map";
+  otherMap.objects.find(object => object.assetId === "prop-stairs-rune").exit = {
+    levelId: mapId, sectionId: "authored-root", startId: "aries-start"
+  };
   assert.equal((await request(address, "PUT", { projectId, document: first })).status, 400);
   assert.equal((await request(address, "PUT", { projectId, model, document: first })).status, 200);
   assert.equal((await request(url(origin, "other-project", mapId), "PUT",
@@ -154,6 +157,8 @@ try {
   assert.deepEqual((await request(url(origin, projectId, mapId))).body.document, first);
   assert.deepEqual((await request(url(origin, "other-project", mapId))).body.document, second);
   assert.deepEqual((await request(url(origin, projectId, "second-map"))).body.document, otherMap);
+  assert.ok(first.objects.filter(object => object.assetId === "prop-stairs-rune")
+    .every(object => !Object.hasOwn(object, "exit")), "unconfigured original exits are never assigned destinations");
   await stop();
 
   const v2Path = resolve(testDir, "format2.sqlite");
@@ -445,13 +450,13 @@ try {
   assert.deepEqual((await request(`${origin}${worldPath}`)).body, preservedWorld);
   const preservedGenericSections = (await request(`${origin}${sectionsPath}`)).body;
   const levelCreationSnapshots = [];
-  for (const [owner, sourceId, modelId, objectFactory] of [
-    [projectId, mapId, model, (id, assetId, transform, order) =>
-      ({ ...towerOriginal.objects.find(object => object.assetId === "prop-barrel"), id, transform, order })],
-    [one.projectId, one.mapId, generic.MODEL, generic.createDesignObject]
+  for (const [owner, sourceId, modelId] of [
+    [projectId, mapId, model],
+    [one.projectId, one.mapId, generic.MODEL]
   ]) {
     const levels = `${origin}/api/projects/${owner}/levels`;
     const beforeLevels = (await request(levels)).body;
+    const sourceDocument = (await request(url(origin, owner, sourceId))).body.document;
     const inspect = new DatabaseSync(creationPath, { readOnly: true });
     const beforeRows = inspect.prepare("SELECT * FROM maps ORDER BY project_id, map_id").all();
     const beforeMembership = inspect.prepare("SELECT * FROM level_sections ORDER BY project_id, level_map_id, section_id").all();
@@ -460,6 +465,8 @@ try {
     assert.equal(created.status, 200);
     const newId = created.body.mapId;
     assert.equal(created.body.startingMapId, beforeLevels.startingMapId);
+    assert.deepEqual((await request(url(origin, owner, sourceId))).body.document, sourceDocument,
+      "Add Level does not change its source design");
     const sectionAddress = `${origin}/api/projects/${owner}/levels/${newId}/sections`;
     const fresh = (await request(sectionAddress)).body;
     assert.equal(fresh.sections.length, 1, "a separate level starts with exactly one section");
@@ -469,6 +476,9 @@ try {
     assert.deepEqual(rootSection.document.bounds, { width: 2048, height: 2048 });
     assert.deepEqual(rootSection.document.objects, [], "neither model inherits cobblestone, objects or starts");
     assert.equal(Object.hasOwn(rootSection.document, "playableBoundary"), false);
+    assert.deepEqual(Object.keys(rootSection.document).sort(),
+      ["bounds", "cameraZoom", "cellSize", "formatVersion", "id", "layers", "name", "objects"],
+      "blank levels contain only model identity and required document structure");
     const oldIds = new Set(beforeRows.map(row => `${row.project_id}/${row.map_id}`));
     assert.deepEqual(inspect.prepare("SELECT * FROM maps ORDER BY project_id, map_id").all()
       .filter(row => oldIds.has(`${row.project_id}/${row.map_id}`)), beforeRows,
@@ -477,23 +487,38 @@ try {
       beforeMembership, "adding a separate level never reassigns existing sections");
     assert.deepEqual(inspect.prepare("SELECT * FROM project_levels ORDER BY project_id").all(), beforeStarts);
     inspect.close();
-    const document = structuredClone(rootSection.document);
-    document.objects.push(objectFactory("new-level-marker", owner === projectId ? "prop-barrel" : "generic-marker",
-      { x: 128, y: 128 }, 0));
+    const duplicate = await request(levels, "POST",
+      { action: "duplicate", mapId: newId, name: `Unchanged copy ${modelId}` });
+    assert.equal(duplicate.status, 200, "Duplicate Level remains available independently of Add Level");
+    const duplicateDocument = (await request(url(origin, owner, duplicate.body.mapId))).body.document;
+    assert.deepEqual(duplicateDocument, {
+      ...rootSection.document, id: duplicate.body.mapId, name: `Unchanged copy ${modelId}`
+    }, "Duplicate Level still copies the saved source design");
     const saved = await request(sectionAddress, "PUT", { operationId: `empty-level-${newId}`,
       revision: fresh.revision, sections: [{ sectionId: rootSection.sectionId,
-        revision: rootSection.revision, document }] });
+        revision: rootSection.revision, document: rootSection.document }] });
     assert.equal(saved.status, 200);
-    assert.deepEqual(saved.body.sections[0].document, document);
-    assert.equal((await request(url(origin, two.projectId, newId))).body.document, null, "new level is project-isolated");
-    assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels/${newId}/sections`)).status, 404);
-    levelCreationSnapshots.push({ owner, newId, payload: saved.body });
+    assert.deepEqual(saved.body.sections[0].document, rootSection.document);
+    if (owner === one.projectId) {
+      assert.equal((await request(url(origin, two.projectId, newId))).body.document, null,
+        "new level is project-isolated");
+      assert.equal((await request(`${origin}/api/projects/${two.projectId}/levels/${newId}/sections`)).status, 404);
+    }
+    levelCreationSnapshots.push({ owner, newId, payload: saved.body, sourceId, sourceDocument,
+      duplicateId: duplicate.body.mapId, duplicateDocument });
   }
   await stop();
   origin = await start(creationPath);
   for (const saved of levelCreationSnapshots) {
-    assert.deepEqual((await request(`${origin}/api/projects/${saved.owner}/levels/${saved.newId}/sections`)).body,
-      saved.payload, "newly created and edited levels reopen exactly after service restart");
+    const reopened = (await request(`${origin}/api/projects/${saved.owner}/levels/${saved.newId}/sections`)).body;
+    assert.deepEqual(reopened, saved.payload, "the saved empty level reopens exactly after service restart");
+    assert.equal(reopened.sections.length, 1);
+    assert.deepEqual(reopened.sections[0].document.bounds, { width: 2048, height: 2048 });
+    assert.deepEqual(reopened.sections[0].document.objects, []);
+    assert.deepEqual((await request(url(origin, saved.owner, saved.sourceId))).body.document,
+      saved.sourceDocument, "Add Level leaves the source unchanged after reopen");
+    assert.deepEqual((await request(url(origin, saved.owner, saved.duplicateId))).body.document,
+      saved.duplicateDocument, "Duplicate Level retains the original saved content after reopen");
   }
   assert.deepEqual((await request(`${origin}/api/projects/${projectId}/levels/${mapId}/sections`)).body, towerReopened);
   assert.deepEqual((await request(`${origin}${sectionsPath}`)).body, preservedGenericSections);
