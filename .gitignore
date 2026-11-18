@@ -10,6 +10,8 @@ node_modules/
 dist/
 *.zip
 *.zip.sha256
+!/engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
+!/engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip.sha256
 *.db
 *.db-*
 *.sqlite
@@ -17,6 +19,7 @@ dist/
 *.sqlite3
 *.sqlite3-*
 *.log
+!/starter-data/astraeum/studio.sqlite
 .env
 .env.*
 !.env.example

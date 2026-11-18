@@ -11,11 +11,11 @@
     "theme:export": "node .kit-tools/theme_export.mjs ."
   },
   "dependencies": {
-    "@multiplayer-game/local-preview": "file:../../engine/kits/0.3.0-dca3ffc4561c/packages/multiplayer-game-local-preview-0.1.0.tgz",
-    "@multiplayer-game/theme-sdk": "file:../../engine/kits/0.3.0-dca3ffc4561c/packages/multiplayer-game-theme-sdk-0.1.0.tgz",
-    "@multiplayer-game/protocol": "file:../../engine/kits/0.3.0-dca3ffc4561c/packages/multiplayer-game-protocol-0.1.0.tgz",
-    "zod": "file:../../engine/kits/0.3.0-dca3ffc4561c/packages/zod-4.6.7.tgz",
-    "fflate": "file:../../engine/kits/0.3.0-dca3ffc4561c/packages/fflate-0.8.3.tgz"
+    "@multiplayer-game/local-preview": "file:../../engine/kits/0.4.0-6cd1d52906da/packages/multiplayer-game-local-preview-0.1.0.tgz",
+    "@multiplayer-game/theme-sdk": "file:../../engine/kits/0.4.0-6cd1d52906da/packages/multiplayer-game-theme-sdk-0.2.0.tgz",
+    "@multiplayer-game/protocol": "file:../../engine/kits/0.4.0-6cd1d52906da/packages/multiplayer-game-protocol-0.1.0.tgz",
+    "zod": "file:../../engine/kits/0.4.0-6cd1d52906da/packages/zod-4.6.7.tgz",
+    "fflate": "file:../../engine/kits/0.4.0-6cd1d52906da/packages/fflate-0.8.3.tgz"
   },
   "devDependencies": {
     "vite": "7.3.7"
