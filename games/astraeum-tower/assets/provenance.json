@@ -1,0 +1,217 @@
+{
+  "artworkCredit": "Anh Nguyen (PixelLab)",
+  "projectCredit": "SEIS 606 - Project 1 - Astraeum Tower",
+  "sourceDocument": {
+    "path": "reference/astraeum-tower-original/dungeon/index.html",
+    "sha256": "ea6d26341cbdf71a80980b846c24fb649512cbabd63e7295e70a3a74a38e9d27",
+    "bytes": 1000112,
+    "distribution": "Original supplied source retained locally; not a runtime dependency or included in this handoff. The extracted artwork below is versioned."
+  },
+  "extraction": "Base64 data URIs decoded without image transformation from reference/astraeum-tower-original/dungeon/index.html.",
+  "assets": [
+    {
+      "file": "aries-east.png",
+      "sourceKey": "ariesE",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:163 (CHAR_SRC.ariesE)",
+      "sha256": "1f5a5a41dc6366d536adcd8cbd3d77042c59c0187324f55a81e5534226155d11",
+      "bytes": 10398,
+      "dimensions": {
+        "width": 768,
+        "height": 96
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "aries-west.png",
+      "sourceKey": "ariesW",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:163 (CHAR_SRC.ariesW)",
+      "sha256": "2e14f613111dae6efe8d43eac10be352b163b64b3543d751e73c7ef3c5c38115",
+      "bytes": 9948,
+      "dimensions": {
+        "width": 768,
+        "height": 96
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "aries-north.png",
+      "sourceKey": "ariesN",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:163 (CHAR_SRC.ariesN)",
+      "sha256": "4f00b73253fe59e45629576d3f2d57d749aa2ea531c9bdc6258191958c7cf00e",
+      "bytes": 5241,
+      "dimensions": {
+        "width": 640,
+        "height": 80
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "aries-south.png",
+      "sourceKey": "ariesS",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:163 (CHAR_SRC.ariesS)",
+      "sha256": "e58dc58560cab5e55059a346abc0daff05c221ea44ac80e35bd85f1556af1aa8",
+      "bytes": 10798,
+      "dimensions": {
+        "width": 768,
+        "height": 96
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "aries-idle.png",
+      "sourceKey": "ariesIdle",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:163 (CHAR_SRC.ariesIdle)",
+      "sha256": "0499f09d9d2b1ded670242d923220f9c1f03ea504afd584c2af668ff8f17eff5",
+      "bytes": 3055,
+      "dimensions": {
+        "width": 64,
+        "height": 64
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "damp-corridors-wang.png",
+      "sourceKey": "wang",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.wang)",
+      "sha256": "0c48d834aa5df2d23683077f47fc3561e70bc44e4e8b75d4c6a4fd3b36b69a28",
+      "bytes": 19305,
+      "dimensions": {
+        "width": 128,
+        "height": 128
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "door.png",
+      "sourceKey": "p_door",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_door)",
+      "sha256": "d2b134b9166f69438854a58e1b9c34efee22cd2fbc8863ff70cbe9f8c17e9eb9",
+      "bytes": 3636,
+      "dimensions": {
+        "width": 52,
+        "height": 62
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "cobweb.png",
+      "sourceKey": "p_web",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_web)",
+      "sha256": "503b21d47e8b48b2c01f5d3f92f369e243b60be4ca413f7c3a92986c474e34af",
+      "bytes": 1078,
+      "dimensions": {
+        "width": 32,
+        "height": 32
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "candle.png",
+      "sourceKey": "p_candle",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_candle)",
+      "sha256": "2f403ade5c524b88eef680f64d5dee9e3c2909bac92561622ba9dadd75410b47",
+      "bytes": 609,
+      "dimensions": {
+        "width": 18,
+        "height": 27
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "barrel.png",
+      "sourceKey": "p_barrel",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_barrel)",
+      "sha256": "733670f100eeac15d1f74cadefc3884480e8069f6f12bcd6e4db9f0f25a1a68a",
+      "bytes": 1040,
+      "dimensions": {
+        "width": 22,
+        "height": 30
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "crate.png",
+      "sourceKey": "p_crate",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_crate)",
+      "sha256": "163f54612419d09527c2cd7c706615025d595ca89b0c7d89d85f99cbd71f8b9f",
+      "bytes": 1283,
+      "dimensions": {
+        "width": 28,
+        "height": 30
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "pots.png",
+      "sourceKey": "p_pots",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_pots)",
+      "sha256": "139c6d07afbc01e676b1d4a4498ae85ebf7af366fba89dc06ca475f7fbb5bbce",
+      "bytes": 1214,
+      "dimensions": {
+        "width": 30,
+        "height": 29
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "rune.png",
+      "sourceKey": "p_rune",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_rune)",
+      "sha256": "9fc317e7af889b384ee45a3e04f3911f203316407866b7ee6ac1f5e6a8684364",
+      "bytes": 12178,
+      "dimensions": {
+        "width": 114,
+        "height": 113
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "chest.png",
+      "sourceKey": "p_chest",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.p_chest)",
+      "sha256": "cba276462f034e325518169ca56bcf8138c4711e1cceca34440df5f67d4da1bc",
+      "bytes": 1817,
+      "dimensions": {
+        "width": 40,
+        "height": 37
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "herb.png",
+      "sourceKey": "herbIcon",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.herbIcon)",
+      "sha256": "5f7aa25bb2b89100c9fc92d743643251c9a6b394af6c954e95d807bd75e52151",
+      "bytes": 995,
+      "dimensions": {
+        "width": 32,
+        "height": 38
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "sapphire.png",
+      "sourceKey": "g_sapphire",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.g_sapphire)",
+      "sha256": "3492f3a04f0d007b7bf7ef60640532882c3ed0ef80f6399da1990ddb48f007c2",
+      "bytes": 592,
+      "dimensions": {
+        "width": 20,
+        "height": 28
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    },
+    {
+      "file": "amethyst.png",
+      "sourceKey": "g_amethyst0",
+      "sourceLocation": "reference/astraeum-tower-original/dungeon/index.html:194 (TEX_SRC.g_amethyst0)",
+      "sha256": "a436e198ef95c635dc1f6bccf9be845a91416f023746ee88f9de1564299e92aa",
+      "bytes": 747,
+      "dimensions": {
+        "width": 24,
+        "height": 29
+      },
+      "credit": "Anh Nguyen (PixelLab)"
+    }
+  ]
+}

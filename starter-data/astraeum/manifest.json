@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "game": {
+    "projectId": "astraeum-tower",
+    "model": "astraeum-floor-v2",
+    "startingLevelId": "astraeum-tower-floor-1"
+  },
+  "source": {
+    "repository": "scottzastrow/multiplayer-game-studio",
+    "commit": "83d9c92efe235d0ecc9d17761212f4401a83359a",
+    "branch": "feature/game-export-contract",
+    "workingTreeChangesPresent": true
+  },
+  "engine": {
+    "kitVersion": "0.4.0",
+    "archiveSha256": "62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233",
+    "engineRevision": "6cd1d52906da084a8c3bc92ca006cf1e6288b326"
+  },
+  "database": {
+    "file": "studio.sqlite",
+    "sha256": "f010460fff94961b87be7810a91542a39c4069356f6a1b32f8867a339aa4b1bb",
+    "activeLevels": 3,
+    "activeSections": 5,
+    "sectionDocuments": 5,
+    "projectMetadataRows": 0,
+    "assetImports": 0,
+    "catalogAssets": 0,
+    "excluded": [
+      "other projects",
+      "soft-deleted levels",
+      "removed-section archives",
+      "migration backups",
+      "migration diagnostics",
+      "world workspace records",
+      "save receipts"
+    ]
+  },
+  "assets": [],
+  "starterDataSha256": "a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89",
+  "createdAt": "2026-11-18T06:45:21.130Z"
+}

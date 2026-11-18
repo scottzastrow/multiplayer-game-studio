@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#22252b">
+    <title>Web Studio — Astraeum Tower</title>
+  </head>
+  <body>
+    <div id="studio" data-testid="studio" data-play-state="idle">
+      <header class="toolbar">
+        <div class="brand"><span class="brand-mark">W</span><strong>Web Studio</strong><span id="project-name" class="project-name">Astraeum Tower · Floor 1</span></div>
+        <nav class="tool-group" aria-label="Map tools">
+          <label class="tool-picker" for="editor-tool">Tool
+            <select id="editor-tool" disabled aria-describedby="tool-hint">
+              <option value="select">Select</option>
+              <option value="paint">Paint</option>
+              <option value="fill">Rectangle Fill</option>
+              <option value="boundary">Boundary</option>
+            </select>
+          </label>
+          <button id="undo" class="icon-button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+          <button id="redo" class="icon-button" title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
+          <button id="duplicate-selection" class="tool-button" type="button" disabled title="Duplicate selection (Ctrl+D)">Duplicate</button>
+          <label class="toggle"><input id="show-grid" type="checkbox" checked> Grid</label>
+          <label class="toggle" title="Snap transforms to the 32 px grid. Terrain, spawns and the stairs portal always snap."><input id="snap-grid" type="checkbox" checked> Snap</label>
+          <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>
+          <output id="zoom-label">100%</output>
+          <button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">+</button>
+        </nav>
+        <div class="file-actions">
+          <button id="new-game" class="button secondary" type="button" disabled>New Game</button>
+          <button id="open-game" class="button secondary" type="button" disabled>Open Game</button>
+          <span id="save-state" data-testid="save-state" class="save-state">Loading…</span>
+          <div id="save-error" role="alert" hidden></div>
+          <button id="save" class="button secondary" disabled>Save</button>
+          <button id="play" class="button primary" disabled>▶ Play</button>
+          <button id="player-settings" class="button secondary" type="button" aria-haspopup="dialog">
+            Player Settings <span id="player-mode-summary" data-testid="player-mode-summary"></span>
+          </button>
+          <button id="stop" class="button danger" hidden>■ Stop</button>
+        </div>
+        <dialog id="player-settings-dialog" aria-labelledby="player-settings-title">
+          <h2 id="player-settings-title">Player Settings</h2>
+          <label for="player-control-mode">Control mode</label>
+          <select id="player-control-mode" data-testid="player-control-mode">
+            <option value="keyboard-only">Keyboard Only</option>
+            <option value="keyboard-mouse">Keyboard + Mouse</option>
+            <option value="game-controller">Game Controller</option>
+          </select>
+          <p id="player-control-bindings" data-testid="player-control-bindings"></p>
+          <label for="camera-zoom">Gameplay camera zoom <output id="camera-zoom-value">1.0×</output></label>
+          <input id="camera-zoom" data-testid="camera-zoom" type="range" min="0.5" max="2" step="0.1" value="1">
+          <p>Saved with this level. Larger values zoom in; smaller values show more of the world.</p>
+          <p id="player-controller-status" data-testid="player-controller-status" role="status"></p>
+          <p id="player-settings-note"></p>
+          <div class="dialog-actions">
+            <button id="player-settings-close" class="button primary" type="button">Done</button>
+          </div>
+        </dialog>
+        <dialog id="open-dialog" aria-labelledby="open-dialog-title">
+          <h2 id="open-dialog-title">Open Game</h2>
+          <p>Open a saved game at its designated starting level. Use the Levels dropdown to open another level. Unsupported games cannot be opened; untyped compatible Astraeum games require explicit model assignment.</p>
+          <div id="open-list" class="open-list" role="radiogroup" aria-label="Saved games"></div>
+          <p id="open-message" role="status" aria-live="polite"></p>
+          <div id="open-confirm" hidden>
+            <p>There are unsaved changes in the current map. Save them before switching, discard them, or cancel.</p>
+            <div class="dialog-actions">
+              <button id="switch-save" class="button primary" type="button">Save and Open</button>
+              <button id="switch-discard" class="button danger" type="button">Discard and Open</button>
+              <button id="switch-cancel" class="button secondary" type="button">Cancel switch</button>
+            </div>
+          </div>
+          <div id="open-model-confirm" hidden>
+            <p>This game's starting level has no recorded model, but its document matches the Astraeum Floor format. Opening it as Astraeum will record that choice and use the Astraeum editor and Tower Play behavior. Do this only for an Astraeum design.</p>
+            <div class="dialog-actions">
+              <button id="model-confirm" class="button primary" type="button">Assign Astraeum and Open</button>
+              <button id="model-cancel" class="button secondary" type="button">Cancel switch</button>
+            </div>
+          </div>
+          <div id="open-actions" class="dialog-actions">
+            <button id="open-selected" class="button primary" type="button" disabled>Open game</button>
+            <button id="open-cancel" class="button secondary" type="button">Cancel</button>
+          </div>
+        </dialog>
+        <dialog id="new-dialog" aria-labelledby="new-dialog-title">
+          <form id="new-form">
+            <h2 id="new-dialog-title">New Game</h2>
+            <fieldset id="new-fields">
+              <label>Game name<input id="new-name" name="name" required maxlength="64" autocomplete="off"></label>
+              <label>Author / credits<input id="new-author" name="author" required maxlength="128" autocomplete="off"></label>
+              <label>Template / model<select id="new-model" name="model"><option value="generic-grid-v1">Blank movement - Generic Grid v1</option></select></label>
+              <p>Blank terrain, two safe player starts, simple movement and built-in shapes. No Tower artwork or gameplay. Project assets can be imported as visual-only artwork.</p>
+              <p id="new-world-size">World size is fixed at 2048 × 2048 pixels. The camera viewport is separate.</p>
+              <div id="new-confirm" hidden>
+                <p>There are unsaved changes. Save them before creating, discard them only after creation succeeds, or cancel.</p>
+                <div class="dialog-actions">
+                  <button id="new-save" class="button primary" type="button">Save and Create</button>
+                  <button id="new-discard" class="button danger" type="button">Discard and Create</button>
+                </div>
+              </div>
+              <p id="new-message" role="alert"></p>
+              <div class="dialog-actions">
+                <button id="new-create" class="button primary" type="submit">Create Game</button>
+                <button id="new-cancel" class="button secondary" type="button">Cancel</button>
+              </div>
+            </fieldset>
+          </form>
+        </dialog>
+      </header>
+      <main class="workspace">
+        <aside class="panel hierarchy">
+          <section aria-label="Levels in selected game">
+            <details id="level-menu">
+              <summary>Level</summary>
+              <div class="level-actions" role="group" aria-label="Level actions">
+                <button id="level-add" class="button secondary" type="button" disabled aria-describedby="level-add-help">Add Level</button>
+                <small id="level-add-help">Separate level: one empty 2048 × 2048 section.</small>
+                <button id="level-duplicate" class="button secondary" type="button" disabled>Duplicate</button>
+                <button id="level-rename" class="button secondary" type="button" disabled>Rename</button>
+                <button id="level-start" class="button secondary" type="button" disabled>Set as start</button>
+                <button id="level-delete" class="button danger" type="button" disabled>Delete</button>
+              </div>
+            </details>
+            <div class="level-picker">
+              <label for="level-select">Current level</label>
+              <select id="level-select" disabled></select>
+            </div>
+            <div class="level-picker">
+              <label for="section-select">Selected section</label>
+              <select id="section-select" disabled></select>
+              <button id="section-add" class="button secondary" type="button" disabled>Add Section</button>
+              <button id="section-remove" class="button danger" type="button" disabled>Remove Section</button>
+            </div>
+            <div id="section-placement" hidden>
+              <p>Choose an empty side of the selected section, then confirm to add an empty draft section. Save to persist it.</p>
+              <div class="section-compass" role="group" aria-label="New section placement preview">
+                <button data-direction="north" type="button">North</button>
+                <button data-direction="west" type="button">West</button>
+                <span>Selected<br>section</span>
+                <button data-direction="east" type="button">East</button>
+                <button data-direction="south" type="button">South</button>
+              </div>
+              <p id="section-placement-preview" role="status" aria-live="polite"></p>
+              <button id="section-confirm" class="button" type="button" disabled>Confirm Add Section</button>
+              <button id="section-cancel" class="button secondary" type="button">Cancel</button>
+            </div>
+            <div id="section-removal" hidden>
+              <p id="section-removal-details"></p>
+              <p id="section-removal-warning" role="status"></p>
+              <button id="section-remove-confirm" class="button danger" type="button">Confirm Remove Section</button>
+              <button id="section-remove-cancel" class="button secondary" type="button">Cancel</button>
+            </div>
+            <p id="section-summary"></p>
+            <p id="section-status" role="status" aria-live="polite"></p>
+            <details id="deleted-levels"><summary>Deleted levels (recover)</summary><div id="level-recovery"></div></details>
+            <p id="level-message" role="status" aria-live="polite"></p>
+          </section>
+          <div class="panel-title">Layers</div>
+          <div id="layer-list" class="layer-list" aria-label="Design layers"></div>
+          <div class="panel-title">Hierarchy <span id="object-count"></span></div>
+          <div id="object-tree" class="tree-list" role="tree" aria-label="Design objects"></div>
+        </aside>
+        <section class="viewport" aria-label="Map viewport">
+          <div id="editor-view" class="editor-view">
+            <canvas id="map-canvas" class="selecting" tabindex="0" aria-label="Floor 1 map editor" data-testid="map-canvas"></canvas>
+            <div id="tool-settings" class="tool-settings" hidden>
+              <p id="tool-hint" role="status"></p>
+              <fieldset id="paint-options" hidden>
+                <legend>Paint</legend>
+                <div id="paint-asset" role="status" aria-live="polite">
+                  <span id="paint-asset-thumbnail" aria-hidden="true" hidden></span>
+                  <strong id="paint-asset-name">Choose a Paint asset from the palette</strong>
+                </div>
+                <label>Brush size
+                  <select id="paint-brush-size" aria-describedby="paint-support">
+                    <option value="1">1 × 1</option>
+                    <option value="2">2 × 2</option>
+                    <option value="4">4 × 4</option>
+                    <option value="8">8 × 8</option>
+                  </select>
+                </label>
+                <label>Density (%)
+                  <input id="paint-density" type="number" min="1" max="100" step="1" value="100">
+                </label>
+                <label>Minimum spacing (world px gap between same-layer footprints)
+                  <input id="paint-spacing" type="number" min="0" max="2048" step="1" value="0">
+                </label>
+                <p id="paint-support" role="status"></p>
+                <p>Density changes placement probability, never artwork scale. Static brushes preserve footprints and collision defaults. Characters, spawns and gameplay objects remain single-place.</p>
+              </fieldset>
+              <fieldset id="fill-options" hidden>
+                <legend>Rectangle Fill</legend>
+                <div id="fill-asset" role="status" aria-live="polite">
+                  <span id="fill-asset-thumbnail" aria-hidden="true" hidden></span>
+                  <strong id="fill-asset-name">Choose a fill asset from the palette</strong>
+                </div>
+                <p id="fill-footprint"></p>
+                <label>Horizontal gap (world px) <input id="fill-gap-x" type="number" min="0" max="2048" step="1" value="0"></label>
+                <label>Vertical gap (world px) <input id="fill-gap-y" type="number" min="0" max="2048" step="1" value="0"></label>
+                <label>Same-layer objects
+                  <select id="fill-overlap"><option value="skip">Skip overlaps (preserve existing)</option><option value="allow">Allow overlaps (keep both)</option></select>
+                </label>
+                <label id="fill-collision-option" hidden><input id="fill-collision" type="checkbox"> Enable optional collision on new copies</label>
+                <label><input id="fill-border" type="checkbox"> Generate border (off by default)</label>
+                <label>Border asset <select id="fill-border-asset" disabled></select></label>
+                <p>Border uses a one-cell ring inside the rectangle, not along section seams. It requires its own unlocked, visible layer. Astraeum's Wang artwork edges are visual autotiling, not generated borders or collision.</p>
+              </fieldset>
+              <div id="fill-actions" hidden>
+                <button id="fill-apply" class="button secondary" type="button" disabled>Apply fill</button>
+                <button id="fill-cancel" class="button secondary" type="button" disabled>Cancel fill</button>
+              </div>
+              <div id="fill-diagnostics" hidden>
+                <strong>Temporary Fill diagnostics</strong>
+                <p id="fill-diagnostic-build">Diagnostics not loaded (stale or loading editor code).</p>
+                <textarea id="fill-diagnostic-report" rows="6" readonly spellcheck="false" aria-label="Copyable Fill diagnostic report"></textarea>
+                <button id="fill-diagnostic-copy" class="button secondary" type="button">Copy report</button>
+                <span id="fill-diagnostic-copy-status" role="status">Memory only; no automatic edits or saves.</span>
+              </div>
+              <div id="boundary-options" hidden>
+                <label>Selection mode
+                  <select id="boundary-mode">
+                    <option value="grid">Grid area</option>
+                    <option value="polygon">Lasso polygon</option>
+                  </select>
+                </label>
+                <p>Drag a grid rectangle or trace a closed polygon. Lasso points snap to the 32 px grid; the preview shows the playable cells.</p>
+                <p id="boundary-status" role="status"></p>
+                <div class="boundary-actions">
+                  <button id="boundary-apply" class="button primary" type="button" disabled>Apply boundary</button>
+                  <button id="boundary-cancel" class="button secondary" type="button" disabled>Cancel preview</button>
+                  <button id="boundary-reset" class="button secondary" type="button" disabled>Reset to default</button>
+                </div>
+              </div>
+            </div>
+            <div class="viewport-hint">Click selects · Shift-click toggles · Empty drag marquee · Drag palette assets to place · Ctrl+A visible/unlocked · Middle/Space-drag pans · Arrows nudge 5 px</div>
+            <p id="play-limitation" class="play-limitation" role="note" hidden>Connected Play loads every active section. Astraeum stairs exits unlock after all authored slimes are defeated; nearby runes enter automatically. Configure destinations in the exit Inspector. Nearby chests open automatically once. Doors are decorative. Generic Grid uses movement, camera and collision only.</p>
+          </div>
+          <div id="play-host" class="play-host" hidden></div>
+          <div id="play-loading" class="play-overlay" role="status" data-testid="play-loading" hidden><div class="spinner" aria-hidden="true"></div><span>Starting Play…</span></div>
+          <div id="play-error" class="play-overlay error" role="alert" data-testid="play-error" hidden>
+            <strong>Play could not start</strong>
+            <p id="play-error-message"></p>
+            <button id="play-error-close" class="button secondary" type="button">Back to editing</button>
+          </div>
+          <div id="status" role="status" aria-live="polite" data-testid="studio-status">Opening Floor 1…</div>
+        </section>
+        <aside class="panel inspector">
+          <div class="panel-title">Inspector</div>
+          <div id="empty-inspector" class="empty-note">Use Select, then click an object on the map or in the hierarchy. Stairs runes have exit settings; generated doors are decorative.</div>
+          <section id="decoration-inspector" class="map-settings" hidden>
+            <strong>Generated decorative door</strong>
+            <p>Not a level exit. This door is generated from the floor and Aries start, with no authored object ID or saved properties. Door interaction, destinations and individual door editing are unavailable. Select a Stairs rune to author a level exit.</p>
+          </section>
+          <form id="object-inspector" hidden>
+            <strong id="object-heading"></strong>
+            <p id="object-behavior" class="play-note"></p>
+            <fieldset id="exit-inspector" class="behavior-fields" hidden>
+              <legend>Stairs rune - level exit</legend>
+              <label for="exit-level">Destination level (this game)</label>
+              <select id="exit-level" aria-describedby="exit-message"></select>
+              <label for="exit-start">Arrival player start (active section)</label>
+              <select id="exit-start" aria-describedby="exit-message"></select>
+              <p id="exit-message" role="status"></p>
+              <p>When all authored slimes are defeated, entering the rune's activation area starts the exit automatically. Destinations are assigned only by your edits; Save to persist.</p>
+            </fieldset>
+            <fieldset id="chest-inspector" class="behavior-fields" hidden>
+              <legend>Chest rewards</legend>
+              <label for="chest-tier">Loot tier
+                <select id="chest-tier">
+                  <option value="normal">Normal</option>
+                  <option value="treasure">Treasure</option>
+                </select>
+              </label>
+              <p id="chest-tier-details" role="status"></p>
+              <p>Chests open automatically once when you approach within 46 px. Contents spill out as pickups; treasures use the original big-chest loot pool. Save explicitly to persist this tier.</p>
+            </fieldset>
+            <section id="combat-inspector" class="behavior-fields" hidden>
+              <strong>Combat tuning (read-only)</strong>
+              <div id="combat-values" class="facts"></div>
+              <p id="combat-authoring-note"></p>
+            </section>
+            <label>Object ID<input id="object-id" readonly></label>
+            <section id="unresolved-panel" class="unresolved-panel" data-testid="unresolved-panel" hidden>
+              <strong>Unresolved collision</strong>
+              <p id="unresolved-origin"></p>
+              <label>Artwork<select id="resolve-asset"></select></label>
+              <p id="resolve-outcome" class="resolve-outcome" data-testid="resolve-outcome"></p>
+              <button id="resolve-assign" class="button primary wide" type="button">Assign artwork</button>
+              <button id="resolve-keep" class="button secondary wide" type="button" title="Keep the invisible blocker on purpose; it stops being listed as unresolved.">Keep as collision box</button>
+              <button id="resolve-delete" class="button danger wide" type="button" title="Delete the box; this spot becomes walkable in Play.">Delete (removes collision)</button>
+            </section>
+            <div class="facts">
+              <span>Type</span><output id="object-type"></output>
+              <span>Asset</span><output id="object-asset"></output>
+              <span>Layer</span><output id="object-layer"></output>
+              <span>Order</span><output id="object-order"></output>
+              <span>Size</span><output id="object-size"></output>
+            </div>
+            <fieldset class="position-fields">
+              <legend>Transform · pivot in world pixels</legend>
+              <label>X<input id="object-x" type="number" step="1"></label>
+              <label>Y<input id="object-y" type="number" step="1"></label>
+            </fieldset>
+            <label class="check"><input id="object-collision" type="checkbox"> <span id="object-collision-label">Collision</span></label>
+            <p id="object-play" class="play-note"></p>
+            <p id="object-artwork" class="credit-note"></p>
+            <p id="object-migration" class="migration-note" hidden></p>
+            <button id="delete-object" class="button danger wide" type="button">Delete object</button>
+          </form>
+          <section id="selection-inspector" class="selection-inspector" hidden>
+            <strong><output id="selection-count">0</output> objects selected</strong>
+            <div class="facts">
+              <span>Type</span><output id="selection-type"></output>
+              <span>Asset</span><output id="selection-asset"></output>
+              <span>Layer</span><output id="selection-layer"></output>
+              <span>Order</span><output id="selection-order"></output>
+              <span>Size</span><output id="selection-size"></output>
+              <span>Position</span><output id="selection-position"></output>
+            </div>
+            <fieldset class="position-fields">
+              <legend>Shared movement · world pixels</legend>
+              <label>ΔX<input id="selection-delta-x" type="number" step="1" value="0"></label>
+              <label>ΔY<input id="selection-delta-y" type="number" step="1" value="0"></label>
+              <button id="apply-selection-offset" class="button secondary wide" type="button">Apply shared offset</button>
+            </fieldset>
+            <label class="check"><input id="selection-collision" type="checkbox"> <span id="selection-collision-label">Collision</span></label>
+            <button id="delete-selection" class="button danger wide" type="button">Delete selection</button>
+          </section>
+          <section class="map-settings" aria-label="Current map dimensions">
+            <strong>Map dimensions</strong>
+            <p>Expand only; new space starts empty.</p>
+            <div class="map-size-fields">
+              <label for="map-width">Map Width<input id="map-width" data-testid="map-width" type="number" min="64" max="2048" step="32"></label>
+              <label for="map-height">Map Height<input id="map-height" data-testid="map-height" type="number" min="64" max="2048" step="32"></label>
+            </div>
+            <div class="map-size-actions">
+              <button id="apply-map-size" class="button secondary" type="button" disabled>Apply expansion</button>
+              <button id="cancel-map-size" class="button secondary" type="button" disabled>Cancel</button>
+            </div>
+            <p id="map-size-error" role="alert"></p>
+            <button id="clear-level-contents" class="button danger" type="button" disabled>Clear Level Contents…</button>
+          </section>
+          <div id="migration-notice" class="migration-notice" data-testid="migration-notice" hidden><details id="migration-history"><summary>Migration history</summary><p id="migration-text"></p></details></div>
+          <div id="unresolved-summary" class="unresolved-summary" data-testid="unresolved-summary" hidden>
+            <span id="unresolved-count"></span>
+            <button id="next-unresolved" class="button secondary" type="button">Review next</button>
+          </div>
+        </aside>
+      </main>
+      <dialog id="level-dialog" aria-labelledby="level-title">
+        <form id="level-form">
+          <h2 id="level-title"></h2>
+          <p id="level-description"></p>
+          <label id="level-name-field">Level name<input id="level-name" maxlength="64" required></label>
+          <label id="level-replacement-field" hidden>Replacement starting level
+            <select id="level-replacement" required></select>
+          </label>
+          <p id="level-unsaved" hidden>Unsaved edits: Save and continue, or discard only after the operation succeeds. Duplicate copies the saved design.</p>
+          <p id="level-error" role="alert"></p>
+          <div class="dialog-actions">
+            <button id="level-submit" class="button primary" type="submit">Continue</button>
+            <button id="level-discard" class="button danger" type="button" hidden>Discard and continue</button>
+            <button id="level-cancel" class="button secondary" type="button">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="clear-contents-dialog" aria-labelledby="clear-contents-title">
+        <h2 id="clear-contents-title">Clear Level Contents</h2>
+        <p>Choose categories to remove. Locked layers are protected; hidden layers are included. This is one undoable edit.</p>
+        <div id="clear-category-list" class="clear-category-list"></div>
+        <p id="clear-contents-summary" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="clear-contents-confirm" class="button danger" type="button" disabled>Clear selected categories</button>
+          <button id="clear-contents-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </dialog>
+      <footer class="asset-dock">
+        <div class="palette-heading"><strong>Asset palette</strong><span id="palette-credit">Floor 1 artwork by Anh Nguyen (PixelLab)</span>
+          <button id="import-assets" class="button secondary" type="button" disabled>Import Assets</button>
+          <div id="palette-view" class="segmented" role="radiogroup" aria-label="Palette display" data-testid="palette-view">
+            <button type="button" role="radio" data-view="large" title="Large thumbnails">Large</button>
+            <button type="button" role="radio" data-view="medium" title="Medium thumbnails">Medium</button>
+            <button type="button" role="radio" data-view="small" title="Small thumbnails">Small</button>
+            <button type="button" role="radio" data-view="list" title="Compact text list">List</button>
+          </div>
+        </div>
+        <div class="asset-list" id="asset-list" aria-label="Assets"></div>
+      </footer>
+      <dialog id="asset-import-dialog" aria-labelledby="asset-import-title">
+        <form id="asset-import-form">
+          <h2 id="asset-import-title">Import Assets</h2>
+          <p>Import individual PNG images or a PixelLab ZIP. Images stay visual-only; importing artwork does not add collision, AI, combat, or animation.</p>
+          <label>PNG or PixelLab ZIP<input id="asset-import-file" type="file" accept="image/png,.png,.zip,application/zip" required></label>
+          <section id="asset-import-preview" hidden>
+            <p id="asset-import-summary"></p>
+            <div id="asset-preview-images" class="asset-preview-images"></div>
+            <label>Asset name<input id="asset-import-name" maxlength="64" required></label>
+            <label>Asset type
+              <select id="asset-import-category">
+                <option value="prop">Prop artwork</option>
+                <option value="character">Character artwork</option>
+                <option value="item">Item artwork</option>
+              </select>
+            </label>
+            <label>Author / artist credits<input id="asset-import-author" maxlength="128" required></label>
+            <label>Source / license credit<input id="asset-import-source" maxlength="256" required></label>
+          </section>
+          <p id="asset-import-message" role="status" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button id="asset-import-submit" class="button primary" type="submit" disabled>Import</button>
+            <button id="asset-import-cancel" class="button secondary" type="button">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

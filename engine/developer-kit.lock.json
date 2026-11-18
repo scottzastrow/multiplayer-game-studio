@@ -1,0 +1,55 @@
+{
+  "version": "0.4.0",
+  "archiveSha256": "62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233",
+  "engineRevision": "6cd1d52906da084a8c3bc92ca006cf1e6288b326",
+  "engineSourceState": "committed",
+  "packages": [
+    {
+      "name": "@multiplayer-game/protocol",
+      "version": "0.1.0",
+      "file": "packages/multiplayer-game-protocol-0.1.0.tgz"
+    },
+    {
+      "name": "@multiplayer-game/theme-sdk",
+      "version": "0.2.0",
+      "file": "packages/multiplayer-game-theme-sdk-0.2.0.tgz"
+    },
+    {
+      "name": "@multiplayer-game/local-preview",
+      "version": "0.1.0",
+      "file": "packages/multiplayer-game-local-preview-0.1.0.tgz"
+    },
+    {
+      "name": "zod",
+      "version": "4.6.7",
+      "file": "packages/zod-4.6.7.tgz"
+    },
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "file": "packages/fflate-0.8.3.tgz"
+    }
+  ],
+  "localDirectory": "engine/kits/0.4.0-6cd1d52906da",
+  "dependencyDirectory": "engine/kits/dependencies-0.4.0-6cd1d52906da",
+  "companion": {
+    "repository": "scottzastrow/multiplayer-game-themes",
+    "revision": "778319f578b25081420e3334e1e68fa4de7540ec",
+    "tools": [
+      {
+        "path": "sample/.kit-tools/theme_export.mjs",
+        "sha256": "d9b572150e3868c99aed4cbd0a7bc632ecd1062de2a34e2da3e5ca0dbce89864"
+      },
+      {
+        "path": "sample/.kit-tools/theme_credits.py",
+        "sha256": "b159b7d1a55fc0b11e85f860a8731d674a811f1d66e10fd61bf2640fe2b81768"
+      }
+    ]
+  },
+  "reusedTooling": {
+    "kitVersion": "0.3.0",
+    "kitManifestSha256": "c2fa1b92357f43a9293102b656e2fa64166549dfdd6a69ef3dc51d418a9b7101",
+    "inventorySha256": "93ba02e4857732bae372c37e77ca0ee94c224aa56c3b87dbd488f9f0312e88d3",
+    "verification": "Reused files checked against the prior kit inventory; companion checkout unavailable."
+  }
+}
