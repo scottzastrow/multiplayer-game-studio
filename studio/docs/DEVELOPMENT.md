@@ -1,58 +1,122 @@
-# Studio onboarding and development guide
+# Studio developer and assistant guide
 
-This is the shared development guide for contributors. Keep setup and policy
-details in this file rather than copying them into separate agent guides.
+Help Anh both **use Studio** and **develop her game**. This is the technical
+source of truth for setup, ownership, reuse-first assistant behavior, adaptation,
+verification and Engine handoff. Keep assistant entry files short and link here
+instead of maintaining separate Claude/agent policies.
+
+## Reading map and authority
+
+| Need | Read |
+| --- | --- |
+| First start or stop | [Root README](../../README.md), then [setup](#1-fresh-machine-setup) |
+| "How do I...?" / actual editor workflow | [Studio user guide](../README.md#how-do-i) |
+| Change source or storage | [Ownership](#3-extending-through-source), [API reuse](#4-claude-reuse-first-workflow) |
+| Bring in an existing source game | [Adaptation process](#source-game-import-and-adaptation) |
+| Decide what is actually verified | [Evidence rules and command selection](#5-verification) |
+| Propose a shared capability | [Enhancement register](ENHANCEMENTS.md), [promotion](#7-promotion-into-engine) |
+| Complete Studio game ZIP / Engine import | [Inspected contract blockers and Engine handoff](GAME-EXPORT-HANDOFF.md) |
+| Prepare Wednesday's demo/handoff | [Delivery checklist](#wednesday-delivery-checklist) |
+
+The user guide owns operating instructions; Section 2 below records detailed
+implementation invariants. Section 5's dated investigations preserve earlier
+states and failures, not current commands to replay against user data. Current
+source plus the pinned public API/declarations decide capability; if a guide,
+static UI string or historical task checkbox disagrees, state the discrepancy
+and correct the relevant documentation without inventing behavior. In
+particular, the former "E / controller X" static rune help in
+`studio\index.html` was stale; it was corrected during this handoff to describe
+automatic rune entry and nearby chest opening.
+
+**Documentation audit, 2026-11-17:** read root/Studio/assistant guides, current
+UI/controllers, server/launcher/setup, game modules, public kit `API.md`,
+package declarations/settings and prior evidence. Commands below were checked
+against their script/configuration, not newly executed in this documentation
+pass. No services/browser suites were started and no kit was rebuilt.
+Do not treat this audit as a new acceptance pass.
+
+**Published handoff scope, 2026-11-18:** the
+[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md) supersedes the older
+uncommitted/unpublished status observations below. It records scoped commits,
+downloadable repository artifacts, the consistent live-data comparison,
+committed fresh-checkout verification and remaining limitations. Historical
+investigations remain dated evidence, not new acceptance claims.
 
 ## 1. Fresh-machine setup
 
 Use the inner Git repository as the working directory:
 
 ```powershell
-git clone https://github.com/scottzastrow/multiplayer-game-studio.git
+git clone --branch handoff/astraeum-developer-2026-11-18 https://github.com/scottzastrow/multiplayer-game-studio.git
 Set-Location .\multiplayer-game-studio
 node --version  # Node.js 24.x
 npm --version   # npm 11.x
 ```
 
-The root `package.json` enforces Node `>=24 <25` and npm `>=11 <12`.
-`engine\developer-kit.lock.json` pins kit 0.3.0, Engine revision
-`dca3ffc4561c14e0e83968afceabf0e85cddc565`, and the archive SHA-256
-`afd63a865a23b60183d7be89c15811f68438a0186638caa509fb541bc3492517`.
-The kit archive and installed kit are under ignored `engine\archives\` and
-`engine\kits\`; neither is present in a fresh clone. No download location is
-recorded here, so obtain the pinned ZIP and its adjacent `.zip.sha256` from an
-authorized project source rather than guessing a URL or substituting a kit.
-Before setup, compare the ZIP hash to `archiveSha256` in the tracked lock file:
+The root `package.json` declares Node `>=24 <25` and npm `>=11 <12`;
+use those versions rather than relying on npm to enforce its engines field.
+`engine\developer-kit.lock.json` pins kit 0.4.0, Engine revision
+`6cd1d52906da084a8c3bc92ca006cf1e6288b326`, and the archive SHA-256
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`.
+The pinned kit ZIP and `.zip.sha256` sidecar are supplied at
+`engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip`;
+the downloadable artifact is checked against the lock file and is distinct
+from the ignored installed kit in `engine\kits\`. Verify and bootstrap from the
+Git root:
 
 ```powershell
-Get-FileHash .\path\to\multiplayer-game-developer-kit-0.3.0-dca3ffc4561c.zip -Algorithm SHA256
+Get-FileHash .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip -Algorithm SHA256
+npm run bootstrap -- --archive .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
+node .\engine\kits\0.4.0-6cd1d52906da\tools\checksums.mjs
 ```
 
-Place the verified archive and matching checksum sidecar in
-`engine\archives\` (or pass the archive's actual path), then run:
+`tools\bootstrap.mjs` first runs `tools\setup.mjs`, which verifies the adjacent
+sidecar and distributed kit checksums, installs the pinned package tarballs,
+and links `games\sample\node_modules` to the versioned dependency directory.
+It then restores the supplied Astraeum database. Setup refuses a different kit
+selection without explicit `--upgrade`; it also runs `npm ci` for Vite and its
+pinned tooling, so a fresh install needs npm registry access. Do not run `npm
+ci` directly in `games\sample\`; there is no root dependency install step.
 
-```powershell
-npm run setup -- --archive .\engine\archives\multiplayer-game-developer-kit-0.3.0-dca3ffc4561c.zip
-node .\engine\kits\0.3.0-dca3ffc4561c\tools\checksums.mjs
-```
+### Astraeum starter data and safe restore
 
-`tools\setup.mjs` checks the archive against the adjacent sidecar and validates
-the kit's distributed files, installs package tarballs into the ignored kit
-directories, and links `games\sample\node_modules` to the versioned dependency
-directory. It refuses to switch away from the locked kit without the explicit
-`--upgrade` option. It also runs `npm ci` for Vite and its pinned tooling;
-initial installation therefore needs npm registry access. Do not run `npm ci`
-directly in `games\sample\`. This repo has no root dependency install step.
+`starter-data\astraeum\` is the curated local editor-data snapshot, generated
+with SQLite `VACUUM INTO` from a read-only connection to the working database,
+then filtered and compacted in the copied database. It contains the saved
+starting-level metadata, 3 active levels, 5 active sections and their documents.
+The project asset-import/catalog tables are retained; this captured database
+has 0 imported assets, so no additional imported artwork bytes are required.
+The built-in catalog and artwork remain in `games\astraeum-tower\` and are not
+re-imported. The source SQLite had no Astraeum row in `projects`, so no saved
+project name/author record was fabricated; project ID, model, start selection
+and level document metadata are retained. The manifest includes the metadata
+row count, per-file hashes, kit pin and source provenance;
+`starter-data.sha256` is the canonical payload checksum:
+`a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
 
-**Fresh-clone limitation:** the archive and sidecar are ignored local files.
-The tracked lock file identifies and pins them but cannot recreate their bytes;
-without an authorized copy, setup cannot proceed. The reviewed 0.3.0 upgrade
-passed the existing setup flow with `--upgrade`, all 46 distributed checksums
-and dependency installation in a new versioned directory. The old 0.2.0
-distribution remains intact and its 44 checksums still pass. This was an
-upgrade, not a fresh-clone trial. An earlier 0.2.0 reinstall encountered Windows
-`EPERM` unlinking Rollup while a server was running; do not force-stop unknown
-processes or overwrite the old dependency directory to retry installation.
+The package excludes other projects, soft-deleted levels, removed-section
+archives, migration backup/diagnostic rows, the obsolete World workspace,
+save receipts and unrelated recovery/diagnostic files. `VACUUM` runs after
+filtering so deleted rows and their free pages are not carried into the
+artifact. The source commit is
+`83d9c92efe235d0ecc9d17761212f4401a83359a`; the capture records that its
+working tree had uncommitted changes. This is data provenance, not a claim that
+the current changes are committed or pushed.
+
+For a fresh checkout, use `npm run bootstrap -- --archive <pinned-zip>`, then
+start Studio and choose **Open Game > Astraeum Tower**. Do not create a
+replacement game or re-import the source game. `npm run starter:restore`
+restores data only; it is not the Engine complete-game package importer or a
+server deployment. These are separate workflows and owners.
+
+Restore refuses an existing `studio\data\studio.sqlite`, its WAL/SHM sidecars,
+or colliding imported asset files. Save, stop Studio, then pass the explicit
+`--replace-existing` choice to `bootstrap` or `starter:restore` only when
+replacement is intended. Before touching targets, the restore creates a
+consistent SQLite backup with `VACUUM INTO` and copies colliding assets to
+ignored `studio\data\starter-restore-backups\<timestamp>\`. Stop the service:
+replacing a database while Studio is using it is not supported. Never delete
+or merge these backups automatically.
 
 Start Studio from the repository root:
 
@@ -66,17 +130,35 @@ port 4179. `STUDIO_WEB_PORT`, `STUDIO_API_PORT`, `STUDIO_DATABASE_PATH`, and
 `STUDIO_GAMES_PATH` are supported for isolated runs; disposable storage paths
 must remain inside `studio\data\`.
 
+**Safe stop:** Save and confirm Saved, or preserve and verify the exact dirty
+draft first, then Ctrl+C in the terminal that owns `npm run studio:dev`.
+The launcher's SIGINT/SIGTERM handlers terminate its API and Vite children.
+The toolbar Stop only disposes Play, not Studio. There is no separate npm
+stop script. Do not start a second launcher on occupied ports or kill by
+process name. Check ownership before terminating a specific PID.
+
 Vite reloads editor HTML, CSS, and browser modules during development. The API
-is a separate Node process: restart `npm run studio:dev` after changing
+is a separate Node process: an authorized restart is needed after changing
 `studio\server.mjs`, server-side helpers, API/database behavior, or relevant
-environment variables. Restart after kit/dependency changes too. Do not restart
-or stop processes you do not own. If ports are busy, identify the owning process
+environment variables, or kit/dependencies. **Before editing served files,
+reloading a tab or restarting, preserve dirty drafts**; Vite reloads can also
+lose them. The editor has a before-unload warning, not a durable autosave or
+general draft-export UI. If Save fails, preserve the complete level payload,
+identity, revisions and active/archive documents separately and verify it;
+capture the visible error and coordinate a consistent SQLite backup. Do not
+silently replay historical recovery requests or bypass revision checks.
+Do not restart or stop processes you do not own. If ports are busy, identify the owning process
 before changing ports or stopping it. For blank UI/API responses, check both
 process logs, the configured ports and the browser console; for setup failures,
 check Node/npm versions, the archive plus sidecar, the kit checksum output,
 registry access, and whether an owned Vite process is holding native files.
 
 ## 2. Building in Web Studio
+
+Use the [Studio user guide](../README.md) for click-by-click instructions and
+the quick "How do I...?" index. The following retains detailed editor/storage
+invariants and limitations for developers; update both surfaces coherently
+when a behavior changes, rather than copying old milestone prose into new help.
 
 - **New Game** creates an independent Generic Grid v1 project with author and
   credits, two safe starts, and a fixed 2048 × 2048 world. Existing saved maps
@@ -87,9 +169,12 @@ registry access, and whether an owned Vite process is holding native files.
 - **Current level** switches levels in the selected project. The compact
   **Level** menu contains **Add Level**, Duplicate, Rename,
   Set as start and Delete. **Add Level** creates a separate level with exactly
-  one blank 2048 × 2048 section: no cobblestone, objects or player starts are
-  copied. The project's starting level and existing levels stay unchanged.
-  Place required starts explicitly before Play; empty drafts can be saved.
+  one blank 2048 × 2048 section through a model-specific empty-document factory:
+  no cobblestone, objects or player starts are generated or copied. The
+  project's starting level and existing levels stay unchanged. Duplicate
+  remains a copy of the saved source design. Place the Aries start (Astraeum)
+  or both player starts (Generic Grid) explicitly before Play; empty drafts can
+  be saved and Play reports missing starts.
   Dirty edits prompt for save, discard or cancel. Recovery stays under
   **Deleted levels (recover)**. Play tests the selected level, not necessarily
   the game's starting level. To expand the current level instead, use
@@ -123,14 +208,15 @@ registry access, and whether an owned Vite process is holding native files.
   reconcile the same operation; edits made meanwhile remain unsaved. A newly
   added section included in that uncertain save cannot be removed or undone
   until the retry resolves it. The default boundary
-  follows the remaining section union. If the original section is removed,
-  the remaining section(s) use the existing connected movement-only preview;
-  the original document remains the level's boundary owner in the archive.
+  follows the remaining section union.   If the original section is removed, the remaining section(s) use connected
+  Play; Generic remains movement-only and Astraeum retains its combat and
+  lighting. The original document remains the level's boundary owner in the archive.
 - Place items from the model-specific palette. **Import Assets** accepts PNG
   images and PixelLab ZIP exports into that project's asset catalog. Imported
   art preserves source bytes and credits and is visual-only: it does not gain
   animation, collision, AI or behavior automatically.
-- The **Layers** panel controls design-layer visibility and ordering. The
+- The **Layers** panel controls design-layer visibility and locks; model/type
+  draw ordering is fixed. The
   checked **Snap** control snaps supported transforms to the 32-pixel grid;
   terrain, spawns and the stairs portal always snap. Inspect the selected
   object's Inspector for its actual transform, layer and collision settings.
@@ -154,10 +240,17 @@ registry access, and whether an owned Vite process is holding native files.
   current selected level, including unsaved edits; **Stop** returns to the
   editor without saving simulated movement. Multi-section levels use kit
   0.3.0's public `createLocalGame({ world })` with every selected-level section,
-  signed origins and its authored player start. Connected Play is keyboard
-  movement, camera and collision only: no combat, dodge, lighting or generated
-  decor. Both models render authored artwork across seams; Astraeum samples
-  neighboring Wang occupancy. Root-owned boundaries and holes remain enforced.
+  signed origins and its authored player start. Generic connected Play is
+  movement, camera and collision only. Astraeum reuses its Tower combat, dodge,
+  lighting, controls and generated decor. Both models render authored artwork
+  across seams; Astraeum samples neighboring Wang occupancy. Authored stairs
+  exits unlock after all active-section slimes are defeated (immediately with
+  zero slimes); entering its activation area (strictly within 40 pixels)
+  continues automatically, including when the last slime dies while on it.
+  Arrival runes stay suppressed until the player leaves and re-enters.
+  Configure its destination level and player start in the Inspector; no
+  destination is assigned automatically. Doors remain decorative.
+  Root-owned boundaries and holes remain enforced.
   Missing/ambiguous starts or public capacity errors fail explicitly, never
   play only one section. Stop restores pan, zoom, active section and selection.
   Existing single-section game modules/skins and control modes remain on their
@@ -267,11 +360,18 @@ their segmented direct-CDP verification is recorded in Section 5. The
 editor supports the controls described above, not a general-purpose authoring
 or publishing pipeline.
 
-**Provisional or planned:** Astraeum's tilemap adapter and lighting are local
-game code, not installed Engine packs. Multiplayer, online upload, game export,
-PixelLab API integration, physical-controller verification, automatic level
-transitions, generation, other area-fill tools, audio and shared libraries are not
-established by current Studio Play. A successful local preview does not prove
+**Ownership, not missing gameplay:** Astraeum's tilemap adapter and lighting
+are local game code, not installed Engine packs. Authored automatic stairs
+transitions, Paint/Fill and boundaries are implemented; they are not a general
+campaign/rules/import/publishing framework.
+
+**Unfinished:** complete-game export, server upload/deployment, multiplayer,
+collaborative editing, configurable match-rule authoring, PixelLab API
+integration, physical-controller verification, procedural generation, audio
+authoring and shared gameplay libraries. The sample's manifest/media exporter
+is not a runnable-game/SQLite export. Protocol settings and Engine theme
+installation contracts do not prove the Tower module consumes those settings
+or is registered on a server. A successful local preview does not prove
 multiplayer, authoritative-server, or online-upload compatibility.
 
 ## 3. Extending through source
@@ -290,6 +390,27 @@ connected movement adapter. Do not put editor code into a game
 or call a game-local helper an Engine API. Engine source is not checked out
 here: inspect the installed package's `API.md` and `dist\*.d.ts` declarations
 under the pinned `engine\kits\` tree.
+
+### Source map
+
+| Path | Responsibility / first reads |
+| --- | --- |
+| `studio\index.html`, `src\main.js`, `src\styles.css` | Actual controls, registered events, editor state, Save, Inspector and Play orchestration |
+| `studio\server.mjs`, `project-*.js` | Loopback API, transactional SQLite/project/level/catalog ownership; validators dispatch by model |
+| `studio\world-paint.js`, `world-fill.js`, `world-terrain.js`, `world-coordinates.js`, `playable-boundaries.js` | Shared editing planners, coordinates and boundary contracts; reuse rather than clone |
+| `studio\extensions\connected-play.js` | Reusable experimental Studio integration of public connected worlds; composes Generic movement or Tower gameplay/skin, not installed Engine code |
+| `studio\scripts\` | Focused runtime/planner/event/API tests and separately gated CDP browser harnesses |
+| `studio\specs\001-map-editor\` | Milestone plans/tasks/history; dated evidence and current code outrank obsolete future-work wording |
+| `games\astraeum-tower\src\` | Tower combat (`game.js`), UI/input (`skin.js`), design schema/factories (`project.js`), catalog, Wang renderer, tilemap adapter and lighting |
+| `games\generic-grid-v1\src\` | Generic model/schema and movement-only adapter (`runtime.js`) |
+| `games\sample\` | Editable public-kit consumer example; settings, module, map, skin and theme manifest; verify/build target this sample, not all Studio |
+| `games\<project-id>\` | Generated identity/credits/adapter metadata and imported assets; never assume untracked directories are disposable |
+| `reference\astraeum-tower-original\` | Supplied, untouched original source for comparison; currently local/untracked, not guaranteed in a fresh clone |
+| `engine\developer-kit.lock.json`, `engine\README.md` | Tracked pin/provenance and installation boundary |
+| `engine\kits\`, `engine\archives\` | Ignored immutable distributions, dependency installs, retained earlier kits and source archives; not source-edit targets |
+| `tools\setup.mjs` | Checked kit extraction/checksums/dependency-junction setup/explicit upgrade |
+| `tools\bootstrap.mjs`, `restore-astraeum-starter.mjs`, `package-astraeum-starter.mjs` | Explicit developer-data bootstrap, validated safe restore and curated snapshot packaging; not Engine game import |
+| `exports\` | Ignored output location, not evidence that complete-game export exists |
 
 Ownership is split deliberately:
 
@@ -310,7 +431,90 @@ Ownership is split deliberately:
   user data: inspect `git status --short --ignored` and stage only explicitly
   authorized files; never assume an untracked project is disposable.
 
+### Storage and API contracts
+
+The default server binds to loopback only. Read `studio\server.mjs` before API
+work; browser controllers, API validators and model adapters must agree.
+Projects use stable IDs; section identity and document identity are separate.
+
+| Endpoint family | Use / invariant |
+| --- | --- |
+| `GET /api/projects`, `POST /api/projects` | List saved projects/maps; create an independent Generic game with credits, fixed dimensions and exclusive filesystem allocation |
+| `/api/projects/{projectId}/levels` | List active/deleted levels and `startingMapId`; POST lifecycle actions (`add`, `duplicate`, `rename`, `start`, `delete`, `recover`) are transactional and project-scoped |
+| `/api/projects/{projectId}/levels/{levelId}/sections` | Read/atomically PUT complete active/archive membership and documents, with level/section revisions and operation identity |
+| `/api/projects/{projectId}/maps/{mapId}` | Legacy/single-map GET/PUT, including initial template Save; not a substitute for complete multi-section Save |
+
+Saved format 2 documents reference catalog assets in an ordered flat object
+array; artwork, pivots, collision defaults and behavior are catalog/model-owned.
+Astraeum's optional `exit: { levelId, sectionId, startId }` is valid only on
+canonical stairs objects. Do not create a second map authority in filesystem
+JSON or rewrite a database from `floor1.json`.
+
+Historical format/ownership migrations preserve original JSON/backups and
+record failures. Unknown owners/models must not be guessed. Off-grid legacy
+walls became flagged unresolved collisions rather than invented artwork;
+explicit user resolution retains identity. Soft deletion does not erase
+documents/assets/backups; project-level start references live in SQLite, not
+the generated metadata's creation-time `mapIds`.
+
+Preserve strict validation and optimistic conflicts. Surface HTTP status and
+specific error, retain dirty drafts/history, and keep **Save failed - unsaved**
+plus the alert visible until retry/open clears it. Uncertain writes reuse the
+pending operation; do not generate success-shaped fallbacks or reset revisions.
+For backups, use SQLite's consistent backup support or a coordinated clean
+shutdown, not an arbitrary live `.sqlite` copy that ignores WAL.
+
+### Source-game import and adaptation
+
+**Implemented importer:** `studio\asset-import.js`, `project-assets.js` and
+the Import Assets UI accept PNGs/static PixelLab ZIPs. They do not execute or
+understand an arbitrary game's source, infer its gameplay, or import a full
+campaign. Animated exports are rejected explicitly.
+
+**Current source-game process is assistant-guided:**
+
+1. Inspect the authorized ZIP/file inventory, source entry points, dependencies,
+   license/credits, asset references and gameplay before extracting/porting.
+   Preserve an untouched original under `reference\` and record original archive
+   and asset hashes/source locations. Do not execute unknown archives blindly,
+   overwrite existing game directories or assume a local reference is tracked.
+2. Read the selected kit's public APIs, compatible sample/settings and the
+   target game's current schema/module/skin. Identify supported behavior,
+   adaptations and gaps explicitly before proposing new code.
+3. Extract only authorized assets without transformations unless explicitly
+   requested; retain source/artist credits and provenance. Astraeum's
+   `assets\provenance.json` records PNGs decoded byte-for-byte from embedded
+   data URIs in `reference\astraeum-tower-original\dungeon\index.html`.
+   That reference is not a runtime dependency.
+4. Implement game-owned behavior/rendering/schema in `games\<game>\`; reuse
+   supported runtime APIs and Studio planners. Put a genuinely reusable
+   experimental integration in `studio\extensions\`. Integrating a new model
+   requires editor/API/catalog/schema/runtime dispatch together; dropping a
+   source ZIP into `games\` does not register it or make New Game offer it.
+5. Compare intended original behavior with the adaptation; record deliberate
+   changes (for example Astraeum's all-slimes gate is not the original stairs
+   rule), incomplete features and source/asset provenance. Verify with narrow
+   tests and separately identified disposable Play/Stop/manual evidence.
+6. Track reusable API gaps/contracts, tests and Engine handoff in
+   [ENHANCEMENTS.md](ENHANCEMENTS.md). Record the compatible kit version,
+   Engine revision and Studio Git state; do not call an adapted prototype an
+   Engine API or promise multiplayer/export/server compatibility.
+
+There is **no completed universal source-game ZIP extraction/import wizard**.
+The supplied source game, one-player Tower encounter and supported asset ZIP
+format are concrete examples, not evidence that arbitrary games port unchanged.
+The Astraeum starter restore above installs existing local editor data; it does
+not unpack an original source-game ZIP, register a different game model, or
+import a complete Engine game package into a server. Keep source adaptation,
+local saved-design restoration and server package import as separate tasks.
+
 ## 4. Claude reuse-first workflow
+
+Before answering capability/workflow questions **or** writing custom code,
+read the relevant guide and inspect the actual UI/call sites, module settings,
+examples and installed public declarations. Help Anh find/use an existing
+control before assuming she needs a new feature. Do not answer from a stale
+task list or from general Engine knowledge.
 
 Before writing custom code, inspect the installed public declarations, the
 sample's supported settings, the target game's modules, and existing helpers.
@@ -320,10 +524,10 @@ game code.
 
 For this pin, start with:
 
-- `engine\kits\0.3.0-dca3ffc4561c\API.md` and the installed
+- `engine\kits\0.4.0-6cd1d52906da\API.md` and the installed
   `@multiplayer-game\theme-sdk\dist\index.d.ts` and
   `@multiplayer-game\local-preview\dist\*.d.ts`.
-- `engine\kits\0.3.0-dca3ffc4561c\sample\src\settings.js`,
+- `engine\kits\0.4.0-6cd1d52906da\sample\src\settings.js`,
   `sample\src\game.js`, `sample\src\skin.js`, and `sample\theme.json`.
   The packaged `sample\src\connected-sections.js` and
   `sample\connected-sections.mjs` demonstrate the public world contract.
@@ -331,6 +535,26 @@ For this pin, start with:
   `src\skin.js`, catalogs, and focused helper modules. For Studio capabilities,
   inspect `studio\src\main.js`, `studio\server.mjs`, and the relevant
   `studio\scripts\` test.
+
+Resolve the installed declarations through
+`games\sample\node_modules\@multiplayer-game\...`, whose junction targets the
+receipt's `dependencyDirectory`, or inspect that exact directory directly.
+Studio's Vite aliases select the same public package builds; never point them
+at a private Engine checkout or a different kit as an undocumented shortcut.
+
+| Public contract | What the consumer must implement |
+| --- | --- |
+| `GameModuleFactory` / `GameModuleInstance` (Theme SDK) | Validated module settings and input, initialize/applyInput/step/snapshot/results/dispose, stable metadata/state versions |
+| `ModuleContext` (Theme SDK) | Consume public entity/geometry/navigation/random/clock services and optional connected-world starts; gameplay/authority policy is not supplied by an editor skin |
+| `SkinFactory` / `SkinHost` (Theme SDK) | Compatible module/state metadata, mount/snapshot/events/render/viewport/dispose; use slots and `dispatchInput` for intent, not direct gameplay mutation |
+| `createLocalGame` / `mountLocalPreview` (Local Preview) | Supply validated `map` **or** `world`, settings, seed, roster/viewer; drive the fixed tick timer, observe snapshots, handle rejected input and dispose game/mount |
+| `@multiplayer-game/theme-sdk/package` | Node-only theme credits/manifest/assets/hash/digest validation; existing manifest/media exporter is not a game-code deployer |
+| `@multiplayer-game/protocol` | JSON/wire/settings schemas; their existence does not install networking, lobby rules or Tower consumption of generic settings |
+
+`createLocalGame` is in-memory local simulation at 30 Hz; `sendInput` can
+reject an action. Completion requests are returned to the caller, not
+production lobby finalization. Public roster/viewer types and per-account
+Tower state are not evidence of implemented multiplayer.
 
 Useful verified public boundaries include:
 
@@ -369,6 +593,103 @@ needed behavior, record the missing contract in
 `studio\docs\ENHANCEMENTS.md` and propose the Engine change; do not mutate the
 installed package, import private internals, or bypass validation.
 
+### Assistant decision and handoff contract
+
+| Finding | Required response/action |
+| --- | --- |
+| Supported now | Explain where it is (UI path or public export/module), exact options/ranges and limits; then reuse/configure it |
+| Partly supported | Identify the supported part and missing behavior; extend the existing schema/controller/module and all relevant surfaces, not a parallel competing implementation |
+| Missing, game-specific | Implement in the game project with explicit validated settings/schema and runtime consumption; preserve original imports/credits |
+| Missing, reusable experiment | Prototype in `studio\extensions\`, compose public APIs, and record a proposed contract/options, ownership, tests and limitations in the enhancement register |
+| Requires an Engine contract | Specify the missing public contract and separate Engine implementation/tests/kit handoff. Do not edit installed packages, import a private Engine checkout or silently bypass capacities |
+
+No ineffective Inspector input: a configurable property requires document
+validation/persistence, runtime consumption, tests and meaningful error behavior
+together. Tower `towerEncounterTuning` values are read-only source constants,
+not per-object settings. Sample `moveDistance`/`facingMovementBlend` and generic
+protocol combat/NPC/wave defaults do not become Tower or lobby match rules by
+being present in a package. Teams/rounds/win conditions need an explicit
+game/module contract and a separately verified server integration.
+
+For each change, report the actual API reused, files/owner, supported options,
+evidence type, limitations, compatible kit and Git provenance. Distinguish
+working-tree changes, local commits and confirmed remote commits. Never claim
+an Engine promotion, push, deployment or server multiplayer result from a
+local preview. Preserve unrelated edits/user data and dirty tabs before served
+source edits, reloads or restarts; make Save failures visible and actionable.
+Do not force a browser launch/restart loop or make an IDE debugger a prerequisite.
+
+### Multiplayer game-rule discussion with Anh
+
+During onboarding, Claude should discuss the intended rules with Anh **before
+implementing gameplay changes**. Start with the supported options and evidence
+below, explain the tradeoffs, recommend a coherent starting point, then let
+Anh accept, change or reject it. Record her decisions and unresolved questions
+in the authorized feature's handoff, not as assumed requirements. This
+discussion does not authorize implementation, multiplayer delivery or T042
+closure. Follow the [Git workflow](#git-workflow-and-handoff): descriptive
+feature branches, preserved unrelated edits, and no unauthorized commit/push
+or merge to `main`.
+
+**Optional Dots and Squares baseline:** clear all enemies, advance together,
+increase difficulty each level, respawn after a configurable delay, and show
+player/team stats. Treat this as a design model supplied for discussion, not
+as an inspected Dots and Squares implementation or a shipped Engine preset.
+It is **not a requirement for Astraeum**; retain its existing rules and saved
+designs unless Anh explicitly chooses a change.
+
+| Decision to discuss | Tradeoff and suggested baseline for Anh to consider |
+| --- | --- |
+| Cooperative or competitive play? | Cooperation encourages shared goals; competition needs explicit teams, friendly-fire, winners and tie rules. Suggest cooperative PvE with no player-to-player damage. |
+| Unlimited or limited lives? | Unlimited lives keep everyone involved but reduce failure pressure; limited personal/team lives create stakes but can leave players spectating. Suggest unlimited respawns; if limited lives are chosen, agree who spends a life and what happens when everyone is out. |
+| Respawn delay and safe-spawn behavior? | Short delays reduce downtime but weaken death penalties; long delays can frustrate. Suggest a configurable 5-second delay, a visible countdown and an authored walkable start away from enemies/other players. Agree on any temporary protection and what happens if no safe start exists; never silently place a player in danger or outside the boundary. |
+| Clear-map, timer, survival or another completion condition? | Clearing enemies gives an obvious shared goal but can stall on an unreachable enemy; timers create urgency, survival rewards endurance, and objectives allow exploration. Suggest clearing all required enemies across active sections; agree how unreachable enemies, a team wipe, the final level and simultaneous death/completion are handled. |
+| Shared or individual level progression? | Shared progression keeps the group together; individual progression permits exploration but needs rules for split worlds and reunions. Suggest one shared level and a coordinated transition after clear, including players awaiting respawn; agree on readiness/exit activation and what carries over. |
+| Scoring, rewards and HUD information? | Individual kill rewards encourage rivalry/last-hit competition; shared rewards encourage support. Suggest shared clear rewards, team score and informational per-player contributions. Agree on attribution, reward sharing, resets/carry-over and whether scores determine a winner. Show level, enemies remaining, team score, each player's HP/status and contribution stats, plus lives/countdown when applicable. |
+| Player-start assignment and maximum players? | More players need enough distinct safe starts, legible HUD/camera behavior and capacity checks. Suggest a two-player target first, stable roster-to-authored-start assignment and explicit rejection when full; discuss join/rejoin and occupied-start behavior. This is a proposed target, not a supported Studio multiplayer mode. |
+
+Taken together, the suggested baseline is a small cooperative party with
+unlimited delayed respawns, shared clear-map progression, modest bounded
+difficulty growth, shared rewards and visible personal/team feedback. It
+prioritizes participation and understandable goals over elimination or
+competitive balance. Ask Anh to choose the difficulty curve (enemy count,
+health or behavior, and its cap) rather than silently applying protocol
+defaults. Do not copy all of these rules into Astraeum merely because its
+current rune already has an all-slimes gate.
+
+#### Source-confirmed support, not multiplayer acceptance
+
+For kit 0.3.0 / public packages 0.1.0 at Engine revision
+`dca3ffc4561c14e0e83968afceabf0e85cddc565`, the following was inspected
+read-only for this onboarding addition. Reinspect the selected pin and target
+game before a later capability answer or implementation.
+
+| Boundary | What is available / what remains to implement |
+| --- | --- |
+| Available public settings and helpers | Protocol `GameSettingsSchema` validates `maxPlayers` (integer 1-32, default 4), `respawnDelaySeconds` (0-60, default 5), NPC population/health growth and `maxLevels`; `calculateLevelDifficulty` and `validateMatchCapacity` calculate/check bounded difficulty. These are protocol contracts, not Studio controls or evidence that Tower consumes them. The sample consumes movement/control settings, not these match rules. |
+| Available module/skin building blocks | Theme SDK `ModuleContext` exposes entities, geometry, clock, events and `requestCompletion({ kind: "level" \| "match", reason })`; modules own settings validation, step, snapshots and results, and skins own HUD rendering. Local Preview accepts a roster and returns completion requests to its caller. These support composing rules; they do not supply automatic team progression, respawn policy or server match finalization. |
+| Existing game-specific behavior | Tower's `src\game.js` owns HP/combat, all-active-slimes exit gating, aggregate damage/kill counters and run inventory; `src\skin.js` renders its HUD. `studio\src\main.js` handles the authored local destination transition. Tower does not implement delayed respawn, lives, configurable difficulty growth, competitive rules or a shared multiplayer transition protocol. Its counters are not a complete per-player/team scoring system. Generic Grid and the kit sample remain movement examples. |
+| Starts and actual preview roster | Public map/world validation and `connectedMapSpawns` supply authored/resolved positions; geometry can check walkability. Tower has game-owned initial/arrival safety checks, not a death-respawn system. `studio\extensions\connected-play.js`, Tower `src\main.js` and Generic `src\runtime.js` supply one-player rosters. Generic's two required starts and Tower's unused compatibility start do not prove two-player play or a maximum-player policy. |
+| Missing ready-made capability versus Engine gap | The inspected public kit has no ready-made lives/team-rules or safe-respawn coordinator, nor a Studio lobby/rule-authoring UI. Start with game-owned policy composed from public contracts; this absence is not proof that a new Engine primitive is required. Networking, authoritative match coordination, admission/rejoin and synchronized progression need separately inspected server contracts and separate verification; the local-preview API supplies no network/session authority. Record an exact missing reusable contract in `ENHANCEMENTS.md` only when inspection establishes one. |
+
+Evidence paths: selected kit `API.md`; installed
+`games\sample\node_modules\@multiplayer-game\protocol\dist\settings.{d.ts,js}`,
+`theme-sdk\dist\{index,maps}.d.ts` and `local-preview\dist\index.d.ts`;
+`games\sample\src\{settings,game}.js`; Tower `src\{game,skin,main}.js`;
+Generic `src\runtime.js`; and Studio `index.html`, `src\main.js` and
+`extensions\connected-play.js`. These are **source/declaration findings**, not
+new focused-test, browser or multiplayer acceptance results.
+
+After Anh decides and implementation is separately authorized, use the
+existing inspect/reuse/extend contract: configure a setting only where its
+runtime actually consumes it; otherwise extend the owning game schema/module
+and HUD with validation, persistence where intended, visible errors and
+focused tests. Put genuinely reusable experiments in `studio\extensions\`
+and document their Engine handoff, never patch installed packages or import
+private Engine code. Report local simulation evidence separately from any
+future multi-client/server evidence. This documentation pass changes no
+runtime rules and requires no restart, browser suite, deployment or kit rebuild.
+
 ### Worked example: Astraeum map and collision adaptation
 
 `games\astraeum-tower\src\tilemap-adapter.js` is a local adapter, not an
@@ -395,8 +716,55 @@ and Astraeum's artwork, collision, and movement checks still pass.
 
 ## 5. Verification
 
-For a source change, first use Studio **Play/Stop** for the affected game and
-run the narrowest relevant check from the root:
+### Evidence labels and choosing commands
+
+Use these labels in help, change notes and handoffs:
+
+- **Confirmed implementation:** inspected current source/public contract, not
+  necessarily executed in a native browser.
+- **Focused-test evidence:** name command, fixture/data and assertions. Real
+  public runtime with substituted DOM/Canvas/HTTP I/O is still not native UI
+  acceptance. A listed command alone is not a pass.
+- **Manual verification:** quote/scope the user's recorded observation; never
+  broaden it to an untested restart, controller, feature or deployment.
+- **Unfinished/unverified:** identify the remaining gate plainly; blocked
+  startup is not acceptance, and local preview is not server multiplayer.
+
+The latest recorded manual confirmations cover connected movement/camera/
+collision, explicit-Save section edits and asset painting. Current automatic
+rune entry/arrival/Stop evidence is focused disposable runtime/event coverage.
+Earlier native-browser results apply only to their dated slices; the connected
+browser acceptance gate is still open. Keep this distinction even when a
+historical task checkbox says verified.
+
+For code changes, choose the smallest relevant existing check and a
+disposable **Play/Stop** path for affected behavior where authorized. Never
+reload an unpreserved dirty tab or launch/retry blocked browser harnesses
+just to refresh evidence. Documentation-only work needs link/command/source
+checks, not a service, kit rebuild or browser suite.
+
+| Root command | Actual scope / prerequisites | Existing evidence, not rerun by this documentation pass |
+| --- | --- | --- |
+| `npm run astraeum:combat:test` | Node Tower combat/tuning/input tests | Recorded pass |
+| `npm run astraeum:progression:test` | Real public runtime: remote slimes, automatic entry/standing unlock, area latch, safe arrival, nonmutation | Recorded pass after automatic-entry change |
+| `npm run astraeum:interactions:test` | Disposable public runtime: once-only pickups/chests, original loot ranges, both seam axes, level/section identity, revisits, decorative props and nonmutation | Passed for this implementation |
+| `npm run studio:connected-play:test` | Both-model public-world seam/collision checks plus Tower skin/input/Canvas fixtures; no browser | Recorded pass |
+| `npm run studio:apply:test` | Registered editor event/Play/Stop with substituted browser I/O; also starts its own disposable API for some cases | Passed; includes chest-tier Inspector draft change and shared Play transition-state lifecycle |
+| `npm run studio:paint:test` | Planner and disposable SQLite/API Paint checks; test-owned restart/reopen | Recorded pass |
+| `npm run studio:boundaries:test` | Boundary/grid/history/runtime checks | Recorded pass |
+| `npm run studio:persistence:test` | Disposable API/SQLite migrations, projects/levels/sections/atomic saves/restart | Recorded pass; does not target user DB |
+| `npm run studio:sections:test` | Alias of `studio:persistence:test`, not a separate browser suite | Same entry script |
+| `npm run studio:runtime-sections:test` | Public geometry contract/regressions | Recorded pass |
+| `npm run starter:test` | Isolated copies: payload hashes, fresh restore, existing-data/sidecar refusal and explicit replacement backup | Handoff verification |
+| `npm run studio:handoff:test` | Requires a bootstrapped fresh checkout; explicit cwd, disposable ports/database/games, UI/API/artwork and unchanged logical startup records | Handoff verification; not browser acceptance |
+| `npm run studio:assets:test` | PNG/PixelLab import/API tests; requires authorized file via `STUDIO_GOPHER_ZIP` | Earlier asset evidence recorded; later invocation was blocked by missing ZIP, not a new pass |
+| `npm run verify`, `npm run build` | Sample checks and sample Vite build, not a complete Studio/game acceptance or kit build | Recorded sample passes |
+| `npm run studio:sections:smoke`, `npm run studio:levels:smoke`, `npm run studio:smoke`, `npm run studio:world:test` | CDP/browser harnesses, disposable storage/profile/services; inspect the script before any authorized launch | Historical segmented passes/failures below; current connected startup acceptance blocked. Legacy World flow targets retired UI |
+| `npm run studio:wall-clear:smoke`, `npm run studio:map-settings:smoke` | Focused modes of the Levels CDP harness | Historical slice evidence below, not new passes |
+| `npm run astraeum:smoke`, `npm run browser:smoke` | Tower/sample CDP scripts respectively; running preview and Chrome endpoint 9223 required | Historical evidence only; not a new browser pass |
+
+From `package.json` and each entry script, the focused commands below exist.
+This list is a selector, **not an instruction to run every check**:
 
 ```powershell
 npm run studio:boundaries:test
@@ -413,6 +781,8 @@ node studio\scripts\levels-smoke.mjs --draft-recovery-only
 npm run studio:assets:test
 npm run studio:smoke
 npm run astraeum:combat:test
+npm run astraeum:progression:test
+npm run astraeum:interactions:test
 npm run astraeum:smoke
 ```
 
@@ -1633,6 +2003,498 @@ User data, recovery, backups and unrelated edits were preserved. Changes
 were reviewed for a local commit; no push, deployment or kit rebuild occurred.
 T042 stays open.
 
+### Connected Astraeum combat and rendering (2026-11-17)
+
+Connected Astraeum Play now passes the selected Player Settings control mode to
+the existing Tower skin, which reuses the existing combat module, camera,
+lighting, combat effects and section-aware world renderer. Generic connected
+Play remains movement-only. The stairs rune is drawn and emits its steady violet
+light; generated doors are rendered, but door interaction, portal activation and
+floor exit are not implemented.
+
+**Focused executable checks passed:** `node studio\scripts\connected-play-test.mjs`,
+`node studio\scripts\editor-apply-test.mjs`, and
+`node games\astraeum-tower\scripts\combat-test.mjs`. The connected runtime test
+covers both models' east/west and north/south seam crossings, continuous camera,
+section blockers and outer/custom boundaries; Tower slime contact damage,
+Halberd damage/defeat, visible attack rendering, generated door/rune rendering,
+and keyboard-only, keyboard/mouse and synthetic standard-gamepad input. The
+editor event test starts Play in all three selected modes and verifies the mode
+reaches `connectedSkin`; Play/Stop preserves unsaved documents, saved baselines,
+history and editor view. These are source/runtime and Canvas-command fixtures,
+not native-browser visual acceptance. The separate assets import test could not
+start because `STUDIO_GOPHER_ZIP` was not supplied; Tower rendering is covered
+by the focused renderer test above. Physical-controller and browser testing
+remain unverified. No browser harness, Studio restart, user-data modification,
+kit rebuild, commit, push or deployment was performed. T042 remains open.
+
+### Astraeum authored level progression (2026-11-17)
+
+**Original inspected read-only:** `reference\astraeum-tower-original\dungeon\index.html`
+parses `>` into `L.stairs` at line 825, draws the violet rune at lines
+2197-2198, and handles **E**, ignoring key repeats, at lines 2554-2563.
+`interact()` at lines 1364-1372 calls `nextFloor()` only within 40 pixels of
+`(stairs.x, stairs.y + 8)`. `nextFloor()` at lines 1387-1391 guards the last
+floor and advances with at least 40 HP; it does **not** check ordinary
+enemies. Boss defeat has a separate delayed portal-opening path
+(`killEnemy`, `openBossPortals`, and the `portalT` update at lines
+1487-1513 and 1860); it is not an all-slimes gate. The generated door is
+drawn by `buildGround` at line 976 and is not the stairs interaction target.
+The source template has the equivalent stairs/interaction path.
+Thus the exit is the **stairs portal represented by the violet rune**, not
+the decorative door. The all-authored-slimes rule below is explicitly an
+adaptation, not a reconstruction of original enemy gating.
+
+**Authoring and validation:** the selectable `prop-stairs-rune` object has an
+optional `exit: { levelId, sectionId, startId }`. Only explicit Inspector
+changes add these fields. Choosing a level clears the previous start without
+choosing a replacement. The level dropdown excludes deleted/unsupported levels
+and is scoped to the current game. Its start dropdown lists active authored
+Aries starts with section names, IDs and local positions. The existing Tower
+contract still requires exactly one Aries start across the active level; this
+selection identifies that start explicitly rather than adding alternate-start
+semantics. Missing/deleted/inactive references, missing floor, boundary holes,
+collision overlap (including small prop colliders), slime contact overlap,
+ambiguous starts and public capacity errors are reported. Arrival never falls
+back to an open tile or the unused compatibility spawn.
+
+**Runtime and state policy:** the existing combat module counts living
+authored slimes across every active section. Archived sections are excluded.
+Zero slimes unlocks immediately. Entering an unlocked rune's activation area
+(strictly within 40 pixels) automatically requests the nearest exit, with
+stable-ID tie breaking. If the last slime dies while the player is already
+inside, it activates then. There is no Interact input. Each attempt latches
+all overlapping rune areas until the player leaves them, so failures retain
+the source runtime and visible error without retrying every tick. Leave and
+re-enter to retry, or Stop to repair the destination. Arrival areas are latched
+before the first simulation step, preventing bounce loops even in zero-slime
+levels. Destination membership/deletion and exact arrival are checked again
+at activation, not trusted from the Inspector.
+
+Between levels, preserve **HP, stamina and facing** exactly at the boundary;
+max HP and combat tuning remain the existing fixed values. Do not apply the
+original minimum-40-HP heal, refill stamina, or save progress. Reset movement,
+aim to the carried facing, attack/dodge/knockback, cooldowns, invulnerability,
+regen delay, animation, effects, simulation tick and encounter counters.
+Every entry creates a fresh encounter from its authored documents, including
+on revisits (enemies do not stay dead). At this progression milestone,
+pickups and loot were not yet implemented; see the current interaction policy
+below.
+
+Studio uses only public `createLocalGame({ world })`, snapshots, `sendInput`,
+`step`, `mountLocalPreview` and disposal. A destination is a different level,
+not a continuous section crossing: validate/create its complete active world,
+then dispose the old mount/game and mount the destination's Tower skin with
+its root camera zoom, world bounds and rebuilt environmental lights. Preserve
+the original draft and editor view separately throughout. The original level
+uses the captured unsaved editor documents on revisits; other levels load
+their saved complete active set. Held keyboard input is cleared/repeats ignored;
+the controller must return to neutral after transition before input re-arms.
+HUD shows remaining slimes and locked/unlocked exit status (or no authored exit).
+The nearby prompt says **Defeat N remaining slimes** while locked and **Enter
+the rune to continue** when unlocked, or shows the specific transition error.
+Stop, also during an in-flight load, restores the original editor section,
+selection, pan/zoom, history, saved baselines and unsaved draft, with no writes.
+
+The public kit has the required support; no Engine API gap or private access
+was needed. Studio owns current-game level resolution and host orchestration.
+The standalone first-floor encounter has no Studio game/level catalog; it
+explicitly reports that routing requires Studio rather than silently dropping
+an exit request or assigning template destinations.
+
+**Focused disposable verification:** `npm run astraeum:progression:test`,
+`npm run astraeum:combat:test`, `npm run studio:connected-play:test`,
+`npm run studio:apply:test` and `npm run studio:persistence:test` cover locked
+activation, remote-section locks, final kill while on the rune, zero enemies,
+automatic entry, one request per entry, arrival suppression/re-arming,
+destination/start validation, safe exact arrival, carry/reset policy, complete
+section loading, destination camera/lighting, explicit Inspector changes,
+cancelled loads, unchanged draft/view/history and zero gameplay saves.
+Persistence uses only test-owned SQLite/game directories, including explicit
+exit-reference round-trip after service restart and unchanged legacy map bytes.
+Runtime/event/Canvas-command fixtures are not native-browser visual acceptance.
+No browser harness, regular-server restart, kit rebuild, deployment, commit or
+push is part of this work. Existing user maps, backups, unrelated edits and the
+read-only original are preserved; **T042 remains open**.
+
+### Astraeum collectible and chest interactions (current implementation)
+
+**Original source inspected read-only:** `reference\astraeum-tower-original\dungeon\index.html`.
+Herbs, mushrooms and gems auto-collect once by proximity. Herbs add one
+inventory item; **H** uses one for up to 30 HP and consumes none at full HP
+(original `useHerb`, lines 1355-1362; confirmed in the original test log).
+Gems are amethyst, sapphire, ruby, emerald and mana crystal; mushrooms have no
+use effect in this Studio slice. The original **E** input opens a closed chest
+strictly within 46 px (lines 1364-1385); Studio instead opens it automatically
+once when a player approaches within that radius. Normal chests spill 2-4
+weighted items from herb (twice), mushroom, amethyst (twice), sapphire, ruby
+and emerald. Big chests spill 4-6 from herb, sapphire, ruby, emerald, mana
+crystal (twice) and amethyst. Floor 1 gold is rounded from
+`12 * random(0.8, 1.3)`, or 2.5 times
+that for big chests; totals are 10-16 and 24-39 respectively. The original
+chest flag prevents reopening during that floor. Barrels, crates and pots
+have collision/rendering only: the source defines no attack durability,
+break routine or drops, so Studio keeps them decorative and Halberd attacks
+do not create prop loot.
+
+The Studio Inspector exposes only the source-backed **Normal/Treasure** chest
+tier; new chests default to Normal. Its levels have no original floor index,
+so chest gold uses the Floor 1 baseline rather than inventing floor scaling.
+Loot spills as delayed, magnetized runtime pickups and enters the original
+small item/gold counters; this is not a general inventory, shop or crafting
+system. H/Y remain the healing-herb controls; no keyboard or controller chest
+Interact binding is used.
+
+**Play persistence is intentionally runtime-only:** collectible/chest IDs are
+qualified by level map, section and object ID. Collection, opened-chest state,
+remaining drops and inventory survive connected level transitions and
+revisits within one Play run; Stop, failed Play teardown or a new Play discards
+that run state. No object or saved design is changed during Play. This differs
+from the original local-save checkpoint: its floor-entry baseline means a
+mid-floor reload restarts that floor's object state, while a normal floor
+transition carries inventory/gold. Studio does not write or emulate that
+browser-local save; it keeps the run ledger in memory only.
+
+**Focused evidence:** `npm run astraeum:interactions:test` passed disposable
+public-runtime cases for pickup-once, full-health and healing use, normal and
+treasure chest ranges, reopening, repeated attacks against decorative props,
+both seam axes, same IDs across sections/levels, revisits and unchanged
+documents. Its terminal instrumentation reproduced two chest candidate
+scans per fixed tick and 2,400 probes during 1,200 ticks standing near an
+already-open chest; after the fix it measured two scans on the opening tick
+and zero thereafter. Across that run, one chest-opened event and one ledger
+entry remained, snapshot growth peaked at 5,823 bytes, and the final 100
+skin renders used a stable 33 Canvas operations each. `npm run studio:apply:test`
+passed the registered chest-tier Inspector event and verified that it leaves
+the saved baseline unchanged;
+its connected Play/Stop fixture verifies one runtime ledger is reused across
+level transitions and cleared on Stop. These are runtime/event fixtures, not
+native-browser visual acceptance; no browser performance run was started for
+this fix. The reduced scan count is not evidence that scanning caused the
+reported browser frame drop; it measures operation counts only. No Engine API gap was identified; behavior
+belongs to Astraeum's game module and Studio orchestration. Physical
+controller hardware, multiplayer, server delivery and native-browser
+acceptance remain unverified.
+
+**Handoff invariant:** preserve this cached opened-chest rendering in
+`games\astraeum-tower\src\skin.js`; do not restore the former per-frame Canvas
+filter or temporary capture/diagnostic instrumentation. Preserve the existing
+Tower combat, dodge, lighting, connected-level progression, rune destinations,
+pickups, chest loot and runtime-only interaction ledger. Extend their current
+game/module owners rather than recreating the game or replacing its saved data.
+Use `npm run astraeum:interactions:test`,
+`npm run astraeum:progression:test` and `npm run studio:connected-play:test`
+as relevant focused checks; they do not prove browser visual or performance
+acceptance.
+
+### Chest frame-performance investigation
+
+The isolated headless-Chrome run used the actual mounted Tower game and skin
+with cloned default content and a synthetic nearby chest. Across no-chest,
+movement, chest-nearby, opening, post-open and standing-nearby phases, RAF
+intervals were about 33.3 ms at p50, 33.4–33.5 ms at p95 and at most 33.6 ms;
+no interval exceeded 50 ms. Sampled CPU profiles were mostly idle, and the
+captured Canvas, DOM, task and allocation metrics did not identify a
+chest-specific hotspot. The fixture sampled RAF cadence, not the skin's
+individual `render()` duration, and did not reproduce the reported severe
+drop. Its post-open heap difference (+310 KB / 1,397 nodes) includes scene
+setup differences and is not evidence of a retained-object leak; six loot
+items remained at sampling time, so that phase is not described as settled.
+
+A subsequent read-only, in-memory clone of the saved Floor 1 document
+(3,225 authored objects and two chests) was prepared for the same comparison,
+with all chests removed only in the baseline clone. The isolated browser page
+did not become ready within its startup window, so that saved-floor attempt
+produced no frame or CPU measurements. No saved design was written, no
+hotspot was demonstrated, and no further game change is justified by this
+evidence. The terminal scan-count result above remains separate and does not
+establish or resolve the browser-performance report.
+
+**Temporary live capture (retired):** the Astraeum Play view temporarily
+offered a 30-second Start/Copy capture. It measured RAF intervals,
+the mounted Tower skin's actual `render()` duration and interval, runtime
+`step()` wall time and interval, ticks, long tasks and available heap. It
+counted chest openings by the snapshot's unopened-to-opened state transition
+and generated item/gold drops by their Tower snapshot IDs at the opening tick;
+it separately recorded bounded `lastEvent` sequence changes and inventory
+deltas. Totals remained accurate even if detailed event lists reached their cap.
+The capture validated the loaded Astraeum runtime rather than a fixture object
+count and reported the loaded level revision, active section and object counts,
+per-section revisions, and whether Play included unsaved changes. It finalized
+on Stop or successful level replacement, retaining partial results for Copy.
+Long-task availability was explicit and heap data could be unavailable in Firefox.
+The capture worked on the current Play design in memory, did not save
+or alter it, and did not compare against a no-chest baseline or provide an
+isolated CPU profile. The 3,225-object saved-floor browser attempt remains
+unmeasured. This describes the investigation before the cached-image fix below.
+
+This diagnostic update is uncommitted in Studio (base `83d9c92`); it uses
+public local-preview and skin APIs from kit 0.3.0 / Engine
+`dca3ffc4561c14e0e83968afceabf0e85cddc565` (package versions 0.1.0).
+The user's Firefox baseline reports one chest opening, RAF p50 33 -> 867 ms
+and skin-render p50 21 -> 41 ms; the supplied figures are user evidence,
+not a newly reproduced run. The attachment itself was not accessible in the
+assistant session. The current Studio driver uses one `step()` per interval
+callback, not a catch-up accumulator.
+
+**Historical bounded render-stage instrumentation (`render-stages-v1`, retired):**
+after the user confirmed the draft was saved and authorized Vite-served edits,
+the existing capture was extended without browser launches, service restarts
+or an IDE debugger. The game-owned Tower skin exposed an optional local
+`setRenderStageObserver` method (not a new Engine API); Studio attached it
+only during a captured render and cleared it in `finally`. Both single and
+connected Tower Play used this same skin. Stages were input/controller/camera,
+background, chests, loot, actors/effects, camera diagnostic attributes,
+lighting (including light construction), and HUD/diagnostic attributes.
+The input stage also includes controller status DOM writes; diagnostic
+attributes are therefore not all isolated in the explicitly named stages.
+No Canvas filtering, DOM writes, gameplay, lighting or input was disabled.
+
+Per-phase stage samples, snapshot observation wall time, and render-sample
+bookkeeping wall time shared the 5,000-samples-per-metric limit and 30-second
+capture lifecycle. Each summary included count, percentiles, maximum and
+sampled total; dropped samples/events remained explicit. Bookkeeping samples
+were per stage plus per whole render, not per frame. Stage duration excluded
+its reporting callback; whole-render duration included the stage
+instrumentation. Snapshot-observation timing included ledger/event inspection
+but excluded storing that timing sample. Bookkeeping timing excluded storing
+its own timing sample. Clock calls, wrapper/dispatch overhead and RAF sampling
+were not fully isolated; no diagnostic-off control comparison was performed.
+
+These were synchronous timings, not browser raster/compositor/GPU profiles.
+Deferred work may occur outside the render call. Percentiles must not be
+subtracted or summed to explain RAF gaps.
+The opened-chest Canvas filter and repeated diagnostic DOM writes were
+**unproven suspects** based on these measurements alone. The temporary capture
+fixture, benchmark page, Studio wrappers and Tower `setRenderStageObserver`
+hook have since been removed. The earlier capture checks were Node tests, not
+Firefox timings or native-browser visual acceptance.
+
+**Opened-chest Canvas filter (historical diagnosis):** the user's
+Firefox capture localized the new synchronous cost to `actorsAndEffects`
+(p50 0 -> 17 ms, p95 0 -> 22 ms; chests stage near zero; one opening; final
+effects 0). Source inspection found balanced save/restore and no leaked
+filter, shadow or compositing state; effects expire and are spliced, and no
+actor/effect work persists after pickup. The only steady post-open drawing
+difference is that every render draws the opened chest through
+`ctx.filter = "brightness(0.5) saturate(0.6)"`; its cost is consistent with
+being deferred into later actor draws. The measured case in `npm run astraeum:interactions:test` asserted no filtered
+world-canvas `drawImage` in the last 100 post-open renders and failed before
+the cached-image change (100 !== 0). A prepared fix applied the same filter
+once to a cached per-region chest image and drew that without a filter (glow,
+automatic opening and loot unchanged); it passed the interaction and
+connected-play checks in an isolated copy before being applied below.
+
+**Cached opened-chest rendering follow-up:** after the user confirmed the draft
+was saved, the existing skin was edited in place to filter each chest asset's
+artwork once on an offscreen Canvas per mounted skin. Opened chests reuse that
+image without a world-Canvas filter; closed treasure glow and game-owned
+opening, loot and revisit rules are unchanged. The earlier saved copy of the
+skin was compared with the edited file to check that unrelated intervening
+edits were retained. No standalone prepared patch was found in the workspace;
+the change implements the documented approach above rather than claiming an
+exact patch was applied. Focused runtime/Canvas checks cover save/restore,
+cache reuse and expired effect removal: `npm run astraeum:interactions:test`,
+`npm run astraeum:progression:test` and
+`npm run studio:connected-play:test` passed at the time. These Node checks are
+not browser pixel or performance evidence. The user subsequently confirmed the
+cached-image before/after check in Firefox; this task did not rerun Firefox or
+receive new numeric timings. Existing before/after evidence under
+`studio\data\astraeum-chest-browser-performance-*` and
+`studio\data\chest-measurement-prM7lg` was left unchanged. The temporary
+capture panel, capture-only instrumentation, styles, handlers and test hooks
+are now removed. Studio changes remain uncommitted at base `83d9c92`, using
+kit 0.3.0 / Engine `dca3ffc4561c14e0e83968afceabf0e85cddc565` and public
+packages 0.1.0.
+T042 remains open.
+
+### Astraeum Inspector discoverability and supported authoring
+
+The actual selection path is canvas `hitTest` (or a hierarchy click) ->
+`setSelection` -> `refreshChrome` -> `updateInspector`. Existing canonical
+stairs objects already have `type: "prop"` and `assetId: "prop-stairs-rune"`;
+the exit panel deliberately checks that asset ID, not an object's name,
+artwork or broad prop type. The original panel gate was correct for these
+objects. Its destination fields were buried after map dimensions, identity,
+transforms, collision and gameplay notes, and selection retained the panel's
+old scroll position. Behavior settings now lead the Inspector, with scroll
+reset only when the selection identity changes. This source/event evidence
+does not establish native-browser visual acceptance of a particular viewport.
+
+**Usable settings:** existing and newly placed built-in stairs expose
+**Destination level (this game)** and **Arrival player start (active section)**.
+The controls edit only that object's optional `exit` reference. Save writes
+the validated section documents; reopen installs the saved catalog/documents,
+and Play's host consumes the reference to resolve and validate the destination.
+Position remains editable for stairs, Aries starts and slime spawns; slime
+presence is authored by placing/deleting spawns. Asset-defined optional
+collision remains editable where supported. Control mode and level camera zoom
+are existing **Player Settings**, not per-character properties.
+
+**Read-only/unavailable:** Aries and slime Inspectors show fixed combat values
+directly from `towerEncounterTuning`/`towerSettings`, labeled read-only and not
+saved per object. Per-character HP, stamina, damage, movement, weapons, AI,
+drops and abilities have no game-document/runtime authoring contract. Supporting
+them would require schema validation, runtime consumption and tests together;
+adding ineffective inputs is not a substitute. This is a Tower module/schema
+capability gap, not evidence that the public Engine API is missing.
+
+Generated doors have no authored object identity. Clicking visible door artwork
+now shows a non-authoring decorative-door advisory (higher drawn authored
+items/spawns/collisions retain selection priority); it cannot set a destination,
+edit an individual door, or add history/document changes. Imported artwork,
+including artwork categorized as a character or named like a door/rune, remains
+visual-only and explicitly says so. No image/name-based conversion, destination
+assignment or saved-map rewrite occurs.
+
+**Focused verification:** `npm run studio:apply:test` dispatches registered
+canvas pointer, hierarchy, palette and destination change events. It checks
+existing/new rune visibility, selection scroll behavior, locked-layer
+protection, fixed combat outputs, generated doors and non-converting imported
+artwork. It drives the actual Save/fetch/install controllers through a
+test-owned SQLite file, closes/reopens that file, reselects the saved rune,
+then verifies real public-runtime Play consumes its destination and Stop
+restores the draft without gameplay writes. HTTP/DOM I/O is substituted:
+this is not native-browser layout acceptance or a new regular-server
+persistence check. No browser, debugger prerequisite, service restart or kit
+rebuild is required. User maps/backups stay untouched and T042 stays open.
+
+### Rune destination Save investigation (2026-11-17)
+
+The registered Inspector and Save events were exercised against a separately
+started disposable API and SQLite database, not the user's editor or storage.
+Choosing a normal level, saving, choosing its start and saving again sent two
+atomic section PUTs; both returned 200 and the editor reached Saved. Reopening
+preserved the exit and an unrelated camera edit. A real stale-revision PUT
+returned 409, displayed its error, retained the draft and Undo/Redo, and did
+not overwrite the concurrent save. This fixture does not establish what happened
+in the user's live tab or prove native-browser acceptance.
+
+One separate reproducible validation defect was found: a valid 121-character
+level ID produces a 129-character legacy root section ID, which the API lists
+as an arrival option but the exit validator rejected. Selecting that start
+threw from the change handler before Save, without an editor error. Generated
+root section IDs now accept the full valid level-ID range, and failed exit
+changes report an error instead of throwing silently. The disposable editor/API
+fixture saves and reopens that long reference. This edge case is not established
+as the cause of the user's reported symptom.
+
+The shared validator is used by the API as well as the editor. An already-running
+API must eventually be restarted to accept newly supported long references;
+no existing service was restarted and no live tab was reloaded. Preserve any
+live draft before coordinating that separately. T042 remains open.
+
+### Captured rune Save recovery and visible failures (2026-11-17)
+
+The live HAR captured HTTP 400, `Object stairs-rune-33-19 has unknown fields:
+exit.` The current API imports the same strict Tower validator as the editor;
+its object-key whitelist already includes `exit`, restricts it to stairs and
+requires exactly `levelId`, `sectionId`, and `startId`. The complete captured
+document passes that validator. This demonstrates an older API validator
+relative to current source, not missing current-source exit support. No API
+or web listener was running when this recovery began, so the former process's
+exact version/module state could not be inspected. No server schema or
+validation rules were changed.
+
+Before any served-file edit or service start, the exact 314,533-byte HAR
+request body was preserved as
+`C:\Users\Owner\Desktop\studio-save-recovery-astraeum-tower-floor-1-rev4.json`.
+Its SHA-256 is
+`e51f0acf403b35a464ef8bda57759484289ff32f7f297a3c36dfcbf8e03605d4`.
+Parsing and full-document validation confirmed level revision 4, section
+revision 4, all 1,999 objects and the rune's explicit destination/start.
+Pre-edit source copies and a consistent SQLite backup are retained under
+`C:\code\studio-rb\save-exit-20261117\`; prior backups were not modified.
+
+Save failures now retain a visible alert with the specific error and HTTP
+status, and the toolbar says **Save failed - unsaved** rather than only
+Unsaved. Unrelated UI refreshes cannot hide the alert. A new Save attempt or
+opening another design clears it; drafts, history, revision checks and the
+existing same-operation retry policy remain unchanged.
+`node studio\scripts\editor-apply-test.mjs` passed registered Save-event
+checks for 400, 409, 503 and network failures, retained drafts/history,
+visible errors and successful retry, alongside the existing exit Save/reopen
+checks. These are event fixtures, not native-browser visual acceptance.
+
+The complete HAR body was also submitted to a disposable database copied
+from the external backup. Save and API restart/reopen preserved every
+document and exit exactly. Unknown object/exit fields and exits on non-stairs
+still returned 400; stale level and section revisions still returned 409
+without changing stored data. Evidence, responses, SQLite and API logs remain
+under `studio\data\exit-har-recovery-20261117\`.
+
+For live recovery, only the API was started first, with Vite still stopped.
+The live revision-4 baseline matched the capture; the only document difference
+was the rune's exit. The unchanged captured request, including operation ID
+and both revision checks, was submitted **once**, returning 200 and advancing
+level and section to revision 5. GET and an independent SQLite read verified
+all 1,999 objects and exact exit contents before normal web startup. Every
+unrelated database row, backup and recovery record was compared with the
+external backup and preserved. The normal Studio launcher was then started;
+web/API returned 200 and the proxied reopen response still matched exactly.
+Live before/Save/verified responses and recovery API logs remain beside the
+external SQLite backup. The old browser tab was not driven or used for another
+Save; reopen the saved level before further edits from a revision-4 tab.
+
+No browser harness, kit rebuild, commit, push or deployment was performed.
+Existing unrelated edits and user backups were preserved. **T042 remains open.**
+
+### Rune proximity feedback and registered Play input (2026-11-17)
+
+Revision 5's destination Save was already verified and was not recovered or
+resubmitted. A new disposable editor fixture mounts the actual Tower skin,
+dispatches the registered Play/Stop clicks and keyboard handlers, and runs the
+public local runtime. Before the fix it completed combat, unlock, Interact,
+destination validation/loading, arrival at authored feet `(2000,1048)`, and
+exact Stop restoration. The failing assertion demonstrated missing nearby
+feedback, not a broken destination save or loading rule.
+
+The snapshot exposes the same nearest rune used by activation, with the
+same signed section origins, strict `<40px` range and stable-ID tie break.
+The original feedback fix displayed an Interact binding. That requirement
+has since been replaced by automatic activation, described below. Within range
+the skin now displays **Defeat N remaining slimes**, then **Enter the rune to
+continue**, identically in all control modes. Missing configuration,
+loading and the host's specific transition error appear in that same visible
+prompt. Destination membership and safe arrival are still validated by the
+existing loader.
+
+`studio:apply:test` covers a surviving neighboring-section slime, final kill,
+automatic proximity activation, rejected arrival with source retained,
+visible error and successful retry, exact destination spawn, and Stop restoring
+the original dirty neighbor, selection, pan/zoom, history and saved baselines
+with zero gameplay writes. `studio:connected-play:test` covers keyboard/mouse
+and controller prompts and missing configuration;
+`astraeum:progression:test` retains focused runtime coverage. These are
+event/runtime/Canvas-command fixtures with substituted browser I/O, not native
+browser visual acceptance. No browser was started or tab explicitly reloaded;
+no existing service restart, kit rebuild, commit or push was performed.
+Existing edits remain preserved and **T042 remains open**.
+
+### Automatic rune entry (2026-11-17)
+
+The rune now activates automatically after all living authored slimes in the
+active level are defeated, including an unlock while the player is already
+standing on it. The game module owns the per-player area latch; `clear` input,
+blur, controller changes and host transition notifications do not reset it.
+An attempt latches every overlapping rune, so a failed load cannot repeatedly
+request itself or a coincident rune. Leaving an area re-arms it. Destination
+creation seeds the latch from the exact authored arrival, preventing immediate
+return transitions without moving the spawn or changing saved designs.
+Keyboard E and controller X/Square activation dispatch and binding prompts
+were removed. No document schema, saved destination or combat rule changed.
+
+Disposable `astraeum:progression:test`, `studio:connected-play:test` and
+`studio:apply:test` passed automatic entry, remote-section slime gating, final
+kill while already on the rune, duplicate suppression, visible failed arrival
+without repeated requests, re-entry retry, exact safe arrival and arrival-rune
+bounce prevention. The registered editor/real-skin input fixture also verifies
+Stop restores the original unsaved draft, active section, selection, pan/zoom,
+history and saved baselines, with zero gameplay writes. Browser I/O remains
+substituted; these are not native-browser visual acceptance. No browser,
+existing-service restart, kit rebuild, commit or push was performed. Existing
+edits and saved user designs are preserved; **T042 remains open**.
+
 ## 6. Enhancement tracking and Git
 
 Record reusable capabilities and API gaps in
@@ -1649,6 +2511,29 @@ Use only these statuses:
 - **promoted** — a reusable API has been reviewed and shipped in a versioned kit.
 - **migrated** — an affected game has explicitly adopted the promoted API and
   its prototype was retired after behavior checks.
+
+### Git workflow and handoff
+
+Before any change, inspect `git status --short --branch` and preserve unrelated
+work. Make future development on a descriptive feature branch, never directly
+on `main`; if already on the designated branch for that feature, continue it.
+Do not switch branches or create a branch in a way that moves, stashes, or
+mixes existing edits. Keep game-specific changes and reusable Studio
+enhancements on separate branches where practical, with focused commits Scott
+can review independently.
+
+Version required game source and original/derived assets with source, author
+and transformation provenance, subject to repository policy. Exclude local
+databases, secrets, dependencies, installed kits, builds, diagnostics,
+recovery files and unrelated reference copies. Review both staged and
+unstaged changes and ignored user data before staging; never use broad staging
+or discard unrelated work.
+
+Push only when authorized. Do not merge into `main`; Scott owns integration
+and Engine promotion. A handoff identifies the branch and commits, changed
+behavior, tests and evidence, limitations, compatible kit version, and any
+reusable Engine enhancement proposal. Distinguish working-tree edits, local
+commits and commits confirmed on the remote.
 
 Before committing or pushing, review tracked and ignored user data and both
 staged and unstaged diffs:
@@ -1673,19 +2558,75 @@ Do not stage broadly, discard unrelated changes, amend history, commit, or push
 without authorization. Distinguish **uncommitted** work in the working tree,
 **committed locally** history, and **pushed** commits present on the remote.
 
+### Compatibility and Git provenance
+
+`engine\developer-kit.lock.json` is the authoritative selected-kit receipt.
+The selected kit 0.4.0 uses Theme SDK 0.2.0 and Protocol/Local Preview 0.1.0 at
+Engine `6cd1d52906da084a8c3bc92ca006cf1e6288b326` (source state `committed`) and
+archive SHA-256
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`.
+It also records companion tooling revision
+`scottzastrow/multiplayer-game-themes@778319f578b25081420e3334e1e68fa4de7540ec`
+and reused-tooling provenance; do not imply those tools were rebuilt from a
+currently available companion checkout. The kit version differs from its
+package versions. The kit archive is supplied under
+`engine\artifacts\` with its adjacent checksum sidecar.
+
+The Astraeum starter manifest records source commit
+`83d9c92efe235d0ecc9d17761212f4401a83359a`, the captured working-tree state,
+kit 0.4.0/archive SHA-256
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`, and
+starter-data SHA-256
+`a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
+The capture's source state was uncommitted; that remains accurate data
+provenance. Subsequent completed source is committed separately in the
+[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md). The committed-checkout
+setup/startup checks do not constitute browser acceptance, deployment or T042
+completion.
+
+In an isolated fresh checkout, the documented bootstrap installed the pinned
+kit and restored the starter database. `npm run studio:dev` served the UI and
+API; the API showed only Astraeum's 3 active levels and 5 sections, the saved
+starting level, and the empty imported-asset catalog. Focused game-package,
+combat, progression and interaction tests passed; the interaction test also
+checks cached opened-chest rendering. No browser acceptance loop was run.
+
+Read-only inspection commands, from the Git root:
+
+```powershell
+git rev-parse --show-toplevel
+git rev-parse HEAD
+git status --short --ignored
+git log -5 --oneline
+Get-Content .\engine\developer-kit.lock.json
+```
+
+The documentation audit observed local HEAD `83d9c92` (asset painting density
+and spacing), preceded by `90e5574` (explicit-Save sections), `55fd2e8`
+(connected editor/Play) and `488a5ad` (kit 0.3.0 pin). Combat/progression/
+Inspector/recovery edits and these onboarding changes were present as
+uncommitted work; this is a dated observation, not a claim that HEAD contains
+them or that any commit is pushed. Re-read Git state for each delivery.
+Do not invent a Studio or Engine commit ID for working-tree changes.
+
 ## 7. Promotion into Engine
 
-Follow this explicit cycle:
+The promotion cycle is: **Anh develops** a game-specific feature or reusable
+Studio prototype → **Scott reviews** reusable enhancements → **Scott implements**
+approved reusable APIs in Engine → **Scott releases** a versioned kit and
+updates Studio's pin → affected games are explicitly migrated to the public
+API. Game-specific behavior can remain in its game project; it does not need
+Engine promotion.
 
 1. Prototype the capability in `studio\extensions\` or the owning game and
    record the API gap and evidence in `studio\docs\ENHANCEMENTS.md`.
-2. Review whether it is genuinely reusable, define a public API and supported
-   options, and implement/test it in the Engine repository—not in this
-   checkout's installed package.
-3. Build and verify a new versioned kit in the Engine workflow; record its
-   version and Engine commit. Do not edit or rebuild the installed kit as a
-   substitute.
-4. Explicitly upgrade Studio to that kit, then explicitly migrate each affected
+2. Scott reviews whether it is genuinely reusable, defines the public API and
+   supported options, and implements/tests it in the Engine repository—not in
+   this checkout's installed package.
+3. Scott builds and verifies a new versioned kit in the Engine workflow,
+   releases it, and records its version and Engine commit. Do not edit or
+   rebuild the installed kit as a substitute.
+4. Scott updates Studio's kit pin; then explicitly migrate each affected
    game. A kit upgrade does not overwrite or replace custom game code.
 5. Compare saved settings, artwork, collision and gameplay behavior before
    retiring the prototype; mark the record migrated only after focused tests.
@@ -1693,3 +2634,48 @@ Follow this explicit cycle:
 This repository contains the packaged kit and its pin, not the Engine source
 checkout. A required Engine change must be tracked and implemented in that
 separate owner; do not claim that a Studio-local module has been promoted.
+
+For an Engine handoff, the enhancement entry must include the consumer use
+case, currently available public API and exact missing contract, proposed
+exports/options and validation/error semantics, state/ownership/capacity
+invariants, focused tests and evidence, compatibility/credits constraints,
+known limitations, and separate Studio/Engine Git provenance. Adoption is a
+separate reviewed change: keep the old prototype until behavior/settings/
+saved-design compatibility is checked, then record the shipped kit and
+retirement/migration outcome. No installed-package patch is a promotion.
+
+## Wednesday delivery checklist
+
+Use this as a handoff/demo gate for Wednesday (target 2026-11-18), **not a
+record that delivery or deployment has passed**. Do not mark items complete
+without the specified evidence.
+
+- [ ] Confirm Anh can find the root quick start and user guide's "How do I...?"
+  index; obtain the authorized kit ZIP/sidecar for a new machine. Record the
+  clean-machine limitation instead of claiming a fresh-clone trial.
+- [ ] Record local Studio HEAD, dirty/staged files, actual selected kit/package
+  versions, Engine revision, archive checksum and import/artist provenance.
+  Separate local commits, uncommitted changes and verified remote state.
+- [ ] Preserve every open dirty draft and verify recovery artifacts/backups
+  before any authorized source update/reload/restart. Confirm Saved or keep the
+  specific Save failure visible; do not repeat already-completed Save recovery.
+- [ ] Prepare an explicitly disposable demo game/data set, not the user's saved
+  map. Demonstrate Open Game, selected level versus start, section draft/Save,
+  layer locks, selection, Paint sizes/density/spacing, Fill and boundary preview/
+  cancel/Undo, imported artwork and independent gameplay camera zoom.
+- [ ] With authorization, demonstrate Astraeum controls/combat, a remote-section
+  slime keeping the rune locked, final-kill unlock while on it, automatic entry,
+  exact destination arrival without bounce, visible failure without per-tick
+  retry, deliberate leave/re-entry retry, and Stop restoring the original
+  draft/view. Record focused/event, manual and native-browser evidence separately.
+- [ ] Select only relevant focused checks from Section 5; record actual results
+  and prerequisites. Keep blocked connected browser acceptance open; do not
+  launch browser loops or require an IDE debugger for onboarding.
+- [ ] Explain unfinished scope explicitly: source ZIP adaptation is
+  assistant-guided; there is no complete-game export/server upload, verified
+  multiplayer, collaborative editing or configurable match-rule UI. A sample
+  theme media ZIP and local preview are not a deployable complete game.
+- [ ] Hand off game-specific/reusable changes with API contracts, test scope,
+  limitations and promotion status in `ENHANCEMENTS.md`. Leave **T042 open**;
+  no commit, push, deployment, service restart or kit rebuild is implied by
+  documentation or checklist completion.

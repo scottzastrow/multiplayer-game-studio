@@ -10,18 +10,54 @@ candidate** (local reusable prototype, not public), **promoted** (shipped in a
 versioned Engine kit), **migrated** (affected games explicitly use the shipped
 API and the prototype was retired after behavior checks).
 
+The progression, pickups/chests (including cached opened-chest rendering) and
+Inspector work originally marked **uncommitted** in the historical rows below
+is now in Studio commit `10cc7d5e8b15108338196483efcc4ea56a4e7eac`.
+Those rows retain the Engine revision that originally supplied the API;
+the selected 0.4.0 kit was verified separately in the
+[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md).
+
 | Feature | API gap / available capability | Implementation path | Focused tests | Kit dependency | Status | Studio commit | Engine commit/revision |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Astraeum tilemap-to-runtime collision adapter | Public `MapDefinition` validation and runtime geometry exist; no first-class Wang/tilemap renderer or Astraeum wall-face adapter. | `games/astraeum-tower/src/tilemap-adapter.js`, `src/design-render.js` | `npm run astraeum:smoke` | Kit 0.2.0; theme SDK 0.1.0; Engine revision `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` | Engine candidate | `3cd3699` | `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` |
 | Astraeum combat and input | Public module, movement and geometry contracts support game modules; Tower-specific dodge, stamina, weapons and slime encounter remain game-owned. | `games/astraeum-tower/src/game.js`, `src/skin.js` | `npm run astraeum:combat:test`; `npm run studio:smoke` | Kit 0.2.0; theme SDK 0.1.0; Engine revision `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` | game-specific | `44798ab` | `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` |
+| Astraeum authored level progression | Public world creation, snapshots, input and disposal support complete-level host replacement; no private runtime access or missing API. Studio resolves current-game destinations; the existing combat module owns the all-slimes gate. | Tower `src/game.js`, `src/project.js`, `src/skin.js`; `studio/src/main.js`, `studio/extensions/connected-play.js` | `npm run astraeum:progression:test`; `studio:apply:test`; `studio:connected-play:test`; `studio:persistence:test` | Kit 0.3.0; public packages 0.1.0 | game-specific | uncommitted | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
+| Astraeum pickups and chest loot | Public game-module input/snapshot and connected-world APIs support the game-owned interaction ledger; no Engine API gap. Original props have no break/drops contract and remain decorative. | Tower `src/catalog.js`, `src/project.js`, `src/game.js`, `src/skin.js`; `studio/extensions/connected-play.js`, `studio/src/main.js`; Inspector in `studio/index.html` | `npm run astraeum:interactions:test`; `npm run studio:apply:test` | Kit 0.3.0; public packages 0.1.0 | game-specific | uncommitted | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
+| Astraeum Inspector behavior discovery | Exit authoring is supported on canonical stairs; Normal/Treasure is the supported chest property. Per-object HP, stamina, damage, speed, weapons and AI remain fixed without a Tower schema/runtime contract. Generated doors and imported artwork have no interaction authoring. No new Engine API gap identified. | `studio/index.html`, `studio/src/main.js`; Tower `src/design-render.js` shared door bounds; detailed capability policy in `DEVELOPMENT.md` | `npm run studio:apply:test`: registered Inspector events and Play/Stop with disposable SQLite and substituted browser/HTTP I/O, not native visual acceptance | Kit 0.3.0; unchanged | game-specific | uncommitted | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
 | Astraeum world lighting | Public Canvas and skin view/anchor boundaries exist; no public Engine world-lighting renderer or Tower lighting settings. | `games/astraeum-tower/src/lighting/world-lighting.js`, `src/lighting/tower-lighting.js`, `src/skin.js` | `npm run astraeum:smoke` | Kit 0.2.0; theme SDK 0.1.0; Engine revision `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` | Engine candidate | `9cc5489` | `2717a9bc86c2b8db0865a2e37cffa609b0f8a208` |
 | Studio playable boundaries | Public rectangle collisions enforce rasterized polygon/grid cells; connected worlds retain section union, gaps and outer edges. | `studio/playable-boundaries.js`, `studio/extensions/connected-play.js`, both game `src/project.js` adapters | `npm run studio:boundaries:test`; `npm run studio:connected-play:test` | Kit 0.3.0; theme SDK 0.1.0 | Engine candidate | this change | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
-| Connected-section public world API | Validated `world` option, signed origins, qualified/resolved starts and continuous union geometry now ship publicly; no oversized maps or geometry replacement workaround. | Both-model movement-only Studio integration in `studio/extensions/connected-play.js` and main-editor Play; legacy single-section branches retained | `npm run studio:connected-play:test`; `npm run studio:apply:test`; `npm run studio:runtime-sections:test`; browser attempt blocked at startup | Kit 0.3.0; public packages 0.1.0 | migrated | this change | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
+| Connected-section public world API | Validated `world` option, signed origins, qualified/resolved starts and continuous union geometry now ship publicly; no oversized maps or geometry replacement workaround. | Generic movement preview and Astraeum Tower combat integration in `studio/extensions/connected-play.js` and main-editor Play; legacy single-section paths retained | `npm run studio:connected-play:test`; `npm run studio:apply:test`; `npm run studio:runtime-sections:test`; browser attempt blocked at startup | Kit 0.3.0; public packages 0.1.0 | migrated | this change | `dca3ffc4561c14e0e83968afceabf0e85cddc565` |
 
 For new rows, record the exact Engine revision that supplied the public API,
 not an assumed Engine repository commit. This checkout has no Engine source
 history. Update status and commit references only after the work is actually
 reviewed, versioned, migrated, or committed.
+
+## Complete-game ZIP: internal package builder; no Studio download
+
+The [scoped Engine handoff](GAME-EXPORT-HANDOFF.md#kit-040-contract-and-upgrade-preflight)
+records the 0.4.0 upgrade and contract inspection. The kit supplies a public campaign
+schema and an import fixture for the registered Dots and Squares adapter;
+it does not support uploaded game code, an Astraeum adapter, browser
+resolution of package media, or authoritative campaign transitions.
+Studio selects 0.4.0. The internal `studio\extensions\game-package.mjs`
+builder composes the public SDK and tests against the kit's registered fixture
+(`npm run studio:game-package:test`). It does not expose a Studio action or
+snapshot saved projects: neither Astraeum nor Generic Grid has a compatible
+registered adapter. The internal builder is committed in
+`701a4a11e16b5bc0a0eb190cf05a74136dff25bd`; it is not an Engine release.
+The unsupported Astraeum export action/adapter draft was excluded from the
+[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md), not represented as a
+completed or downloadable game.
+
+The **original Engine handoff** used kit 0.3.0/public packages 0.1.0, Engine
+`dca3ffc4561c14e0e83968afceabf0e85cddc565`; Studio handoff uncommitted on
+`feature/game-export-contract`, no Engine edits. Actual importer/upload suites
+passed 11 focused tests and a disposable exact-exporter/media-import probe
+passed 18 checks, including compatibility rejection and file/registry rollback.
+That historical media-only evidence does not verify 0.4.0 server import,
+Studio export or multiplayer. See the handoff for contracts, exclusions,
+snapshot/dirty-draft policy and the required round-trip/server acceptance tests.
 
 ## Connected-section Play: current integration
 
@@ -29,8 +65,14 @@ The separately scoped Engine handoff below is fulfilled by kit 0.3.0 at
 `dca3ffc4561c14e0e83968afceabf0e85cddc565`. Studio's selected-level Play
 uses the validated public `world` contract for both models, including all
 unsaved section documents, authored primary start, root boundary, neighboring
-floor occupancy and continuous world camera. Combat, dodge, lighting and
-generated decor remain outside connected mode. No editor features were added.
+floor occupancy and continuous world camera. Generic remains movement-only;
+Astraeum reuses its existing Tower combat, dodge, lighting, controls and
+generated decor. Authored stairs exits now have explicit current-game
+destination/start Inspector fields, all-active-slimes gating and automatic
+rune entry with arrival-bounce and failed-retry suppression; doors remain
+decorative. See `DEVELOPMENT.md`'s Astraeum authored
+level progression entry for the original-game finding, state policy and
+disposable verification scope.
 
 Per-section map limits are unchanged; aggregate world limits are 4096
 objects/collisions, 256 spawns and 1,000,000 bounding navigation cells, across
@@ -38,13 +80,15 @@ objects/collisions, 256 spawns and 1,000,000 bounding navigation cells, across
 unused compatibility slot on a distinct already walkable cell because the
 world schema requires two starts; it never replaces the authored Aries start
 or changes a saved design. Public validation rejects invalid/over-budget input.
-Single-section modules/skins remain on their original path.
+Single-section Astraeum levels with stairs use the same world-backed progression
+path; single-section previews without exits retain their original path.
 
-Focused runtime, controller, rendering-command and boundary checks passed,
-including read-only traversal of the preserved two-section level's disposable
-copy. The one native-browser attempt stalled at **Opening Floor 1...**; actual
-browser acceptance remains open. See `DEVELOPMENT.md`, Section 5, for the exact
-provenance, compatibility-slot constraint, measurements and retained evidence.
+Earlier movement-focused runtime, controller, rendering-command and boundary
+checks passed, including read-only traversal of the preserved two-section
+level's disposable copy. The one native-browser attempt stalled at **Opening
+Floor 1...**; actual browser acceptance remains open. See `DEVELOPMENT.md`,
+Section 5, for the exact provenance, compatibility-slot constraint,
+measurements and retained evidence.
 **Migrated** records adoption of the shipped API, not browser acceptance,
 multiplayer support, publication or completion of T042.
 
@@ -175,10 +219,11 @@ and authored starts using `studio\world-coordinates.js`, namespace IDs, and
 compose the union boundary through the new public API. Reject ambiguity rather
 than guessing a start or playing the first section.
 
-Add a movement-only connected preview for both models, retaining the current
-single-section path unchanged. Reuse artwork, collision helpers and renderers;
-make Astraeum's occupancy sampling section-aware. Follow the world-coordinate
-player with the saved gameplay zoom; do not clamp at interior section edges.
+The fulfilled connected preview retains the current single-section path:
+Generic is movement-only, while Astraeum reuses its combat module and skin.
+Reuse artwork, collision helpers and renderers; make Astraeum's occupancy
+sampling section-aware. Follow the world-coordinate player with the saved
+gameplay zoom; do not clamp at interior section edges.
 Capture editor pan, zoom, active section and selection before Play; restore
 them exactly on Stop and startup failure. Simulation state must never enter
 section documents, history, Save, or recovery data.

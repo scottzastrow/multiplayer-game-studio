@@ -85,9 +85,10 @@
   retain actual-versus-expected evidence and stop on the first failure.
 - [x] Verify and upgrade through existing setup to kit 0.3.0 / Engine
   `dca3ffc4561c14e0e83968afceabf0e85cddc565`, retaining prior kits and source.
-- [x] Integrate movement-only connected Play for both models through public
-  world exports, complete selected-level snapshots and authored starts;
-  preserve single-section paths and add no editor features.
+- [x] Integrate connected Play for both models through public world exports,
+  complete selected-level snapshots and authored starts; Generic remains
+  movement-only while Astraeum reuses its combat skin and module. Preserve
+  single-section paths and add no editor features.
 - [x] Pass focused seam/camera/collision/boundary, Play/Stop restoration,
   saved-design immutability and single-section regression checks, plus
   headless traversal of the preserved two-section level's disposable copy.
