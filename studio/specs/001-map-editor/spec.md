@@ -500,3 +500,32 @@ Focused disposable checks include `npm run studio:sections:test` and
 direct-CDP flow stopped at startup and retains diagnostics and screenshots;
 its actual results are recorded in `studio/docs/DEVELOPMENT.md`. T042 remains
 open.
+
+## Responsibilities and acceptance stages (Week 11 update)
+
+### Who owns what
+
+| Area | Owner | Examples |
+| --- | --- | --- |
+| Engine | Scott | Shared runtime, multiplayer server, package import, registered adapters, kit releases |
+| Studio | Scott and Anh | Level editing, asset placement, Save/Undo, local single-player preview, package builder |
+| Game-specific code | Anh | Astraeum Tower gameplay, levels, artwork and credits |
+
+Experimental Studio extensions live in `studio/extensions/`. Reusable ones are
+proposed for Engine promotion through `studio/docs/ENHANCEMENTS.md`.
+
+### Acceptance stages
+
+1. **Local preview (implemented):** a game can be edited, saved and played
+   single-player in Studio. This does **not** prove server or multiplayer
+   compatibility.
+2. **Package validation (partly implemented):** an exported package passes
+   strict validation (media hashes, credits, registered adapter). Verified so
+   far only for the Dots and Squares fixture.
+3. **Multiplayer acceptance (not yet claimed):** the exported Astraeum package
+   imports into the Engine and runs a gameplay scenario with two independent
+   clients.
+
+### Out of scope
+Universal source-game importing, execution of arbitrary uploaded code, and
+completed Astraeum multiplayer support.
