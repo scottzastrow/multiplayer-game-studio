@@ -253,3 +253,28 @@ missing assets and post-promotion failures; assert no old state changes.
 
 See the kit 0.4.0 preflight above for which parts of this original handoff
 are now available. No local preview, theme-import pass or handoff closes T042.
+
+## Package contract summary and promotion process (Week 11 update)
+
+**Package structure.** A versioned campaign package contains a manifest,
+campaign JSON (levels and exits), declared media with SHA-256 hashes, and
+credits. It never contains executable code.
+
+**Validation and compatibility.** Packages are checked with the kit's public
+schema (`GamePackageManifestSchema`, `validateGameCampaign`): strict schema,
+media and canonical hashes, resolvable starting map, no dangling exits, and a
+compatible kit version.
+
+**Registered adapters.** A game runs online only through an adapter that is
+registered in the Engine by its owner. Declaring an adapter locally does not
+register it. Astraeum's adapter and matching client skin are not registered
+yet, so saved-project export stays unavailable.
+
+**Enhancement → promotion → release → migration.**
+1. Record the need in `studio/docs/ENHANCEMENTS.md` (contract, tests,
+   limitations).
+2. Prototype in `studio/extensions/` or the game project.
+3. Scott reviews it for promotion into the Engine.
+4. Scott releases a new versioned kit.
+5. Studio and games migrate to that kit through an explicit, reviewed
+   `--upgrade`.
