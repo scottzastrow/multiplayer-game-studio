@@ -3,7 +3,7 @@
   "game": {
     "projectId": "astraeum-tower",
     "model": "astraeum-floor-v2",
-    "startingLevelId": "astraeum-tower-floor-1"
+    "startLevelId": "astraeum-tower-floor-1"
   },
   "source": {
     "repository": "scottzastrow/multiplayer-game-studio",
