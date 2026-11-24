@@ -37,10 +37,14 @@ assert.equal(execFileSync("git", ["check-ignore", "engine/kits/probe"], {
 }).trim(), "engine/kits/probe", "Local dependency directory must be ignored.");
 const temporary = await mkdtemp(join(local, ".setup-"));
 try {
-  const quote = value => `'${value.replaceAll("'", "''")}'`;
-  execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(temporary)} -ErrorAction Stop`],
-  { stdio: "inherit" });
+  if (process.platform === "win32") {
+    const quote = value => `'${value.replaceAll("'", "''")}'`;
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(temporary)} -ErrorAction Stop`],
+      { stdio: "inherit" });
+  } else {
+    execFileSync("unzip", ["-q", archive, "-d", temporary], { stdio: "inherit" });
+  }
   execFileSync(process.execPath, [join(temporary, "tools", "checksums.mjs")], { stdio: "inherit" });
   const kit = JSON.parse(await readFile(join(temporary, "kit.json"), "utf8"));
   assert.equal(kit.name, "multiplayer-game-developer-kit");
@@ -136,7 +140,7 @@ try {
   execFileSync(process.execPath, [npmCli, "ci", "--no-audit", "--no-fund"],
     { cwd: runtime, stdio: "inherit" });
   if (switchFrom) await rm(switchFrom);
-  if (!modulesPresent || switchFrom) await symlink(targetModules, modules, "junction");
+  if (!modulesPresent || switchFrom) await symlink(targetModules, modules, process.platform === "win32" ? "junction" : "dir");
   await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   console.log(`Installed kit ${kit.version}; editable sample preserved at ${starter}.`);
 } finally {
