@@ -17,15 +17,15 @@ complete-game publishing pipeline.
 
 ## Prerequisites and setup
 
-Use Windows PowerShell, Git, **Node.js 24.x** and **npm 11.x**. Use a modern
-Canvas-capable browser for Studio. Chrome/CDP is needed only for separately
-authorized browser checks, not to start Studio. An IDE debugger is optional.
-Commands run from the Git root containing this `package.json`, not an outer
-IDE/scaffold folder.
+Use Git, **Node.js 24.x**, **npm 11.x**, and a modern browser. On Windows,
+open PowerShell. On macOS, open Terminal and ensure `unzip` is available.
+An IDE is optional. Run setup from the repository root.
 
-```powershell
-git clone --branch handoff/astraeum-developer-2026-11-18 https://github.com/scottzastrow/multiplayer-game-studio.git
-Set-Location .\multiplayer-game-studio
+For a fresh checkout, run these commands on either platform:
+
+```sh
+git clone --branch main https://github.com/scottzastrow/multiplayer-game-studio.git
+cd multiplayer-game-studio
 node --version
 npm --version
 ```
@@ -33,12 +33,12 @@ npm --version
 The pinned Engine kit is supplied as a downloadable repository artifact:
 [kit 0.4.0 ZIP](engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip)
 and [SHA-256 sidecar](engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip.sha256).
-The lock file is authoritative; verify the artifact before installing:
+Bootstrap verifies the ZIP checksum and uses the platform's extraction tool
+(Windows PowerShell on Windows, `unzip` on macOS and Linux). Run the same
+commands in PowerShell or Terminal:
 
-```powershell
-Get-FileHash .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip -Algorithm SHA256
-npm run bootstrap -- --archive .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
-node .\engine\kits\0.4.0-6cd1d52906da\tools\checksums.mjs
+```sh
+npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
 npm run studio:dev
 ```
 
@@ -61,8 +61,8 @@ The restore command refuses to replace an existing database or colliding
 imported assets. For an intentional restore over existing local data, first
 Save, stop Studio, then make the choice explicit:
 
-```powershell
-npm run bootstrap -- --archive .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip --replace-existing
+```sh
+npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip --replace-existing
 ```
 
 Before replacement it creates a consistent SQLite backup and preserves
@@ -70,13 +70,13 @@ colliding asset files under ignored
 `studio\data\starter-restore-backups\<timestamp>\`. `npm run starter:restore`
 restores data only; it does not install a kit or import a complete game package
 into an authoritative server. A source-game ZIP is a separate, assistant-guided
-adaptation workflow. Both payloads are ordinary Git files in the handoff branch
+adaptation workflow. Both payloads are ordinary Git files on `main`
 (kit ZIP: 1,757,632 bytes; starter SQLite: 995,328 bytes), not Git LFS pointers
 or machine-local dependencies. No separate Release download is required.
 
 Open **http://127.0.0.1:4173**; the loopback API/SQLite service uses **4179**.
 Setup installs the packaged dependencies and Vite through the receipted
-`games\sample\node_modules` junction. Do not run root `npm install` or
+`games/sample/node_modules` link. Do not run root `npm install` or
 `npm ci` in `games\sample`; use setup. Changing kit selection requires a
 reviewed, explicit `--upgrade`, not a routine reinstall.
 
