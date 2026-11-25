@@ -35,11 +35,10 @@ records the earlier shared 0.4.0 baseline, not acceptance of this branch.
 
 ## First checkout: restore Astraeum
 
-The selected Engine kit is 0.5.0, but the supplied starter-data manifest pins
-the shared 0.4.0 kit. Therefore the documented
-`bootstrap` currently cannot finish its restore; do not restore or replace
-existing data to work around that mismatch. Once the starter-data pin is
-reconciled, open the existing game with **Open Game > Astraeum Tower** and
+The starter was captured with Engine kit 0.4.0 and has separately been
+verified for restore with the selected 0.5.0 kit. Follow the root bootstrap
+instructions for a fresh checkout, then open the existing game with
+**Open Game > Astraeum Tower** and
 continue in its saved levels. Do not choose **New Game**, recreate Floor 1, or
 re-import the original source game. Starter-data restoration is not an import
 of a complete Engine game package or a server deployment. An existing database

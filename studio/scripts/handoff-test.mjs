@@ -7,13 +7,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { assertStarterKitCompatibility } from "../../tools/starter-kit-compatibility.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const manifest = JSON.parse(await readFile(join(root, "starter-data", "astraeum", "manifest.json"), "utf8"));
 const lock = JSON.parse(await readFile(join(root, "engine", "developer-kit.lock.json"), "utf8"));
-assert.equal(manifest.engine.kitVersion, lock.version, "Starter data and selected kit versions differ.");
-assert.equal(manifest.engine.archiveSha256, lock.archiveSha256, "Starter data and selected kit checksums differ.");
-assert.equal(manifest.engine.engineRevision, lock.engineRevision, "Starter data and selected Engine revisions differ.");
+assertStarterKitCompatibility(manifest, lock);
 const data = join(root, "studio", "data");
 await mkdir(data, { recursive: true });
 const temporary = await mkdtemp(join(data, "handoff-test-"));
@@ -76,7 +75,8 @@ try {
     await readFile(join(root, "starter-data", "astraeum", "studio.sqlite")),
     "Run the documented bootstrap in a fresh checkout before this test; existing user storage is never used.");
   await copyFile(restored, database);
-  const before = records(database);
+  const before = records(join(root, "starter-data", "astraeum", "studio.sqlite"));
+  assert.deepEqual(records(database), before, "Restored database rows differ from the starter.");
   const apiPort = await freePort();
   let webPort = await freePort();
   while (webPort === apiPort) webPort = await freePort();

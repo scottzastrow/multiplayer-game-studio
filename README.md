@@ -84,18 +84,19 @@ This branch's lock and sample dependencies select kit **0.5.0**, Theme SDK
 archive SHA-256
 `e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
 The exact archive and sidecar are supplied as repository artifacts in
-`engine/artifacts/`. For kit-only setup on either platform:
+`engine/artifacts/`. In a fresh checkout, install the kit and restore the
+curated starter with:
 
 ```sh
-npm run setup -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
+npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
 npm run studio:dev
 ```
 
-The supplied starter manifest is for **0.4.0**, not this selected 0.5.0 kit.
-Restore checks version, archive hash and Engine revision. **Do not run
-bootstrap or restore on this branch until a compatible starter snapshot is
-provided and verified**; bootstrap runs setup before its restore check.
-Do not replace existing saves to work around the mismatch. A previous local
+The supplied starter was captured with **0.4.0**; its manifest separately
+records **0.5.0** as the verified restore kit. Restore checks that kit's
+version, archive hash and Engine revision. The database and original capture
+provenance are unchanged. Existing saves are not replaced without an explicit
+choice and backup. A previous local
 0.5.0 snapshot named a different revision (`1140bd5b4bea432f74f0292c18408441a8ebfd7d`)
 and hash (`d165707ec5015fe3617b93158505b756acd9b21bb51a17868b233b117f39bb79`);
 it is not the supplied 0.4.0 snapshot or the selected 0.5.0 kit.

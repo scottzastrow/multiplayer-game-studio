@@ -40,11 +40,12 @@ Because the saved campaign is rejected, no saved-game ZIP or SHA-256 exists.
 No Engine import, authoritative startup, multiplayer or browser acceptance
 was verified for this saved campaign. T042 remains open.
 
-The supplied starter-data manifest names kit 0.4.0, archive SHA-256
+The supplied starter-data manifest records capture with kit 0.4.0, archive SHA-256
 `62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233` and
-Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`, not the selected
-kit. Restore checks these pins; do not run bootstrap/restore or replace local
-data until a matching starter package is supplied. The separate prior local
+Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`. A separate
+verified restore-kit receipt selects the current 0.5.0 kit; restore checks its
+version, archive hash and revision. Existing data still requires an explicit
+replacement choice and backup. The separate prior local
 0.5.0 snapshot described in the root README is not this supplied payload.
 
 ## Historical kit 0.4.0 contract and upgrade preflight

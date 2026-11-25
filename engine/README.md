@@ -16,7 +16,8 @@ and SHA-256 sidecar in `artifacts\`. This export branch selects the 0.5.0
 ZIP (1,765,105 bytes) and sidecar in the same directory. Setup checks the
 archive against its sidecar, checks the kit inventory and compares the
 resulting receipt with the selected lock.
-The 0.4.0 starter snapshot does not match the 0.5.0 lock. See the root
+The starter was captured with 0.4.0 and separately records 0.5.0 as its
+verified restore kit. See the root
 [setup instructions](../README.md#prerequisites-and-setup) before setup or
 restore. Registry access is required for Vite tooling. Neither kit is an
 Astraeum server release.

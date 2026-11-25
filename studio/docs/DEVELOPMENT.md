@@ -79,9 +79,9 @@ It then restores the supplied Astraeum database. Setup refuses a different kit
 selection without explicit `--upgrade`; it also runs `npm ci` for Vite and its
 pinned tooling, so a fresh install needs npm registry access. Do not run
 `npm ci` directly in `games\sample\`; there is no root dependency install step.
-The supplied starter manifest pins the shared 0.4.0 kit rather than the
-0.5.0 kit in `developer-kit.lock.json`; `bootstrap` therefore cannot
-complete its restore. Do not run bootstrap or restore until those pins match.
+The supplied starter retains its 0.4.0 capture pin and separately records the
+selected 0.5.0 kit as verified for restore. Bootstrap checks the restore pin;
+it does not alter the capture provenance.
 
 ### Astraeum starter data and safe restore
 
@@ -101,8 +101,10 @@ row count, per-file hashes, kit pin and source provenance;
 
 The supplied starter manifest names kit 0.4.0, archive SHA-256
 `62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233` and
-Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`, not the selected
-0.5.0 kit. Restore validation checks all three values and rejects this mismatch.
+Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326` for capture.
+Its `verifiedRestoreKit` separately records 0.5.0, the selected archive hash
+and revision; restore compares all three fields to the lock. Older manifests
+without that field continue to use their capture kit for the same strict check.
 The different 0.5.0 snapshot described in the root README is not this payload.
 
 On Studio base `544e204`, a read-only probe in a disposable checkout validated
@@ -110,9 +112,10 @@ all five captured section documents and initialized and stepped each of the
 three captured levels with kit 0.5.0 at revision
 `d0f46931f56b90298b3209010581a0ffd7f79561`. The starter SQLite bytes remained
 unchanged. This is focused runtime evidence, not full editor, export or
-server compatibility. The manifest's 0.4.0 pin records its actual capture;
-the probe does not justify rewriting that provenance or bypassing restore's
-pin check.
+server compatibility. A later disposable Windows checkout also bootstrapped
+a 0.5.0 candidate, compared all logical rows to the captured snapshot, and
+passed the handoff startup test. The original captured SQLite payload is
+unchanged; the separate restore receipt preserves the 0.4.0 capture pin.
 
 The package excludes other projects, soft-deleted levels, removed-section
 archives, migration backup/diagnostic rows, the obsolete World workspace,
@@ -123,10 +126,8 @@ artifact. The source commit is
 working tree had uncommitted changes. This is data provenance, not a claim that
 the current changes are committed or pushed.
 
-For a fresh checkout, use kit-only `npm run setup -- --archive <pinned-zip>`
-with the repository artifact. Do not run `bootstrap` or
-`starter:restore` until the starter package matches the selected kit and has
-been verified. Once compatible data is available, start Studio and choose
+For a fresh checkout, use `npm run bootstrap -- --archive <pinned-zip>`
+with the repository artifact. Start Studio and choose
 **Open Game > Astraeum Tower**; do not create a replacement game or re-import
 the source game. `npm run starter:restore` restores data only; it is not the
 Engine complete-game package importer or a server deployment. These are
@@ -2603,9 +2604,8 @@ kit 0.4.0/archive SHA-256
 (Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`), and
 starter-data SHA-256
 `a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
-This starter-data pin does not match the currently selected kit 0.5.0 artifact
-or Engine revision. Restore validates the mismatch and must not be bypassed;
-do not run bootstrap/restore until a compatible starter snapshot is supplied.
+The separate verified restore-kit receipt matches selected kit 0.5.0 and is
+checked strictly without changing the original capture pin or SQLite payload.
 The source state is uncommitted at capture; do not imply this handoff is
 published.
 

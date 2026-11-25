@@ -24,13 +24,16 @@ const failure = (result, message) => {
 try {
   await mkdir(join(temporary, "tools"), { recursive: true });
   await mkdir(join(temporary, "engine"), { recursive: true });
-  for (const file of ["tools/restore-astraeum-starter.mjs", "engine/developer-kit.lock.json"]) {
+  for (const file of ["tools/restore-astraeum-starter.mjs", "tools/starter-kit-compatibility.mjs",
+    "engine/developer-kit.lock.json"]) {
     await cp(resolve(root, file), resolve(temporary, file));
   }
   await cp(join(root, "starter-data"), join(temporary, "starter-data"), { recursive: true });
   const lockPath = join(temporary, "engine", "developer-kit.lock.json");
   const lock = JSON.parse(await readFile(lockPath, "utf8"));
-  const mismatchedLock = { ...lock, version: `${manifest.engine.kitVersion}-mismatch` };
+  const kit = manifest.verifiedRestoreKit;
+  assert.ok(kit, "The supplied starter must identify its verified restore kit.");
+  const mismatchedLock = { ...lock, version: `${kit.kitVersion}-mismatch` };
   await writeFile(lockPath, JSON.stringify(mismatchedLock));
   failure(run(), /Starter data and selected kit versions differ/);
   for (const [field, value, message] of [
@@ -38,16 +41,31 @@ try {
     ["engineRevision", "incorrect-revision", /Starter data and selected Engine revisions differ/]
   ]) {
     const compatible = {
-      ...lock, version: manifest.engine.kitVersion,
-      archiveSha256: manifest.engine.archiveSha256, engineRevision: manifest.engine.engineRevision
+      ...lock, version: kit.kitVersion,
+      archiveSha256: kit.archiveSha256, engineRevision: kit.engineRevision
     };
     await writeFile(lockPath, JSON.stringify({ ...compatible, [field]: value }));
     failure(run(), message);
   }
   await writeFile(lockPath, JSON.stringify({
+    ...lock, version: kit.kitVersion,
+    archiveSha256: kit.archiveSha256, engineRevision: kit.engineRevision
+  }));
+  const manifestPath = join(temporary, "starter-data", "astraeum", "manifest.json");
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, verifiedRestoreKit: null }));
+  failure(run(), /Starter restore kit metadata is missing/);
+  const legacy = { ...manifest };
+  delete legacy.verifiedRestoreKit;
+  await writeFile(manifestPath, JSON.stringify(legacy));
+  failure(run(), /Starter data and selected kit versions differ/);
+  await writeFile(lockPath, JSON.stringify({
     ...lock, version: manifest.engine.kitVersion,
     archiveSha256: manifest.engine.archiveSha256, engineRevision: manifest.engine.engineRevision
   }));
+  success(run());
+  await rm(database);
+  await writeFile(lockPath, JSON.stringify(lock));
+  await writeFile(manifestPath, JSON.stringify(manifest));
   success(run());
   const installed = await readFile(database);
   assert.equal(sha256(installed), manifest.database.sha256);
