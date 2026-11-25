@@ -2939,6 +2939,8 @@ function validateExportCredits() {
   return $("#export-form").reportValidity();
 }
 
+let exportSuggestionRequest = null;
+
 async function showExportDialog() {
   if (!state.document || state.model !== ASTRAEUM_MODEL || isPlaying() || state.saving ||
       state.exporting || state.switching || state.creating || state.levelBusy ||
@@ -2955,13 +2957,13 @@ async function showExportDialog() {
     : "Confirm the public project and author credits, then export this saved snapshot.";
   $("#export-dialog").showModal();
   refreshExportActions();
-  state.exporting = true;
-  refreshChrome({ structure: false });
-  refreshExportActions();
+  const request = {};
+  exportSuggestionRequest = request;
   try {
     const projectId = state.identity.projectId;
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/export-credits`);
     const payload = await response.json();
+    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
     if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
     if (payload.projectId !== projectId || !payload.suggestions) {
       throw new Error("The saved project credit suggestions did not match the selected game.");
@@ -2970,11 +2972,8 @@ async function showExportDialog() {
     setExportSuggestions($("#export-author-suggestion"), payload.suggestions.author ?? []);
     $("#export-message").textContent = "Choose or enter the public project and author credits you confirm.";
   } catch (error) {
+    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
     $("#export-message").textContent = `Could not load saved credit suggestions: ${error.message}`;
-  } finally {
-    state.exporting = false;
-    refreshChrome({ structure: false });
-    refreshExportActions();
   }
 }
 
@@ -2985,6 +2984,7 @@ async function downloadSavedGamePackage() {
     refreshExportActions();
     return false;
   }
+  exportSuggestionRequest = null;
   state.exporting = true;
   refreshChrome({ structure: false });
   refreshExportActions();
@@ -3033,6 +3033,7 @@ async function downloadSavedGamePackage() {
 
 async function saveThenExportGame() {
   if (!validateExportCredits()) return;
+  exportSuggestionRequest = null;
   state.exporting = true;
   refreshChrome({ structure: false });
   refreshExportActions();
@@ -3076,10 +3077,17 @@ function configureGameExport() {
   });
   $("#export-save").addEventListener("click", () => void saveThenExportGame());
   $("#export-cancel").addEventListener("click", () => {
-    if (!state.exporting) $("#export-dialog").close();
+    if (!state.exporting) {
+      exportSuggestionRequest = null;
+      $("#export-dialog").close();
+    }
   });
   $("#export-dialog").addEventListener("cancel", event => {
     if (state.exporting) event.preventDefault();
+    else exportSuggestionRequest = null;
+  });
+  $("#export-dialog").addEventListener("close", () => {
+    if (!$("#export-dialog").open) exportSuggestionRequest = null;
   });
 }
 

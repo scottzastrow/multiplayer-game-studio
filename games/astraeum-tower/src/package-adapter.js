@@ -213,7 +213,15 @@ function sectionMap(level, section, assetCatalog, importedAssets, media) {
   const spawns = [];
   let collisionIndex = 0;
   const usedIds = new Set(document.objects.map(object => object.id));
-  const addCollision = rect => {
+  const addCollision = (rect, objectId) => {
+    if (rect.width % CELL_SIZE !== 0 || rect.height % CELL_SIZE !== 0 ||
+        rect.x < 0 || rect.y < 0 ||
+        rect.x + rect.width > document.bounds.width || rect.y + rect.height > document.bounds.height) {
+      fail(`Level ${campaignLevelLabel(level)}, section ${section.sectionId}, object ${objectId} has collision ` +
+        `${rect.width}x${rect.height} at (${rect.x}, ${rect.y}) that Engine kit 0.5.0 cannot represent exactly. ` +
+        `Collision dimensions must be multiples of ${CELL_SIZE} pixels and fit within the section. ` +
+        `Change or disable this object's collision before exporting; Studio will not resize or drop it.`);
+    }
     const generated = collisionObject(rect, collisionIndex++);
     while (usedIds.has(generated.object.id)) {
       generated.object.id = `collision-${collisionIndex++}`;
@@ -243,7 +251,7 @@ function sectionMap(level, section, assetCatalog, importedAssets, media) {
     if (object.assetId === "collision-box") {
       const rect = collisionRect(object);
       if (!rect) fail(`Level ${level.mapId}, section ${section.sectionId}, collision ${object.id} has no collision shape.`);
-      addCollision(rect);
+      addCollision(rect, object.id);
       continue;
     }
 
@@ -307,7 +315,7 @@ function sectionMap(level, section, assetCatalog, importedAssets, media) {
     if (object.collision) {
       const rect = collisionRect(object);
       if (!rect) fail(`Level ${level.mapId}, section ${section.sectionId}, object ${object.id} has invalid collision geometry.`);
-      addCollision(rect);
+      addCollision(rect, object.id);
     }
   }
 
@@ -431,7 +439,7 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
     let reserved = false;
     const candidates = [...converted].sort((a, b) =>
       Number(b.definition.map.spawns.length > 0) - Number(a.definition.map.spawns.length > 0));
-    reserve: for (const { definition, blocked } of candidates) {
+    reserve: for (const { definition, document, blocked } of candidates) {
       for (let y = 0; y < definition.map.bounds.height / CELL_SIZE; y++) {
         for (let x = 0; x < definition.map.bounds.width / CELL_SIZE; x++) {
           if (blocked.has(`${x},${y}`)) continue;
@@ -447,7 +455,14 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
           if (level.mapId === snapshot.startingMapId && definition.map.spawns.length === 0) {
             fail(`Starting level ${campaignLevelLabel(level)} has a safe reserved start in another section, but Engine kit 0.5.0 requires two player starts in the starting section. Add a safe cell there before exporting.`);
           }
-          definition.map.spawns.push({ id: "reserved-player-spawn", kind: "player", position: local, radius: 4 });
+          const usedIds = new Set([
+            ...document.objects.map(object => object.id),
+            ...definition.map.objects.map(object => object.id),
+            ...definition.map.spawns.map(spawn => spawn.id)
+          ]);
+          let id = "reserved-player-spawn";
+          for (let suffix = 1; usedIds.has(id); suffix++) id = `reserved-player-spawn-${suffix}`;
+          definition.map.spawns.push({ id, kind: "player", position: local, radius: 4 });
           reserved = true;
           break reserve;
         }

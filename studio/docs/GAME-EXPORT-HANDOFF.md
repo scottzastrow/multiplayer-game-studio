@@ -28,6 +28,21 @@ producing an invalid ZIP. The `assetProvenance` manifest map carries each
 declared artwork's author, source and original filename. Unrepresentable or
 conflicting attribution blocks export.
 
+Kit 0.5.0's public map contract accepts rectangular collision dimensions only
+in multiples of its 32-pixel navigation cell size. Astraeum's optional barrel,
+crate, pots and chest collision rectangles are smaller; the exporter reports
+the level, section and object rather than silently enlarging or omitting them.
+In-bounds, cell-multiple rectangles retain their exact position and dimensions.
+Supporting exact smaller colliders in a validated campaign requires a reviewed
+Engine contract and versioned public kit, not a local preview workaround.
+**Engine capability request:** define public campaign/map validation and
+runtime geometry semantics for exact, in-bounds subcell rectangles without
+changing their dimensions or positions. Navigation and continuous collision
+must agree, respect existing capacity and section limits, and behave consistently
+for multiple players. Engine tests should cover the 18 x 8 barrel and 32 x 10
+chest shapes, off-grid placement, boundaries, and consumer package round-trip;
+Studio adoption follows only after a reviewed versioned kit is available.
+
 The exact kit 0.5.0 Theme SDK 0.3.0 rule is in the public installed
 `@multiplayer-game\theme-sdk\dist\campaign.js:216-224`: the section named by
 `startingSectionId` must have at least two `kind === "player"` spawns. The

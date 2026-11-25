@@ -310,6 +310,86 @@ function editor(model) {
 
 {
   const e = editor(towerProject);
+  const { $, state } = e;
+  state.document.objects.push(towerProject.createDesignObject("dirty-barrel", "prop-barrel",
+    { x: 320, y: 320 }, 1));
+  const draft = JSON.stringify(state.document);
+  const saved = state.sections[0].savedJson;
+  const pending = [];
+  e.setFetch(url => {
+    assert.match(url, /export-credits$/);
+    return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  });
+  $("#export-game").click();
+  assert.equal($("#export-dialog").open, true);
+  assert.equal(state.exporting, false, "optional suggestions are not an export operation");
+  assert.equal($("#export-cancel").disabled, false);
+  $("#export-cancel").click();
+  assert.equal($("#export-dialog").open, false);
+  assert.equal(JSON.stringify(state.document), draft);
+  assert.equal(state.sections[0].savedJson, saved, "dismissal preserves the unsaved draft and baseline");
+  $("#export-game").click();
+  assert.equal(pending.length, 2);
+  const message = $("#export-message").textContent;
+  pending[0].resolve({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Stale"], author: ["Stale"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message);
+  assert.equal($("#export-project-suggestion").children.length, 1);
+  const escape = $("#export-dialog").dispatch("cancel");
+  assert.ok(!escape.defaultPrevented, "Escape is allowed while suggestions are pending");
+  $("#export-dialog").close();
+  pending[1].reject(new Error("late failure"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message, "late failure after dismissal is ignored");
+  assert.equal(state.exporting, false);
+
+  $("#export-game").click();
+  pending[2].resolve({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Current"], author: ["Author"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-project-suggestion").children[1].value, "Current");
+  assert.match($("#export-message").textContent, /Choose or enter/);
+  $("#export-cancel").click();
+  $("#export-game").click();
+  pending[3].reject(new Error("network unavailable"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match($("#export-message").textContent, /network unavailable/);
+  assert.equal($("#export-cancel").disabled, false);
+  $("#export-cancel").click();
+}
+
+{
+  const e = editor(towerProject);
+  const { $, state } = e;
+  let resolveSuggestions;
+  let resolveExport;
+  e.setFetch(url => {
+    if (url.endsWith("/export-credits")) return new Promise(resolve => { resolveSuggestions = resolve; });
+    assert.match(url, /export-game$/);
+    return new Promise(resolve => { resolveExport = resolve; });
+  });
+  $("#export-game").click();
+  $("#export-project").value = "Project";
+  $("#export-author").value = "Author";
+  $("#export-form").requestSubmit();
+  assert.equal(state.exporting, true);
+  assert.equal($("#export-cancel").disabled, true, "an actual export still protects the operation");
+  assert.ok($("#export-dialog").dispatch("cancel").defaultPrevented);
+  const message = $("#export-message").textContent;
+  resolveSuggestions({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Late"], author: ["Late"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message, "suggestions cannot overwrite export progress");
+  assert.equal($("#export-project-suggestion").children.length, 1);
+  resolveExport({ ok: false, json: async () => ({ error: "fixture export failed" }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match($("#export-message").textContent, /fixture export failed/);
+  assert.equal($("#export-cancel").disabled, false);
+}
+
+{
+  const e = editor(towerProject);
   const { state, $ } = e;
   const saved = state.sections[0].savedJson;
   const chest = towerProject.createDesignObject("inspector-chest", "item-chest",

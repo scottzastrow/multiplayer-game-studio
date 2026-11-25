@@ -54,6 +54,11 @@ active sections for a reserved start. The public validator still requires
 two starts in the initial section: a safe neighbor-only start works for later
 levels, not the campaign's initial section. The
 [Engine capability request](GAME-EXPORT-HANDOFF.md) records that limitation.
+The same kit requires collision dimensions to be multiples of 32 pixels.
+Export explicitly identifies collision-enabled props/chests whose exact smaller
+geometry cannot be represented, rather than dropping or enlarging blockers.
+An Engine-owned, versioned contract for exact subcell campaign colliders is
+needed before those authored collisions can be exported.
 
 `npm run studio:game-package:test` passes against the selected kit, including
 Dots and Squares fixture round-trip, Astraeum sections/archived root/credits/

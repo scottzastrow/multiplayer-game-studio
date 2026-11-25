@@ -158,10 +158,45 @@ assert.throws(() => orderAstraeumCampaignLevels({
   return true;
 }, "an active archived-root level cannot be silently omitted from the authored campaign");
 const orderedSnapshot = { ...snapshot, levels: orderedLevels };
+for (const kind of ["aries", "prop"]) {
+  const withReservedId = structuredClone(orderedSnapshot);
+  const document = withReservedId.levels[0].sections[0].document;
+  if (kind === "aries") {
+    document.objects.find(object => object.assetId === "spawn-aries").id = "reserved-player-spawn";
+  } else {
+    document.objects.push(tower.createDesignObject("reserved-player-spawn", "prop-barrel",
+      { x: 320, y: 320 }, 2000));
+    document.objects.push(tower.createDesignObject("reserved-player-spawn-1", "prop-barrel",
+      { x: 360, y: 320 }, 2001));
+  }
+  const map = validateGameCampaign(createAstraeumCampaign(withReservedId, ASSET_CATALOG).campaign)
+    .levels[0].map.sections[0].map;
+  const compatibility = map.spawns.find(spawn => spawn.id !==
+    (kind === "aries" ? "reserved-player-spawn" : "aries-start"));
+  assert.ok(compatibility);
+  assert.notEqual(compatibility.id, "reserved-player-spawn");
+  assert.ok(!document.objects.some(object => object.id === compatibility.id));
+}
+for (const assetId of ["prop-barrel", "prop-crate", "prop-pots", "item-chest"]) {
+  const withPropCollision = structuredClone(orderedSnapshot);
+  const objects = withPropCollision.levels[0].sections[0].document.objects;
+  objects.push(tower.createDesignObject("colliding-prop", assetId, { x: 320, y: 320 }, 2000, { collision: true }));
+  assert.throws(() => createAstraeumCampaign(withPropCollision, ASSET_CATALOG),
+    error => {
+      assert.match(error.message, new RegExp(firstId));
+      assert.match(error.message, /first-root/);
+      assert.match(error.message, /colliding-prop/);
+      assert.match(error.message, /0\.5\.0.*32|32.*0\.5\.0/i);
+      return true;
+    }, `${assetId} must report unsupported exact collision geometry`);
+  objects.at(-1).collision = null;
+  const withoutCollision = validateGameCampaign(createAstraeumCampaign(withPropCollision, ASSET_CATALOG).campaign);
+  assert.ok(withoutCollision.levels[0].map.sections[0].map.objects.some(object => object.id === "colliding-prop"));
+}
 for (const wallFirst of [true, false]) {
   const collisionSnapshot = structuredClone(orderedSnapshot);
   const document = collisionSnapshot.levels[0].sections[0].document;
-  const wall = tower.createDesignObject("review-wall", "wall-damp-stone", { x: 320, y: 320 }, 2000);
+  const wall = tower.createDesignObject("review-wall", "wall-damp-stone", { x: 321, y: 321 }, 2000);
   const prop = tower.createDesignObject("collision-0", "prop-stairs-rune", { x: 368, y: 336 }, 2001);
   prop.exit = { levelId: secondId, sectionId: "second-east", startId: "aries-start" };
   document.objects.push(...(wallFirst ? [wall, prop] : [prop, wall]));
