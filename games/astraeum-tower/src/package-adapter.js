@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ASSET_CATALOG } from "./catalog.js";
 import {
   collisionRect,
@@ -483,6 +484,7 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
     const right = Math.max(...allOrigins.map(section => section.origin.x + section.bounds.width));
     const bottom = Math.max(...allOrigins.map(section => section.origin.y + section.bounds.height));
     const exits = [];
+    const exitIds = new Set();
     for (const section of level.sections) {
       for (const object of section.document.objects.filter(item => item.assetId === "prop-stairs-rune")) {
         const path = `Level ${campaignLevelLabel(level)}, section ${section.sectionId}, stairs rune ${object.id}`;
@@ -500,8 +502,14 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
           start.id === destination.startId && start.assetId === "spawn-aries")) {
           fail(`${path} targets missing, archived, deleted, or non-Aries start ${destination.levelId}/${destination.sectionId}/${destination.startId}.`);
         }
+        const exitId = `exit-${createHash("sha256")
+          .update(JSON.stringify([section.sectionId, object.id])).digest("hex")}`;
+        if (exitIds.has(exitId)) {
+          fail(`${path} produces a duplicate export exit ID. Check for duplicate stairs IDs in this level.`);
+        }
+        exitIds.add(exitId);
         exits.push({
-          id: `exit-${section.sectionId}-${object.id}`,
+          id: exitId,
           sectionId: section.sectionId,
           objectId: object.id,
           destination: {

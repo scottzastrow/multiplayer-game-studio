@@ -249,6 +249,60 @@ const astraeumInput = {
   campaign: checkedCampaign,
   media: mediaBytes
 };
+{
+  const longSnapshot = structuredClone(orderedSnapshot);
+  const level = longSnapshot.levels[0];
+  const longObjectId = "r".repeat(128);
+  const firstSection = level.sections[0];
+  const secondSection = level.sections[1];
+  firstSection.sectionId = `a-b-${"s".repeat(112)}`;
+  secondSection.sectionId = `a-${"s".repeat(112)}`;
+  const firstRune = firstSection.document.objects.find(object => object.id === "stairs-next");
+  firstRune.id = longObjectId;
+  const secondRune = tower.createDesignObject(longObjectId, "prop-stairs-rune", { x: 176, y: 80 }, 2000);
+  secondRune.exit = structuredClone(firstRune.exit);
+  secondSection.document.objects.push(secondRune);
+  const extraRune = tower.createDesignObject("another-rune", "prop-stairs-rune", { x: 208, y: 80 }, 2001);
+  extraRune.exit = structuredClone(firstRune.exit);
+  firstSection.document.objects.push(extraRune);
+  const converted = createAstraeumCampaign(longSnapshot, ASSET_CATALOG).campaign;
+  const zip = buildGamePackage({ ...astraeumInput, campaign: converted }).bytes;
+  assert.deepEqual(buildGamePackage({ ...astraeumInput, campaign: converted }).bytes, zip);
+  const exported = validateGameCampaign(readJson(unzipSync(zip)["campaign.json"]));
+  const exits = exported.levels[0].exits;
+  assert.equal(exits.length, 3);
+  assert.equal(new Set(exits.map(exit => exit.id)).size, exits.length);
+  assert.deepEqual(exits.map(exit => [exit.sectionId, exit.objectId]).sort(), [
+    [firstSection.sectionId, longObjectId], [firstSection.sectionId, "another-rune"],
+    [secondSection.sectionId, longObjectId]
+  ].sort());
+  for (const exit of exits) {
+    assert.match(exit.id, /^[a-z0-9][a-z0-9._:-]{0,127}$/);
+    assert.deepEqual(exit.destination, { levelId: secondId, sectionId: "second-east", startId: "aries-start" });
+  }
+  const idsBySource = Object.fromEntries(exits.map(exit => [JSON.stringify([exit.sectionId, exit.objectId]), exit.id]));
+  longSnapshot.levels[0].sections.reverse();
+  firstSection.document.objects.reverse();
+  const reordered = createAstraeumCampaign(longSnapshot, ASSET_CATALOG).campaign;
+  assert.deepEqual(Object.fromEntries(reordered.levels[0].exits.map(exit =>
+    [JSON.stringify([exit.sectionId, exit.objectId]), exit.id])), idsBySource,
+  "exit IDs are deterministic independent of section and object order");
+
+  const ambiguous = structuredClone(orderedSnapshot);
+  const [left, right] = ambiguous.levels[0].sections;
+  left.sectionId = "a-b";
+  right.sectionId = "a";
+  const leftRune = left.document.objects.find(object => object.id === "stairs-next");
+  leftRune.id = "c";
+  const rightRune = tower.createDesignObject("b-c", "prop-stairs-rune", { x: 176, y: 80 }, 2000);
+  rightRune.exit = structuredClone(leftRune.exit);
+  right.document.objects.push(rightRune);
+  const ambiguousCampaign = createAstraeumCampaign(ambiguous, ASSET_CATALOG).campaign;
+  const ambiguousZip = buildGamePackage({ ...astraeumInput, campaign: ambiguousCampaign }).bytes;
+  const ambiguousExits = validateGameCampaign(readJson(unzipSync(ambiguousZip)["campaign.json"])).levels[0].exits;
+  assert.equal(new Set(ambiguousExits.map(exit => exit.id)).size, 2,
+    "ambiguous section/object concatenations have unique exit IDs");
+}
 const astraeumPackage = buildGamePackage(astraeumInput);
 const astraeumEntries = unzipSync(astraeumPackage.bytes);
 assert.equal(astraeumPackage.manifest.gamePackage.adapter.id, "astraeum-tower");
