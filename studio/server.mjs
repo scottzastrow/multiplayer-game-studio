@@ -28,7 +28,7 @@ import {
 } from "../games/astraeum-tower/src/package-adapter.js";
 
 register("./scripts/public-runtime-loader.mjs", import.meta.url);
-const { buildGamePackage } = await import("./extensions/game-package.mjs");
+const { buildGamePackage, packageAssetProvenance } = await import("./extensions/game-package.mjs");
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = resolve(root, "studio", "data");
@@ -592,7 +592,8 @@ function createSavedAstraeumPackage(projectId, input) {
     }
     const theme = createAstraeumPackageTheme({
       project, author, course,
-      assets: { required, optional: {} }
+      assets: { required, optional: {} },
+      assetProvenance: packageAssetProvenance(mediaSources.values())
     });
     let result;
     try {

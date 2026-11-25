@@ -47,6 +47,14 @@ starts, verifies declared artwork hashes, and emits the public package ZIP.
 It does not package JavaScript or publish to a server. Generic Grid remains
 unsupported.
 
+The 0.5.0 manifest carries author, source and original filename for each
+declared artwork; invalid or conflicting attribution blocks export. Export
+uses the same floor-grid and boundary blockers as connected Play and searches
+active sections for a reserved start. The public validator still requires
+two starts in the initial section: a safe neighbor-only start works for later
+levels, not the campaign's initial section. The
+[Engine capability request](GAME-EXPORT-HANDOFF.md) records that limitation.
+
 `npm run studio:game-package:test` passes against the selected kit, including
 Dots and Squares fixture round-trip, Astraeum sections/archived root/credits/
 artwork hashes, explicit-exit ordering independent of input list order, and

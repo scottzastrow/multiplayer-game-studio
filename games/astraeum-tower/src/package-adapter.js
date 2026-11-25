@@ -1,10 +1,10 @@
 import { ASSET_CATALOG } from "./catalog.js";
 import {
   collisionRect,
-  FLOOR1_GRID,
+  floorDocumentGrid,
   validateFloorDocument
 } from "./project.js";
-import { cellRectangles, defaultBoundaryCells, playableBoundaryCells } from "../../../studio/playable-boundaries.js";
+import { blockedSectionCells, cellRectangles, defaultBoundaryCells, playableBoundaryCells } from "../../../studio/playable-boundaries.js";
 import { sectionOrigin } from "../../../studio/world-coordinates.js";
 import provenance from "../assets/provenance.json" with { type: "json" };
 
@@ -108,7 +108,7 @@ export function orderAstraeumCampaignLevels(snapshot) {
   return ordered;
 }
 
-export function createAstraeumPackageTheme({ project, author, course, assets }) {
+export function createAstraeumPackageTheme({ project, author, course, assets, assetProvenance }) {
   return {
     id: "astraeum",
     name: "Astraeum Tower",
@@ -146,7 +146,8 @@ export function createAstraeumPackageTheme({ project, author, course, assets }) 
     project,
     author,
     ...(course ? { course } : {}),
-    assets
+    assets,
+    assetProvenance
   };
 }
 
@@ -159,13 +160,23 @@ function mediaIdForFile(filename) {
     `studio-${filename.replace(/\.png$/i, "").toLowerCase().replace(/[^a-z0-9._-]/g, "-")}`;
 }
 
+function addMedia(media, descriptor) {
+  const previous = media.get(descriptor.mediaId);
+  if (previous && (previous.kind !== descriptor.kind || previous.file !== descriptor.file ||
+      previous.assetId !== descriptor.assetId ||
+      JSON.stringify(previous.provenance) !== JSON.stringify(descriptor.provenance))) {
+    fail(`Artwork ${descriptor.mediaId} has conflicting attribution or source identity.`);
+  }
+  media.set(descriptor.mediaId, descriptor);
+}
+
 function addBuiltinMedia(media, assetId, asset) {
   const artwork = asset.artwork;
   if (!artwork) return undefined;
   const source = ASTRAEUM_ARTWORK_PROVENANCE[artwork.file];
   if (!source) fail(`Built-in asset ${assetId} has no provenance record for ${artwork.file}.`);
   const mediaId = mediaIdForFile(artwork.file);
-  media.set(mediaId, {
+  addMedia(media, {
     mediaId,
     file: artwork.file,
     kind: "builtin",
@@ -195,7 +206,7 @@ function collisionObject(rect, index) {
   };
 }
 
-function sectionMap(level, section, assetCatalog, importedAssets, media, isStartingSection, playable) {
+function sectionMap(level, section, assetCatalog, importedAssets, media) {
   const document = validateFloorDocument(section.document, assetCatalog);
   const objects = [];
   const collisions = [];
@@ -247,7 +258,7 @@ function sectionMap(level, section, assetCatalog, importedAssets, media, isStart
     let sourceAssetId;
     if (imported) {
       const mediaId = `imported-${imported.sha256.slice(0, 24)}`;
-      media.set(mediaId, {
+      addMedia(media, {
         mediaId,
         file: `${mediaId}.png`,
         kind: "imported",
@@ -302,44 +313,6 @@ function sectionMap(level, section, assetCatalog, importedAssets, media, isStart
     }
   }
 
-  if (isStartingSection && spawns.length < 2) {
-    const preferred = FLOOR1_GRID.flatMap((row, y) => [...row].map((cell, x) =>
-      cell === "." ? { x, y } : null)).filter(Boolean);
-    const columns = Math.floor(document.bounds.width / CELL_SIZE);
-    const rows = Math.floor(document.bounds.height / CELL_SIZE);
-    const candidates = [
-      ...preferred,
-      ...Array.from({ length: rows }, (_, y) =>
-        Array.from({ length: columns }, (_, x) => ({ x, y }))).flat()
-    ];
-    const gridOriginX = section.gridX * (2048 / CELL_SIZE);
-    const gridOriginY = section.gridY * (2048 / CELL_SIZE);
-    const blockers = document.objects
-      .filter(candidate => candidate.collision)
-      .map(candidate => collisionRect(candidate))
-      .filter(Boolean);
-    const position = candidates.map(cell => ({
-      x: cell.x * CELL_SIZE + CELL_SIZE / 2,
-      y: cell.y * CELL_SIZE + CELL_SIZE / 2
-    })).find(point => {
-      const cellX = gridOriginX + Math.floor(point.x / CELL_SIZE);
-      const cellY = gridOriginY + Math.floor(point.y / CELL_SIZE);
-      if (!playable.has(`${cellX},${cellY}`)) return false;
-      if (spawns.some(spawn => Math.hypot(spawn.position.x - point.x, spawn.position.y - point.y) < 32)) return false;
-      if (blockers.some(rect => {
-        const x = Math.max(rect.x, Math.min(point.x, rect.x + rect.width));
-        const y = Math.max(rect.y, Math.min(point.y, rect.y + rect.height));
-        return (point.x - x) ** 2 + (point.y - y) ** 2 < 14 ** 2;
-      })) return false;
-      return !document.objects.some(object => object.assetId === "spawn-slime" &&
-        Math.hypot(object.transform.x - point.x, object.transform.y + 8 - point.y) < 26);
-    });
-    if (!position) {
-      fail(`Starting section ${section.sectionId} has no safe cell for the reserved multiplayer start.`);
-    }
-    spawns.push({ id: "reserved-player-spawn", kind: "player", position, radius: 4 });
-  }
-
   return {
     definition: {
       id: section.sectionId,
@@ -381,7 +354,7 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
     const source = ASTRAEUM_ARTWORK_PROVENANCE[filename];
     if (!asset || !source) fail(`Required Astraeum media ${filename} has no asset catalog or provenance entry.`);
     const mediaId = mediaIdForFile(filename);
-    media.set(mediaId, {
+    addMedia(media, {
       mediaId,
       file: filename,
       kind: "builtin",
@@ -412,20 +385,15 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
     const playable = root.document.playableBoundary
       ? playableBoundaryCells(root.document.playableBoundary, positions)
       : defaultBoundaryCells(positions);
-    const convertedSections = level.sections.map(section => {
-      const isStartingSection = section.document.objects.some(object => object.assetId === "spawn-aries");
-      const converted = sectionMap(level, section, assetCatalog, importedAssets, media, isStartingSection, playable);
-      const sectionCells = defaultBoundaryCells([{
-        gridX: section.gridX,
-        gridY: section.gridY,
-        document: converted.document
-      }]);
-      const blocked = [...sectionCells].filter(cell => !playable.has(cell));
+    const converted = level.sections.map(section => {
+      const converted = sectionMap(level, section, assetCatalog, importedAssets, media);
+      const origin = sectionOrigin(section.gridX, section.gridY);
+      const grid = floorDocumentGrid(converted.document, assetCatalog);
+      const blocked = blockedSectionCells(converted.document.bounds, origin, playable, grid);
       for (const rectangle of cellRectangles(blocked)) {
-        const origin = sectionOrigin(section.gridX, section.gridY);
         const rect = {
-          x: rectangle.x * CELL_SIZE - origin.x,
-          y: rectangle.y * CELL_SIZE - origin.y,
+          x: rectangle.x * CELL_SIZE,
+          y: rectangle.y * CELL_SIZE,
           width: rectangle.width * CELL_SIZE,
           height: rectangle.height * CELL_SIZE
         };
@@ -448,8 +416,47 @@ export function createAstraeumCampaign(snapshot, assetCatalog, importedAssetRows
       if (section.document.objects.some(object => object.assetId === "spawn-aries")) {
         if (levelIndex === 0 && !startingSectionId) startingSectionId = section.sectionId;
       }
-      return converted.definition;
+      return { ...converted, blocked };
     });
+    const starts = converted.flatMap(({ definition }) => definition.map.spawns.map(spawn => ({
+      x: definition.origin.x + spawn.position.x, y: definition.origin.y + spawn.position.y
+    })));
+    if (starts.length !== 1) fail(`Level ${campaignLevelLabel(level)} requires exactly one active Aries start.`);
+    const blockers = converted.flatMap(({ document, definition }) =>
+      document.objects.map(collisionRect).filter(Boolean).map(rect => ({
+        ...rect, x: rect.x + definition.origin.x, y: rect.y + definition.origin.y
+      })));
+    const slimes = converted.flatMap(({ document, definition }) =>
+      document.objects.filter(object => object.assetId === "spawn-slime").map(object => ({
+        x: object.transform.x + definition.origin.x, y: object.transform.y + 8 + definition.origin.y
+      })));
+    let reserved = false;
+    const candidates = [...converted].sort((a, b) =>
+      Number(b.definition.map.spawns.length > 0) - Number(a.definition.map.spawns.length > 0));
+    reserve: for (const { definition, blocked } of candidates) {
+      for (let y = 0; y < definition.map.bounds.height / CELL_SIZE; y++) {
+        for (let x = 0; x < definition.map.bounds.width / CELL_SIZE; x++) {
+          if (blocked.has(`${x},${y}`)) continue;
+          const local = { x: x * CELL_SIZE + CELL_SIZE / 2, y: y * CELL_SIZE + CELL_SIZE / 2 };
+          const point = { x: definition.origin.x + local.x, y: definition.origin.y + local.y };
+          if (starts.some(start => Math.hypot(start.x - point.x, start.y - point.y) < 32)) continue;
+          if (blockers.some(rect => {
+            const nearestX = Math.max(rect.x, Math.min(point.x, rect.x + rect.width));
+            const nearestY = Math.max(rect.y, Math.min(point.y, rect.y + rect.height));
+            return (point.x - nearestX) ** 2 + (point.y - nearestY) ** 2 < 14 ** 2;
+          })) continue;
+          if (slimes.some(slime => Math.hypot(slime.x - point.x, slime.y - point.y) < 26)) continue;
+          if (level.mapId === snapshot.startingMapId && definition.map.spawns.length === 0) {
+            fail(`Starting level ${campaignLevelLabel(level)} has a safe reserved start in another section, but Engine kit 0.5.0 requires two player starts in the starting section. Add a safe cell there before exporting.`);
+          }
+          definition.map.spawns.push({ id: "reserved-player-spawn", kind: "player", position: local, radius: 4 });
+          reserved = true;
+          break reserve;
+        }
+      }
+    }
+    if (!reserved) fail(`Level ${campaignLevelLabel(level)} has no safe cell for the reserved multiplayer start.`);
+    const convertedSections = converted.map(section => section.definition);
     const origin = sectionOrigin(root.gridX, root.gridY);
     const allOrigins = [
       ...level.sections,

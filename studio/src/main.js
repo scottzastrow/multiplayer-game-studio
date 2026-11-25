@@ -3056,10 +3056,16 @@ async function saveThenExportGame() {
 function configureGameExport() {
   $("#export-game").addEventListener("click", showExportDialog);
   $("#export-project-suggestion").addEventListener("change", event => {
-    if (event.target.value) $("#export-project").value = event.target.value;
+    if (event.target.value) {
+      $("#export-project").value = event.target.value;
+      $("#export-project").setCustomValidity("");
+    }
   });
   $("#export-author-suggestion").addEventListener("change", event => {
-    if (event.target.value) $("#export-author").value = event.target.value;
+    if (event.target.value) {
+      $("#export-author").value = event.target.value;
+      $("#export-author").setCustomValidity("");
+    }
   });
   for (const id of ["export-project", "export-author"]) {
     $(`#${id}`).addEventListener("input", event => event.target.setCustomValidity(""));

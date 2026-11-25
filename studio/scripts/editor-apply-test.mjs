@@ -145,7 +145,16 @@ function browserFixture() {
       for (const handler of this.listeners.get(event.type) ?? []) handler(event);
       return true;
     }
+    setCustomValidity(message) { this.validationMessage = message; }
+    reportValidity() {
+      return this.querySelectorAll("input").every(input =>
+        !input.validationMessage && (!Object.hasOwn(input.attributes, "required") || Boolean(input.value)));
+    }
+    requestSubmit() {
+      if (Object.hasOwn(this.attributes, "novalidate") || this.reportValidity()) this.dispatch("submit");
+    }
     click() {
+      if (this.tagName === "a") return;
       assert.ok(!this.disabled && !this.closest("[inert]") && !this.closest("[hidden]"),
         `${this.id} must be enabled, visible and non-inert`);
       this.dispatch("click");
@@ -210,6 +219,7 @@ function editor(model) {
     RUNTIME_MAP_CELL_SIZE: 32, RUNTIME_MAX_MAP_DIMENSION: 2048,
     CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
     ARTWORK_CREDIT: "", structuredClone, TextEncoder, console,
+    URL: { createObjectURL: () => "blob:fixture", revokeObjectURL() {} }, setTimeout,
     crypto: { randomUUID: () => "fixture-save-id" },
     localStorage: { getItem() { return null; }, setItem() {} },
     ResizeObserver: class { observe() {} }
@@ -269,6 +279,33 @@ function editor(model) {
   const resetFrame = () => { $("#map-canvas").getContext().calls.length = 0; };
   return { ...api, $, tool, asset, drag, key, activate, documents, outline, resetFrame, sandbox,
     setFetch(handler) { fetchHandler = handler; } };
+}
+
+{
+  const e = editor(towerProject);
+  const { $ } = e;
+  assert.ok(Object.hasOwn($("#export-form").attributes, "novalidate"));
+  let submitted;
+  e.setFetch(async (url, options) => {
+    assert.match(url, /export-game$/);
+    submitted = JSON.parse(options.body);
+    return { ok: true, headers: { get: () => "application/zip" }, blob: async () => ({ size: 1 }) };
+  });
+  $("#export-project").value = "  ";
+  $("#export-author").value = "  ";
+  $("#export-form").requestSubmit();
+  assert.match($("#export-project").validationMessage, /nonblank/);
+  assert.match($("#export-author").validationMessage, /nonblank/);
+  $("#export-project-suggestion").value = "Project";
+  $("#export-author-suggestion").value = "Artist";
+  $("#export-project-suggestion").dispatch("change");
+  $("#export-author-suggestion").dispatch("change");
+  assert.equal($("#export-project").validationMessage, "");
+  assert.equal($("#export-author").validationMessage, "");
+  $("#export-form").requestSubmit();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(submitted, { project: "Project", author: "Artist", course: "" });
+  assert.equal($("#export-dialog").open, false);
 }
 
 {

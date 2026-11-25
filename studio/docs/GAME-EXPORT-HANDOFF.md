@@ -18,6 +18,24 @@ saved metadata, preserves archived-root boundary/camera values, follows
 authored rune destinations, validates campaign/start/exit/media contracts,
 and returns the public ZIP. The exporter includes no executable game code.
 
+Export and connected Play derive blocked cells from the same boundary and
+Astraeum floor grid. The exporter searches all active sections for a safe
+reserved compatibility start on later levels. Kit 0.5.0's public campaign
+validator requires both player starts in the campaign's starting section, so
+an otherwise safe start in a neighboring section cannot satisfy that initial
+level requirement; export reports the constraint rather than moving Aries or
+producing an invalid ZIP. The `assetProvenance` manifest map carries each
+declared artwork's author, source and original filename. Unrepresentable or
+conflicting attribution blocks export.
+
+**Engine capability request:** review and version a public campaign/start
+contract that permits the initial compatibility start in another active
+connected section while preserving authored Aries placement and validating
+both starts against world collision geometry. Until an Engine release and
+authoritative startup tests support that contract, Studio must retain the
+0.5.0 starting-section restriction; local Play alone is not proof of server
+support.
+
 `npm run studio:game-package:test` passes against the selected kit, covering
 the public fixture round-trip, Astraeum multi-section and archived-root
 adaptation, provenance/hash checks, and exit validation. An actual endpoint
@@ -98,11 +116,11 @@ Dots and Squares fixture in memory and checks the round-trip and rejection
 cases. This is not Engine import evidence, does not read Studio's database,
 and deliberately exposes no Export Game download.
 
-The pinned v1 manifest has Project/Author credits but no per-asset provenance
-field. Keep Astraeum artwork attribution and source hashes in
+The historical 0.4.0 v1 manifest had Project/Author credits but no per-asset
+provenance field. The selected 0.5.0 manifest supports `assetProvenance`;
+the original source records and hashes remain in
 `games\astraeum-tower\assets\provenance.json`; do not add unsupported manifest
-keys. A future complete-game contract still needs a reviewed way to carry that
-asset-level provenance.
+keys.
 
 ## Historical kit 0.3.0 baseline and ownership
 

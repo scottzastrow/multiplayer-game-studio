@@ -12,8 +12,11 @@ const {
   calculateThemePackageDigest
 } =
   await import("@multiplayer-game/theme-sdk/package");
-const { buildGamePackage } = await import("../extensions/game-package.mjs");
+const { buildGamePackage, packageAssetProvenance } = await import("../extensions/game-package.mjs");
 const tower = await import("../../games/astraeum-tower/src/project.js");
+const { createGridRectangleBoundary } = await import("../playable-boundaries.js");
+const { createConnectedPreview } = await import("../extensions/connected-play.js");
+const { importedAssetDefinition } = await import("../project-assets.js");
 const { ASTRAEUM_MODEL } = await import("../project-identity.js");
 const { ASSET_CATALOG } = await import("../../games/astraeum-tower/src/catalog.js");
 const {
@@ -74,8 +77,8 @@ const thirdId = "astraeum-export-third";
 const firstRoot = tower.createBlankDocument(firstId, "First Level");
 firstRoot.objects.push(tower.createDesignObject("stairs-next", "prop-stairs-rune", { x: 176, y: 80 }, 1000));
 const secondRoot = tower.createEmptyLevelDocument(secondId, "Second Level");
-const thirdRoot = tower.createEmptyLevelDocument(thirdId, "Third Level");
-thirdRoot.objects.push(tower.createDesignObject("aries-start", "spawn-aries", { x: 144, y: 144 }, 1));
+const thirdRoot = tower.createBlankDocument(thirdId, "Third Level");
+thirdRoot.objects.find(object => object.assetId === "spawn-aries").transform = { x: 144, y: 144 };
 const firstEast = tower.createEmptyLevelDocument("first-east-map", "First East");
 const secondEast = tower.createBlankDocument("second-east-map", "Second East");
 const secondNorth = tower.createEmptyLevelDocument("second-north-map", "Second North");
@@ -182,7 +185,8 @@ for (const descriptor of mediaSources.values()) {
 const astraeumTheme = createAstraeumPackageTheme({
   project: "Astraeum test project",
   author: "Astraeum test team",
-  assets: { required: requiredMedia, optional: {} }
+  assets: { required: requiredMedia, optional: {} },
+  assetProvenance: packageAssetProvenance(mediaSources.values())
 });
 const astraeumInput = {
   model: ASTRAEUM_MODEL,
@@ -202,9 +206,98 @@ assert.deepEqual(
 );
 assert.deepEqual(GamePackageManifestSchema.parse(readJson(astraeumEntries["theme.json"])),
   astraeumPackage.manifest);
+assert.deepEqual(readJson(astraeumEntries["theme.json"]).assetProvenance,
+  Object.fromEntries([...mediaSources].map(([id, source]) => [id, source.provenance])));
 assert.deepEqual(validateGameCampaign(readJson(astraeumEntries["campaign.json"])), checkedCampaign);
 assert.deepEqual(buildGamePackage(astraeumInput).bytes, astraeumPackage.bytes);
 const dangling = structuredClone(checkedCampaign);
 dangling.levels[0].exits[0].destination.startId = "missing-start";
 assert.throws(() => buildGamePackage({ ...astraeumInput, campaign: dangling }), /missing-start|start/i);
+
+const rootDocument = tower.createBlankDocument("safety-level", "Safety");
+rootDocument.objects.find(object => object.assetId === "spawn-aries").transform = { x: 2000, y: 80 };
+rootDocument.objects.push(tower.createDesignObject("edge-wall", "wall-damp-stone", { x: 2016, y: 64 }, 3000));
+const eastDocument = tower.createEmptyLevelDocument("safety-east", "Safety East");
+eastDocument.objects.push(tower.createDesignObject("east-floor", "floor-cobblestone", { x: 0, y: 64 }, 0));
+const safetySections = [
+  makeSection("safety-root", rootDocument.id, 0, 0, rootDocument),
+  makeSection("safety-east", eastDocument.id, 1, 0, eastDocument)
+];
+rootDocument.playableBoundary = createGridRectangleBoundary(
+  { x: 62, y: 2 }, { x: 65, y: 2 }, safetySections).boundary;
+const startingSafety = { model: ASTRAEUM_MODEL, startingMapId: rootDocument.id,
+  levels: [{ mapId: rootDocument.id, model: ASTRAEUM_MODEL, sections: safetySections, archivedSections: [] }] };
+assert.throws(() => createAstraeumCampaign(startingSafety, ASSET_CATALOG),
+  /requires two player starts in the starting section/i);
+const entryRoot = structuredClone(firstRoot);
+entryRoot.objects.find(object => object.id === "stairs-next").exit = {
+  levelId: rootDocument.id, sectionId: "safety-root", startId: "aries-start"
+};
+const safetySnapshot = { model: ASTRAEUM_MODEL, startingMapId: firstId, levels: [
+  { mapId: firstId, model: ASTRAEUM_MODEL, sections: [makeSection("entry", firstId, 0, 0, entryRoot)],
+    archivedSections: [] },
+  ...startingSafety.levels
+] };
+const safetyCampaign = validateGameCampaign(createAstraeumCampaign(safetySnapshot, ASSET_CATALOG).campaign);
+const safetyMaps = safetyCampaign.levels[1].map.sections;
+assert.ok(safetyMaps[1].map.spawns.some(spawn => spawn.id === "reserved-player-spawn"));
+const preview = createConnectedPreview(safetySections, { mapId: rootDocument.id,
+  model: ASTRAEUM_MODEL, assetCatalog: ASSET_CATALOG });
+for (const exported of safetyMaps) {
+  const played = preview.options.world.sections.find(section => section.id === exported.id);
+  const isBlocked = (map, x, y) => map.collisions.some(collision => {
+      const object = map.objects.find(item => item.id === collision.objectId);
+      return Math.abs(x - object.position.x) < collision.shape.width / 2 &&
+        Math.abs(y - object.position.y) < collision.shape.height / 2;
+    });
+  for (let y = 16; y < 2048; y += 32) for (let x = 16; x < 2048; x += 32) {
+    assert.equal(isBlocked(exported.map, x, y), isBlocked(played.map, x, y),
+      `export and connected Play block the same cell ${exported.id} ${x},${y}`);
+  }
+  if (exported.id === "safety-east") assert.ok(isBlocked(exported.map, 48, 80),
+    "a floor hole inside the playable boundary remains blocked");
+}
+const noSafe = structuredClone(safetySnapshot);
+noSafe.levels[1].sections[1].document.objects = [];
+assert.throws(() => createAstraeumCampaign(noSafe, ASSET_CATALOG), /no safe cell.*reserved multiplayer start/i);
+
+const importedBytes = files["art/logo.png"];
+const importedHash = sha256(importedBytes);
+const record = { assetId: `asset-${importedHash}`, importId: "test-import", name: "Imported",
+  width: 32, height: 32, category: "prop", direction: "", sha256: importedHash,
+  author: "Artist", source: "Source license", sourceFilename: "original.png" };
+const importedCatalog = { ...ASSET_CATALOG, [record.assetId]: importedAssetDefinition(record) };
+const withImport = structuredClone(orderedSnapshot);
+withImport.levels[0].sections[0].document.objects.push(tower.createDesignObject("imported-art", record.assetId,
+  { x: 240, y: 240 }, 2000, {}, importedCatalog));
+const importedResult = createAstraeumCampaign(withImport, importedCatalog, [{
+  asset_id: record.assetId, sha256: record.sha256, author: record.author, source: record.source,
+  source_filename: record.sourceFilename
+}]);
+const importedDescriptor = [...importedResult.media.values()].find(item => item.kind === "imported");
+assert.deepEqual(importedDescriptor.provenance, {
+  author: record.author, source: record.source, sourceFilename: record.sourceFilename
+});
+const importedPath = `art/${importedDescriptor.mediaId}.png`;
+const importedTheme = createAstraeumPackageTheme({ project: "Project", author: "Author",
+  assets: { required: { ...requiredMedia, [importedDescriptor.mediaId]: { path: importedPath, sha256: importedHash } },
+    optional: {} }, assetProvenance: packageAssetProvenance(importedResult.media.values()) });
+const importedZip = unzipSync(buildGamePackage({ model: ASTRAEUM_MODEL, theme: importedTheme,
+  campaign: importedResult.campaign, media: new Map([...mediaBytes, [importedPath, importedBytes]]) }).bytes);
+assert.deepEqual(readJson(importedZip["theme.json"]).assetProvenance[importedDescriptor.mediaId],
+  importedDescriptor.provenance, "imported attribution survives in the ZIP");
+assert.deepEqual(readJson(importedZip["theme.json"]).assetProvenance,
+  Object.fromEntries([...importedResult.media].map(([id, source]) => [id, source.provenance])));
+assert.throws(() => packageAssetProvenance([{ mediaId: "bad", provenance: {
+  author: "", source: "source", sourceFilename: "file.png" } }]), /cannot represent.*attribution/i);
+const otherHash = `${importedHash.slice(0, 24)}${"a".repeat(40)}`;
+const otherRecord = { ...record, assetId: `asset-${otherHash}`, sha256: otherHash, author: "Another artist" };
+const collisionCatalog = { ...importedCatalog, [otherRecord.assetId]: importedAssetDefinition(otherRecord) };
+const collisionSnapshot = structuredClone(withImport);
+collisionSnapshot.levels[0].sections[0].document.objects.push(tower.createDesignObject("other-import",
+  otherRecord.assetId, { x: 272, y: 240 }, 2001, {}, collisionCatalog));
+const importedRows = [record, otherRecord].map(item => ({ asset_id: item.assetId, sha256: item.sha256,
+  author: item.author, source: item.source, source_filename: item.sourceFilename }));
+assert.throws(() => createAstraeumCampaign(collisionSnapshot, collisionCatalog, importedRows),
+  /conflicting attribution or source identity/i);
 console.log("Game packages: Dots round-trip and Astraeum sections, archived root, credits, artwork hashes and exits passed.");
