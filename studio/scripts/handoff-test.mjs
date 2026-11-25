@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const manifest = JSON.parse(await readFile(join(root, "starter-data", "astraeum", "manifest.json"), "utf8"));
+const lock = JSON.parse(await readFile(join(root, "engine", "developer-kit.lock.json"), "utf8"));
+assert.equal(manifest.engine.kitVersion, lock.version, "Starter data and selected kit versions differ.");
+assert.equal(manifest.engine.archiveSha256, lock.archiveSha256, "Starter data and selected kit checksums differ.");
+assert.equal(manifest.engine.engineRevision, lock.engineRevision, "Starter data and selected Engine revisions differ.");
 const data = join(root, "studio", "data");
 await mkdir(data, { recursive: true });
 const temporary = await mkdtemp(join(data, "handoff-test-"));
@@ -108,7 +112,7 @@ try {
   assert.equal(sections, manifest.database.activeSections);
   const html = await fetch(web).then(response => response.text());
   assert.match(html, /Open Game/);
-  assert.doesNotMatch(html, /id="export-game"/);
+  assert.match(html, /id="export-game"/);
   const module = await fetch(`${web}/src/main.js`);
   assert.equal(module.status, 200);
   assert.doesNotMatch(await module.text(), /does not exist|Internal Server Error/);

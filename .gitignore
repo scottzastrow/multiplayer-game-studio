@@ -12,6 +12,8 @@ dist/
 *.zip.sha256
 !/engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
 !/engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip.sha256
+!/engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
+!/engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip.sha256
 *.db
 *.db-*
 *.sqlite

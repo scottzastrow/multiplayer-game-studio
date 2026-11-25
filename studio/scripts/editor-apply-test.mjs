@@ -33,10 +33,9 @@ const main = (await readFile(new URL("../src/main.js", import.meta.url), "utf8")
   .replaceAll("import.meta.env", "({ DEV: false })")
   .replaceAll("import.meta.url", JSON.stringify(new URL("../src/main.js", import.meta.url).href))
   .split("\nopenFloor().catch(")[0];
-assert.doesNotMatch(html, /id="export-game"|id="export-dialog"/,
-  "Studio does not offer an unsupported complete-game export action");
-assert.doesNotMatch(main, /export-game|export-credits|exporting/,
-  "the editor controller has no complete-game export flow");
+assert.match(html, /id="export-game"/, "Studio offers the Astraeum export action");
+assert.match(html, /id="export-dialog"/, "Studio has an export credits dialog");
+assert.match(main, /export-credits/, "the export controller loads saved credit suggestions");
 assert.match(html, /nearby runes enter automatically/);
 assert.match(html, /When all authored slimes are defeated, entering the rune's activation area starts the exit automatically/);
 assert.match(html, /Chests open automatically once when you approach within 46 px/);

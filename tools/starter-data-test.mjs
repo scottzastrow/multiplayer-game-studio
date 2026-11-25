@@ -28,6 +28,26 @@ try {
     await cp(resolve(root, file), resolve(temporary, file));
   }
   await cp(join(root, "starter-data"), join(temporary, "starter-data"), { recursive: true });
+  const lockPath = join(temporary, "engine", "developer-kit.lock.json");
+  const lock = JSON.parse(await readFile(lockPath, "utf8"));
+  const mismatchedLock = { ...lock, version: `${manifest.engine.kitVersion}-mismatch` };
+  await writeFile(lockPath, JSON.stringify(mismatchedLock));
+  failure(run(), /Starter data and selected kit versions differ/);
+  for (const [field, value, message] of [
+    ["archiveSha256", "incorrect-checksum", /Starter data and selected kit checksums differ/],
+    ["engineRevision", "incorrect-revision", /Starter data and selected Engine revisions differ/]
+  ]) {
+    const compatible = {
+      ...lock, version: manifest.engine.kitVersion,
+      archiveSha256: manifest.engine.archiveSha256, engineRevision: manifest.engine.engineRevision
+    };
+    await writeFile(lockPath, JSON.stringify({ ...compatible, [field]: value }));
+    failure(run(), message);
+  }
+  await writeFile(lockPath, JSON.stringify({
+    ...lock, version: manifest.engine.kitVersion,
+    archiveSha256: manifest.engine.archiveSha256, engineRevision: manifest.engine.engineRevision
+  }));
   success(run());
   const installed = await readFile(database);
   assert.equal(sha256(installed), manifest.database.sha256);

@@ -35,11 +35,11 @@ against their script/configuration, not newly executed in this documentation
 pass. No services/browser suites were started and no kit was rebuilt.
 Do not treat this audit as a new acceptance pass.
 
-**Published handoff scope, 2026-11-18:** the
-[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md) supersedes the older
-uncommitted/unpublished status observations below. It records scoped commits,
+**Earlier handoff scope, 2026-11-18:** the
+[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md) records scoped commits,
 downloadable repository artifacts, the consistent live-data comparison,
-committed fresh-checkout verification and remaining limitations. Historical
+committed 0.4.0 fresh-checkout verification and remaining limitations, not
+acceptance of the later 0.5.0 export work. Historical
 investigations remain dated evidence, not new acceptance claims.
 
 ## 1. Fresh-machine setup
@@ -47,7 +47,7 @@ investigations remain dated evidence, not new acceptance claims.
 Use the inner Git repository as the working directory:
 
 ```powershell
-git clone --branch handoff/astraeum-developer-2026-11-18 https://github.com/scottzastrow/multiplayer-game-studio.git
+git clone https://github.com/scottzastrow/multiplayer-game-studio.git
 Set-Location .\multiplayer-game-studio
 node --version  # Node.js 24.x
 npm --version   # npm 11.x
@@ -55,28 +55,33 @@ npm --version   # npm 11.x
 
 The root `package.json` declares Node `>=24 <25` and npm `>=11 <12`;
 use those versions rather than relying on npm to enforce its engines field.
-`engine\developer-kit.lock.json` pins kit 0.4.0, Engine revision
-`6cd1d52906da084a8c3bc92ca006cf1e6288b326`, and the archive SHA-256
-`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`.
-The pinned kit ZIP and `.zip.sha256` sidecar are supplied at
-`engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip`;
-the downloadable artifact is checked against the lock file and is distinct
-from the ignored installed kit in `engine\kits\`. Verify and bootstrap from the
-Git root:
+`engine\developer-kit.lock.json` pins kit 0.5.0, Engine revision
+`d0f46931f56b90298b3209010581a0ffd7f79561`, and archive SHA-256
+`e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
+The repository artifact is
+`engine\artifacts\multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip`
+with its adjacent sidecar; it is not a published Engine release. The installed
+kit's 63 distributed file checksums passed. For an authorized kit selection,
+verify and run setup from the Git root:
 
 ```powershell
-Get-FileHash .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip -Algorithm SHA256
-npm run bootstrap -- --archive .\engine\artifacts\multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
-node .\engine\kits\0.4.0-6cd1d52906da\tools\checksums.mjs
+Get-FileHash .\engine\artifacts\multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip -Algorithm SHA256
+npm run setup -- --archive .\engine\artifacts\multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
+node .\engine\kits\0.5.0-d0f46931f56b\tools\checksums.mjs
 ```
 
-`tools\bootstrap.mjs` first runs `tools\setup.mjs`, which verifies the adjacent
+Use `--upgrade` only when intentionally replacing a different selected kit,
+after preserving drafts and local data. `tools\bootstrap.mjs` first runs
+`tools\setup.mjs`, which verifies the adjacent
 sidecar and distributed kit checksums, installs the pinned package tarballs,
 and links `games\sample\node_modules` to the versioned dependency directory.
 It then restores the supplied Astraeum database. Setup refuses a different kit
 selection without explicit `--upgrade`; it also runs `npm ci` for Vite and its
-pinned tooling, so a fresh install needs npm registry access. Do not run `npm
-ci` directly in `games\sample\`; there is no root dependency install step.
+pinned tooling, so a fresh install needs npm registry access. Do not run
+`npm ci` directly in `games\sample\`; there is no root dependency install step.
+The supplied starter manifest pins the shared 0.4.0 kit rather than the
+0.5.0 kit in `developer-kit.lock.json`; `bootstrap` therefore cannot
+complete its restore. Do not run bootstrap or restore until those pins match.
 
 ### Astraeum starter data and safe restore
 
@@ -94,6 +99,21 @@ row count, per-file hashes, kit pin and source provenance;
 `starter-data.sha256` is the canonical payload checksum:
 `a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
 
+The supplied starter manifest names kit 0.4.0, archive SHA-256
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233` and
+Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`, not the selected
+0.5.0 kit. Restore validation checks all three values and rejects this mismatch.
+The different 0.5.0 snapshot described in the root README is not this payload.
+
+On Studio base `544e204`, a read-only probe in a disposable checkout validated
+all five captured section documents and initialized and stepped each of the
+three captured levels with kit 0.5.0 at revision
+`d0f46931f56b90298b3209010581a0ffd7f79561`. The starter SQLite bytes remained
+unchanged. This is focused runtime evidence, not full editor, export or
+server compatibility. The manifest's 0.4.0 pin records its actual capture;
+the probe does not justify rewriting that provenance or bypassing restore's
+pin check.
+
 The package excludes other projects, soft-deleted levels, removed-section
 archives, migration backup/diagnostic rows, the obsolete World workspace,
 save receipts and unrelated recovery/diagnostic files. `VACUUM` runs after
@@ -103,11 +123,14 @@ artifact. The source commit is
 working tree had uncommitted changes. This is data provenance, not a claim that
 the current changes are committed or pushed.
 
-For a fresh checkout, use `npm run bootstrap -- --archive <pinned-zip>`, then
-start Studio and choose **Open Game > Astraeum Tower**. Do not create a
-replacement game or re-import the source game. `npm run starter:restore`
-restores data only; it is not the Engine complete-game package importer or a
-server deployment. These are separate workflows and owners.
+For a fresh checkout, use kit-only `npm run setup -- --archive <pinned-zip>`
+with the repository artifact. Do not run `bootstrap` or
+`starter:restore` until the starter package matches the selected kit and has
+been verified. Once compatible data is available, start Studio and choose
+**Open Game > Astraeum Tower**; do not create a replacement game or re-import
+the source game. `npm run starter:restore` restores data only; it is not the
+Engine complete-game package importer or a server deployment. These are
+separate workflows and owners.
 
 Restore refuses an existing `studio\data\studio.sqlite`, its WAL/SHM sidecars,
 or colliding imported asset files. Save, stop Studio, then pass the explicit
@@ -365,7 +388,7 @@ are local game code, not installed Engine packs. Authored automatic stairs
 transitions, Paint/Fill and boundaries are implemented; they are not a general
 campaign/rules/import/publishing framework.
 
-**Unfinished:** complete-game export, server upload/deployment, multiplayer,
+**Unfinished:** saved-campaign export acceptance, server upload/deployment, multiplayer,
 collaborative editing, configurable match-rule authoring, PixelLab API
 integration, physical-controller verification, procedural generation, audio
 authoring and shared gameplay libraries. The sample's manifest/media exporter
@@ -410,7 +433,7 @@ under the pinned `engine\kits\` tree.
 | `engine\kits\`, `engine\archives\` | Ignored immutable distributions, dependency installs, retained earlier kits and source archives; not source-edit targets |
 | `tools\setup.mjs` | Checked kit extraction/checksums/dependency-junction setup/explicit upgrade |
 | `tools\bootstrap.mjs`, `restore-astraeum-starter.mjs`, `package-astraeum-starter.mjs` | Explicit developer-data bootstrap, validated safe restore and curated snapshot packaging; not Engine game import |
-| `exports\` | Ignored output location, not evidence that complete-game export exists |
+| `exports\` | Ignored output location, not evidence of a successful campaign export |
 
 Ownership is split deliberately:
 
@@ -524,10 +547,10 @@ game code.
 
 For this pin, start with:
 
-- `engine\kits\0.4.0-6cd1d52906da\API.md` and the installed
+- `engine\kits\0.5.0-d0f46931f56b\API.md` and the installed
   `@multiplayer-game\theme-sdk\dist\index.d.ts` and
   `@multiplayer-game\local-preview\dist\*.d.ts`.
-- `engine\kits\0.4.0-6cd1d52906da\sample\src\settings.js`,
+- `engine\kits\0.5.0-d0f46931f56b\sample\src\settings.js`,
   `sample\src\game.js`, `sample\src\skin.js`, and `sample\theme.json`.
   The packaged `sample\src\connected-sections.js` and
   `sample\connected-sections.mjs` demonstrate the public world contract.
@@ -755,8 +778,8 @@ checks, not a service, kit rebuild or browser suite.
 | `npm run studio:persistence:test` | Disposable API/SQLite migrations, projects/levels/sections/atomic saves/restart | Recorded pass; does not target user DB |
 | `npm run studio:sections:test` | Alias of `studio:persistence:test`, not a separate browser suite | Same entry script |
 | `npm run studio:runtime-sections:test` | Public geometry contract/regressions | Recorded pass |
-| `npm run starter:test` | Isolated copies: payload hashes, fresh restore, existing-data/sidecar refusal and explicit replacement backup | Handoff verification |
-| `npm run studio:handoff:test` | Requires a bootstrapped fresh checkout; explicit cwd, disposable ports/database/games, UI/API/artwork and unchanged logical startup records | Handoff verification; not browser acceptance |
+| `npm run starter:test` | Isolated copies: mismatched pins, payload hashes, fresh restore with a matching test receipt, existing-data/sidecar refusal and explicit replacement backup | Earlier baseline handoff verification; changed fixture is not itself a compatible starter |
+| `npm run studio:handoff:test` | Rejects mismatched starter/kit pins; otherwise requires a bootstrapped fresh checkout, reads its restored database and uses disposable ports/database/games | Earlier 0.4.0 handoff verification; not browser acceptance or a safe check against a user's saved database |
 | `npm run studio:assets:test` | PNG/PixelLab import/API tests; requires authorized file via `STUDIO_GOPHER_ZIP` | Earlier asset evidence recorded; later invocation was blocked by missing ZIP, not a new pass |
 | `npm run verify`, `npm run build` | Sample checks and sample Vite build, not a complete Studio/game acceptance or kit build | Recorded sample passes |
 | `npm run studio:sections:smoke`, `npm run studio:levels:smoke`, `npm run studio:smoke`, `npm run studio:world:test` | CDP/browser harnesses, disposable storage/profile/services; inspect the script before any authorized launch | Historical segmented passes/failures below; current connected startup acceptance blocked. Legacy World flow targets retired UI |
@@ -2561,35 +2584,43 @@ without authorization. Distinguish **uncommitted** work in the working tree,
 ### Compatibility and Git provenance
 
 `engine\developer-kit.lock.json` is the authoritative selected-kit receipt.
-The selected kit 0.4.0 uses Theme SDK 0.2.0 and Protocol/Local Preview 0.1.0 at
-Engine `6cd1d52906da084a8c3bc92ca006cf1e6288b326` (source state `committed`) and
-archive SHA-256
-`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`.
+The selected kit 0.5.0 uses Theme SDK 0.3.0 and Protocol/Local Preview 0.1.0
+at Engine `d0f46931f56b90298b3209010581a0ffd7f79561` (source state
+`committed`) and archive SHA-256
+`e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
 It also records companion tooling revision
 `scottzastrow/multiplayer-game-themes@778319f578b25081420e3334e1e68fa4de7540ec`
 and reused-tooling provenance; do not imply those tools were rebuilt from a
 currently available companion checkout. The kit version differs from its
-package versions. The kit archive is supplied under
-`engine\artifacts\` with its adjacent checksum sidecar.
+package versions. The archive and sidecar are repository artifacts under
+`engine\artifacts\`; their hash and all 63 installed-kit file checksums were
+verified locally. This is not a published Engine release.
 
-The Astraeum starter manifest records source commit
+The supplied Astraeum starter manifest records source commit
 `83d9c92efe235d0ecc9d17761212f4401a83359a`, the captured working-tree state,
 kit 0.4.0/archive SHA-256
-`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`, and
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233`
+(Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`), and
 starter-data SHA-256
 `a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
-The capture's source state was uncommitted; that remains accurate data
-provenance. Subsequent completed source is committed separately in the
-[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md). The committed-checkout
-setup/startup checks do not constitute browser acceptance, deployment or T042
-completion.
+This starter-data pin does not match the currently selected kit 0.5.0 artifact
+or Engine revision. Restore validates the mismatch and must not be bypassed;
+do not run bootstrap/restore until a compatible starter snapshot is supplied.
+The source state is uncommitted at capture; do not imply this handoff is
+published.
 
-In an isolated fresh checkout, the documented bootstrap installed the pinned
-kit and restored the starter database. `npm run studio:dev` served the UI and
-API; the API showed only Astraeum's 3 active levels and 5 sections, the saved
-starting level, and the empty imported-asset catalog. Focused game-package,
-combat, progression and interaction tests passed; the interaction test also
-checks cached opened-chest rendering. No browser acceptance loop was run.
+The current package test `npm run studio:game-package:test` passes against the
+selected kit. A one-shot export-endpoint reproduction used a disposable
+SQLite copy, not the live database. It returned HTTP 400 because active Level2
+(`map-d8039084-4bab-4c2a-a320-d9083f4d8ed1`) has no authored stairs rune while
+Level3 (`map-e6445ddd-518f-4399-874b-12064efce066`) remains active. A separate
+fixture permutes level-list order and confirms ordering follows explicit exits.
+No saved-campaign ZIP was produced; its ZIP hash, Engine import, multiplayer,
+and browser acceptance are therefore unavailable. The specific authoring
+decision is whether to add a rune in Level2 targeting Level3's active Aries
+start (`spawn-aries-1` in
+`section-map-e6445ddd-518f-4399-874b-12064efce066`); Studio does not author
+that exit automatically. No level or live data was changed.
 
 Read-only inspection commands, from the Git root:
 
@@ -2672,7 +2703,7 @@ without the specified evidence.
   and prerequisites. Keep blocked connected browser acceptance open; do not
   launch browser loops or require an IDE debugger for onboarding.
 - [ ] Explain unfinished scope explicitly: source ZIP adaptation is
-  assistant-guided; there is no complete-game export/server upload, verified
+  assistant-guided; saved-campaign export acceptance, server upload, verified
   multiplayer, collaborative editing or configurable match-rule UI. A sample
   theme media ZIP and local preview are not a deployable complete game.
 - [ ] Hand off game-specific/reusable changes with API contracts, test scope,

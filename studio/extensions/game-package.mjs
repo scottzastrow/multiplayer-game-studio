@@ -14,6 +14,15 @@ const registrations = Object.freeze({
     error: "Dots and Squares requires the Engine's registered default module and skin 1.0.0 (state schema 4).",
     module: { id: "default", version: "1.0.0", stateSchemaVersion: 4 },
     skin: { rendererId: "default", version: "1.0.0", acceptedModuleId: "default", stateSchemaVersion: 4 }
+  },
+  "astraeum-floor-v2": {
+    adapterId: "astraeum-tower",
+    error: "Astraeum requires the Engine's registered Astraeum module and skin 1.0.0 (state schema 1).",
+    module: { id: "astraeum-tower", version: "1.0.0", stateSchemaVersion: 1 },
+    skin: {
+      rendererId: "astraeum-tower-skin", version: "1.0.0",
+      acceptedModuleId: "astraeum-tower", stateSchemaVersion: 1
+    }
   }
 });
 const mediaExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".woff2", ".ogg", ".mp3", ".wav"]);

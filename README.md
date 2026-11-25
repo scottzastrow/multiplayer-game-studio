@@ -1,7 +1,8 @@
 # Multiplayer Game Studio
 
 Local browser authoring for Anh's game: edit saved designs, import artwork,
-and try single-player Play/Stop using the packaged public Engine APIs.
+try single-player Play/Stop, and export saved Astraeum campaigns using the
+selected public Engine APIs.
 This is **not** a multiplayer server, universal source-game importer, or
 complete-game publishing pipeline.
 
@@ -30,19 +31,21 @@ node --version
 npm --version
 ```
 
-The pinned Engine kit is supplied as a downloadable repository artifact:
+### Shared 0.4.0 starter baseline
+
+The shared `main` baseline supplies its Engine kit as a repository artifact:
 [kit 0.4.0 ZIP](engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip)
 and [SHA-256 sidecar](engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip.sha256).
-Bootstrap verifies the ZIP checksum and uses the platform's extraction tool
-(Windows PowerShell on Windows, `unzip` on macOS and Linux). Run the same
-commands in PowerShell or Terminal:
+On a checkout of `main` whose lock selects 0.4.0, bootstrap verifies the ZIP
+and uses Windows PowerShell or `unzip` on macOS/Linux. These commands apply
+to that baseline, **not to this 0.5.0 export branch**:
 
 ```sh
 npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
 npm run studio:dev
 ```
 
-`bootstrap` installs the locked kit and Vite dependencies, then restores the
+On that baseline, `bootstrap` installs the locked kit and Vite dependencies, then restores the
 curated Astraeum editor database from the
 [starter-data manifest](starter-data/astraeum/manifest.json). Open **Open Game
 > Astraeum Tower** in Studio and continue in its saved levels; do not create a
@@ -57,9 +60,9 @@ the dirty working-tree state at capture, Engine kit 0.4.0/revision
 starter-data SHA-256
 `a4f53230f2c871818b938c7423f633745a0209b8a0b99fc67546af649620bf89`.
 
-The restore command refuses to replace an existing database or colliding
-imported assets. For an intentional restore over existing local data, first
-Save, stop Studio, then make the choice explicit:
+Restore refuses to replace an existing database or colliding imported assets.
+On the matching 0.4.0 baseline only, for an intentional replacement, first
+Save, stop Studio, and make the choice explicit:
 
 ```sh
 npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip --replace-existing
@@ -73,6 +76,29 @@ into an authoritative server. A source-game ZIP is a separate, assistant-guided
 adaptation workflow. Both payloads are ordinary Git files on `main`
 (kit ZIP: 1,757,632 bytes; starter SQLite: 995,328 bytes), not Git LFS pointers
 or machine-local dependencies. No separate Release download is required.
+
+### Selected 0.5.0 export kit
+
+This branch's lock and sample dependencies select kit **0.5.0**, Theme SDK
+**0.3.0**, Engine revision `d0f46931f56b90298b3209010581a0ffd7f79561`,
+archive SHA-256
+`e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
+The exact archive and sidecar are supplied as repository artifacts in
+`engine/artifacts/`. For kit-only setup on either platform:
+
+```sh
+npm run setup -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
+npm run studio:dev
+```
+
+The supplied starter manifest is for **0.4.0**, not this selected 0.5.0 kit.
+Restore checks version, archive hash and Engine revision. **Do not run
+bootstrap or restore on this branch until a compatible starter snapshot is
+provided and verified**; bootstrap runs setup before its restore check.
+Do not replace existing saves to work around the mismatch. A previous local
+0.5.0 snapshot named a different revision (`1140bd5b4bea432f74f0292c18408441a8ebfd7d`)
+and hash (`d165707ec5015fe3617b93158505b756acd9b21bb51a17868b233b117f39bb79`);
+it is not the supplied 0.4.0 snapshot or the selected 0.5.0 kit.
 
 Open **http://127.0.0.1:4173**; the loopback API/SQLite service uses **4179**.
 Setup installs the packaged dependencies and Vite through the receipted
@@ -98,19 +124,20 @@ Preserve drafts before source edits that Vite may reload, too.
 End an owned preview with Ctrl+C. Port overrides and restart safety are in
 the [setup guide](studio/docs/DEVELOPMENT.md#1-fresh-machine-setup).
 
-**Compatibility/evidence:** kit **0.4.0**, Theme SDK **0.2.0**, Protocol and
-Local Preview **0.1.0**, Engine revision
-`6cd1d52906da084a8c3bc92ca006cf1e6288b326`. The lock file records archive
-hashes and companion Git provenance. The committed-checkout verification
-commands are `npm run starter:test` and `npm run studio:handoff:test` after
-bootstrap. The latter uses an explicit working directory, disposable
-ports/storage and checks that read-only startup does not change logical
-records. This is separate from browser
-acceptance; see the
-[evidence/status guide](studio/README.md#evidence-and-unfinished-features) for
-manual confirmations, focused checks and browser gaps. Saved designs normally
-live in ignored SQLite storage; the curated onboarding snapshot is the
-documented starter-data exception, not the Floor 1 source template.
+**Export status:** the local 0.5.0 implementation exports saved Astraeum
+campaigns, not executable game code. A prior endpoint test using a disposable
+copy rejected the saved campaign: Level 2 has no authored exit to Level 3.
+Explicit rune destinations, not level-list order, determine progression.
+The intended destination must be authored and saved deliberately; no saved
+campaign ZIP, server import, multiplayer or browser acceptance is established.
+See the [export handoff](studio/docs/GAME-EXPORT-HANDOFF.md).
+
+The 0.4.0 committed-checkout evidence in the
+[developer handoff](studio/docs/DEVELOPER-HANDOFF-2026-11-18.md) is historical
+and does not verify this merged worktree. CI's runtime job installs the selected
+0.5.0 artifact and verifies its checksum and kit inventory. Saved designs
+normally live in ignored SQLite storage;
+the curated onboarding snapshot is a separate, tracked exception.
 **T042 remains open.**
 
 Publication evidence, data comparison, exact source/artifact provenance and
