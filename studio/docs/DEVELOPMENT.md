@@ -788,6 +788,7 @@ checks, not a service, kit rebuild or browser suite.
 | `npm run studio:sections:test` | Alias of `studio:persistence:test`, not a separate browser suite | Same entry script |
 | `npm run studio:runtime-sections:test` | Public geometry contract/regressions | Recorded pass |
 | `npm run starter:test` | Isolated copies: mismatched pins, payload hashes, fresh restore with a matching test receipt, existing-data/sidecar refusal and explicit replacement backup | Earlier baseline handoff verification; changed fixture is not itself a compatible starter |
+| `npm run studio:game-export-endpoint:test` | Actual Studio export HTTP endpoint with synthetic SQLite and imported artwork in disposable storage; ZIP/credits/media and unchanged records, missing artwork, hash mismatch and recovery | Focused endpoint integration, not Engine import or browser acceptance |
 | `npm run studio:handoff:test` | Rejects mismatched starter/kit pins; otherwise requires a bootstrapped fresh checkout, reads its restored database and uses disposable ports/database/games | Earlier 0.4.0 handoff verification; not browser acceptance or a safe check against a user's saved database |
 | `npm run studio:assets:test` | PNG/PixelLab import/API tests; requires authorized file via `STUDIO_GOPHER_ZIP` | Earlier asset evidence recorded; later invocation was blocked by missing ZIP, not a new pass |
 | `npm run verify`, `npm run build` | Sample checks and sample Vite build, not a complete Studio/game acceptance or kit build | Recorded sample passes |

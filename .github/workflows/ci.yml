@@ -41,6 +41,7 @@ jobs:
       - run: |
           npm run setup -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
       - run: npm run studio:runtime-sections:test
+      - run: npm run studio:game-export-endpoint:test
 
   kit-upgrade:
     runs-on: ubuntu-latest

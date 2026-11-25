@@ -32,6 +32,7 @@
     "studio:map-settings:smoke": "node studio/scripts/levels-smoke.mjs --map-settings-only",
     "studio:assets:test": "node studio/scripts/assets-test.mjs",
     "studio:game-package:test": "node studio/scripts/game-package-test.mjs",
+    "studio:game-export-endpoint:test": "node studio/scripts/game-export-endpoint-test.mjs",
     "studio:handoff:test": "node studio/scripts/handoff-test.mjs",
     "verify": "npm run verify --prefix games/sample",
     "build": "npm run build --prefix games/sample",

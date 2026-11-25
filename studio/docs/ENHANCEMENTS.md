@@ -64,6 +64,10 @@ needed before those authored collisions can be exported.
 Dots and Squares fixture round-trip, Astraeum sections/archived root/credits/
 artwork hashes, explicit-exit ordering independent of input list order, and
 missing/incomplete/unreachable exit diagnostics.
+`npm run studio:game-export-endpoint:test` exercises the real HTTP ZIP endpoint
+with a synthetic SQLite campaign and imported artwork in disposable storage. It
+checks the manifest, exact media, unchanged database records, missing artwork,
+hash mismatch and recovery. This is not an Engine import or multiplayer test.
 
 A disposable copy of the saved Astraeum database reached the actual export
 endpoint and returned HTTP 400: active Level2
