@@ -9,6 +9,7 @@
     "starter:package": "node tools/package-astraeum-starter.mjs",
     "starter:restore": "node tools/restore-astraeum-starter.mjs",
     "starter:test": "node tools/starter-data-test.mjs",
+    "kit:upgrade:test": "node tools/kit-upgrade-test.mjs",
     "preview": "npm run dev --prefix games/sample -- --port 5174 --strictPort",
     "astraeum:dev": "node games/sample/node_modules/vite/bin/vite.js --config games/astraeum-tower/vite.config.js",
     "astraeum:smoke": "node games/astraeum-tower/scripts/browser-smoke.mjs",

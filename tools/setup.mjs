@@ -30,6 +30,37 @@ async function exists(path) {
     throw error;
   }
 }
+async function verifiedPriorKitModules(currentModules, local, reusedTooling) {
+  const runtime = dirname(currentModules);
+  const name = relative(local, runtime);
+  const match = /^dependencies-(\d+\.\d+\.\d+)-([a-f0-9]{12})$/.exec(name);
+  if (!match || match[1] !== reusedTooling?.kitVersion ||
+      currentModules.toLowerCase() !== join(runtime, "node_modules").toLowerCase()) return false;
+  try {
+    const runtimeStat = await lstat(runtime);
+    if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) return false;
+    const modulesStat = await lstat(currentModules);
+    if (!modulesStat.isDirectory() || modulesStat.isSymbolicLink()) return false;
+    const priorKit = join(local, `${match[1]}-${match[2]}`);
+    const priorStat = await lstat(priorKit);
+    if (!priorStat.isDirectory() || priorStat.isSymbolicLink()) return false;
+    const manifestBytes = await readFile(join(priorKit, "kit.json"));
+    const inventory = await readFile(join(priorKit, "SHA256SUMS"));
+    if (hash(manifestBytes) !== reusedTooling.kitManifestSha256 ||
+        hash(inventory) !== reusedTooling.inventorySha256) return false;
+    const prior = JSON.parse(manifestBytes);
+    if (prior.name !== "multiplayer-game-developer-kit" || prior.version !== match[1] ||
+        typeof prior.engineRevision !== "string" || !/^[a-f0-9]{40}$/.test(prior.engineRevision) ||
+        prior.engineRevision.slice(0, 12) !== match[2] || !Array.isArray(prior.packages)) return false;
+    const runtimeManifest = JSON.parse(await readFile(join(runtime, "package.json"), "utf8"));
+    return prior.packages.every(dependency =>
+      runtimeManifest.dependencies?.[dependency.name] ===
+        `file:../${match[1]}-${match[2]}/${dependency.file}`);
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
 const local = join(root, "engine", "kits");
 await mkdir(local, { recursive: true });
 assert.equal(execFileSync("git", ["check-ignore", "engine/kits/probe"], {
@@ -87,8 +118,11 @@ try {
       const previousModules = previousReceipt
         ? resolve(root, previousReceipt.dependencyDirectory, "node_modules")
         : undefined;
-      assert.ok(upgrade && previousModules &&
-        currentModules.toLowerCase() === previousModules.toLowerCase(),
+      const selectedPrevious = previousModules &&
+        currentModules.toLowerCase() === previousModules.toLowerCase();
+      const verifiedPrior = upgrade && !selectedPrevious &&
+        await verifiedPriorKitModules(currentModules, local, kit.reusedTooling);
+      assert.ok(upgrade && (selectedPrevious || verifiedPrior),
       "Existing sample dependencies are not the selected kit's junction; preserve and review them.");
       switchFrom = modules;
     }

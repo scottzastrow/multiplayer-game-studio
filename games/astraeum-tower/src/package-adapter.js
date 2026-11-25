@@ -212,7 +212,7 @@ function sectionMap(level, section, assetCatalog, importedAssets, media) {
   const collisions = [];
   const spawns = [];
   let collisionIndex = 0;
-  const usedIds = new Set();
+  const usedIds = new Set(document.objects.map(object => object.id));
   const addCollision = rect => {
     const generated = collisionObject(rect, collisionIndex++);
     while (usedIds.has(generated.object.id)) {
@@ -226,8 +226,6 @@ function sectionMap(level, section, assetCatalog, importedAssets, media) {
   };
 
   for (const [objectIndex, object] of document.objects.entries()) {
-    if (usedIds.has(object.id)) fail(`Level ${level.mapId}, section ${section.sectionId} duplicates object ${object.id}.`);
-    usedIds.add(object.id);
     if (object.assetId === "spawn-aries") {
       spawns.push({
         id: object.id,

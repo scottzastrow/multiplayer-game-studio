@@ -83,6 +83,14 @@ The supplied starter retains its 0.4.0 capture pin and separately records the
 selected 0.5.0 kit as verified for restore. Bootstrap checks the restore pin;
 it does not alter the capture provenance.
 
+An existing 0.4.0 dependency junction can be migrated after the tracked lock
+changes to 0.5.0: use `setup -- --archive <0.5.0-zip> --upgrade`, not
+`bootstrap --replace-existing`. Setup recognizes only the matching prior kit
+identity and inventory fingerprints recorded by 0.5.0, preserves the old kit
+and dependency directory, and refuses unrecognized links. The disposable
+`npm run kit:upgrade:test` covers the prior-installation transition, saved
+database preservation, link refusal and fresh bootstrap.
+
 ### Astraeum starter data and safe restore
 
 `starter-data\astraeum\` is the curated local editor-data snapshot, generated

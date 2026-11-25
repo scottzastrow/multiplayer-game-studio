@@ -107,6 +107,18 @@ Setup installs the packaged dependencies and Vite through the receipted
 `npm ci` in `games\sample`; use setup. Changing kit selection requires a
 reviewed, explicit `--upgrade`, not a routine reinstall.
 
+For an existing 0.4.0 installation moving to this branch, first Save and
+stop Studio and preserve your data, then run:
+
+```sh
+npm run setup -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip --upgrade
+```
+
+Setup verifies the previous 0.4.0 kit identity before switching its dependency
+junction, retains the prior kit and dependencies, and does not restore or
+replace saved campaigns. Unrecognized existing links are refused. Do not use
+bootstrap's `--replace-existing` to perform a kit upgrade.
+
 Future changes belong on descriptive feature branches, not directly on `main`.
 Preserve the current game, dirty drafts, uncommitted edits and unrelated local
 data before switching branches or replacing local data.

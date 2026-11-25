@@ -158,6 +158,26 @@ assert.throws(() => orderAstraeumCampaignLevels({
   return true;
 }, "an active archived-root level cannot be silently omitted from the authored campaign");
 const orderedSnapshot = { ...snapshot, levels: orderedLevels };
+for (const wallFirst of [true, false]) {
+  const collisionSnapshot = structuredClone(orderedSnapshot);
+  const document = collisionSnapshot.levels[0].sections[0].document;
+  const wall = tower.createDesignObject("review-wall", "wall-damp-stone", { x: 320, y: 320 }, 2000);
+  const prop = tower.createDesignObject("collision-0", "prop-stairs-rune", { x: 368, y: 336 }, 2001);
+  prop.exit = { levelId: secondId, sectionId: "second-east", startId: "aries-start" };
+  document.objects.push(...(wallFirst ? [wall, prop] : [prop, wall]));
+  const converted = validateGameCampaign(createAstraeumCampaign(collisionSnapshot, ASSET_CATALOG).campaign);
+  const map = converted.levels[0].map.sections[0].map;
+  assert.ok(map.objects.some(object => object.id === "collision-0" && object.typeId === "prop"));
+  const wallRect = tower.collisionRect(wall);
+  assert.ok(map.collisions.some(collision => {
+    const generated = map.objects.find(object => object.id === collision.objectId);
+    return generated?.typeId === "collision" && generated.id !== "collision-0" &&
+      generated.position.x === wallRect.x + wallRect.width / 2 &&
+      generated.position.y === wallRect.y + wallRect.height / 2 &&
+      collision.shape.width === wallRect.width && collision.shape.height === wallRect.height;
+  }), "the wall collider is retained without stealing the later authored ID");
+  assert.equal(new Set(map.objects.map(object => object.id)).size, map.objects.length);
+}
 const { campaign: astraeumCampaign, media: mediaSources } =
   createAstraeumCampaign(orderedSnapshot, ASSET_CATALOG);
 const checkedCampaign = validateGameCampaign(astraeumCampaign);
@@ -241,6 +261,13 @@ const safetySnapshot = { model: ASTRAEUM_MODEL, startingMapId: firstId, levels: 
 const safetyCampaign = validateGameCampaign(createAstraeumCampaign(safetySnapshot, ASSET_CATALOG).campaign);
 const safetyMaps = safetyCampaign.levels[1].map.sections;
 assert.ok(safetyMaps[1].map.spawns.some(spawn => spawn.id === "reserved-player-spawn"));
+for (const sectionId of ["safety-root", "safety-east"]) {
+  const candidate = structuredClone(safetyCampaign);
+  candidate.startingLevelId = rootDocument.id;
+  candidate.startingSectionId = sectionId;
+  assert.throws(() => validateGameCampaign(candidate), /must contain at least two player starts/i,
+    "neither one-start section satisfies the initial-section SDK contract");
+}
 const preview = createConnectedPreview(safetySections, { mapId: rootDocument.id,
   model: ASTRAEUM_MODEL, assetCatalog: ASSET_CATALOG });
 for (const exported of safetyMaps) {

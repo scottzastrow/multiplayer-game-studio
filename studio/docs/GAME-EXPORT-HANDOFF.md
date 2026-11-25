@@ -28,6 +28,19 @@ producing an invalid ZIP. The `assetProvenance` manifest map carries each
 declared artwork's author, source and original filename. Unrepresentable or
 conflicting attribution blocks export.
 
+The exact kit 0.5.0 Theme SDK 0.3.0 rule is in the public installed
+`@multiplayer-game\theme-sdk\dist\campaign.js:216-224`: the section named by
+`startingSectionId` must have at least two `kind === "player"` spawns. The
+SDK's `campaignStartingMap` at lines 230-245 uses that section's map.
+Connected-map validation additionally requires distinct world positions and
+navigation-cell-centered spawns (`dist\maps.js:170-182,351-368`). A second
+safe, distinct cell **in the Aries section** satisfies this requirement; the
+existing package test validates that case. Choosing the neighboring section
+does not make the reported one-start-per-section case valid, and moving or
+duplicating the authored Aries start would alter the initial game. The focused
+test checks both candidate section IDs against `validateGameCampaign` and
+also verifies a neighboring reserved start on a later level.
+
 **Engine capability request:** review and version a public campaign/start
 contract that permits the initial compatibility start in another active
 connected section while preserving authored Aries placement and validating
