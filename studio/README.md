@@ -6,16 +6,15 @@ This is the authoritative operating guide for the current editor.
 [Developer guide and evidence](docs/DEVELOPMENT.md) |
 [Enhancement register](docs/ENHANCEMENTS.md).
 
-For the committed source, downloadable kit/starter files, isolated-checkout
-evidence and remaining gates, see the
-[2026-11-18 developer handoff](docs/DEVELOPER-HANDOFF-2026-11-18.md).
+The [2026-11-18 developer handoff](docs/DEVELOPER-HANDOFF-2026-11-18.md)
+records the earlier shared 0.4.0 baseline, not acceptance of this branch.
 
 ## How do I...?
 
 | Task | Instructions |
 | --- | --- |
 | Install, start or safely stop Studio? | [Root quick start](../README.md#prerequisites-and-setup) |
-| Set up a fresh checkout with Anh's saved Astraeum game? | [Bootstrap and restore](../README.md#prerequisites-and-setup) |
+| Set up the kit or restore Astraeum data? | [Kit setup and starter-data status](../README.md#prerequisites-and-setup) |
 | Open/create a game or another level? | [Games and levels](#games-and-levels) |
 | Make the same level larger? | [Sections and dimensions](#sections-and-dimensions) |
 | Import PNG/PixelLab artwork? | [Assets](#assets) |
@@ -29,19 +28,21 @@ evidence and remaining gates, see the
 | Recover from a failed Save or Play? | [Save and error recovery](#save-and-error-recovery) |
 | Add gameplay or configure match rules? | [Reuse-first development](docs/DEVELOPMENT.md#4-claude-reuse-first-workflow) |
 | Decide multiplayer game rules with Claude? | [Optional baseline and decisions](#choosing-multiplayer-rules-with-claude) |
-| Export/upload/play online? | [Actual status](#evidence-and-unfinished-features) |
-| What blocks a complete game ZIP and Engine import? | [Inspected contracts and Engine handoff](docs/GAME-EXPORT-HANDOFF.md) |
+| Export a saved Astraeum campaign ZIP? | [Export status and required authoring](#evidence-and-unfinished-features) |
+| Upload/deploy/play online? | [Actual status](#evidence-and-unfinished-features) |
+| How does the ZIP map to the Engine contract? | [Inspected contracts and Engine handoff](docs/GAME-EXPORT-HANDOFF.md) |
 | Prepare Wednesday's handoff? | [Delivery checklist](docs/DEVELOPMENT.md#wednesday-delivery-checklist) |
 
 ## First checkout: restore Astraeum
 
-Follow the [root bootstrap](../README.md#prerequisites-and-setup) to install
-the pinned Engine kit and restore the supplied SQLite starter data. In Studio,
-choose **Open Game > Astraeum Tower** and keep working in the saved levels. Do
-not choose **New Game**, recreate Floor 1, or re-import the original source
-game. This restores local editor data; it is not an import of a complete
-Engine game package into a server. An existing database is never overwritten
-silently.
+The starter was captured with Engine kit 0.4.0 and has separately been
+verified for restore with the selected 0.5.0 kit. Follow the root bootstrap
+instructions for a fresh checkout, then open the existing game with
+**Open Game > Astraeum Tower** and
+continue in its saved levels. Do not choose **New Game**, recreate Floor 1, or
+re-import the original source game. Starter-data restoration is not an import
+of a complete Engine game package or a server deployment. An existing database
+is never overwritten silently.
 
 ## Games and levels
 
@@ -330,9 +331,8 @@ authored slime across active sections keeps it locked; archived sections do
 not contribute. Nearby prompt: **Defeat N remaining slimes**. Once unlocked:
 **Enter the rune to continue**. Entering strictly within 40 world pixels
 activates automatically; if already there when the last slime dies, it
-activates then. **No E/X/Square Interact is required.** Some static
-Inspector/help copy in `index.html` still mentions those old bindings; the
-current runtime behavior and prompt are automatic.
+activates then. **No E/X/Square Interact is required.** The Inspector and
+help describe automatic entry.
 
 One attempt per entry prevents duplicate requests. A destination spawn already
 inside a rune does not bounce: leave and re-enter to arm it. Missing/deleted
@@ -395,11 +395,22 @@ substituted DOM/Canvas I/O is not native-browser visual acceptance.
 | Automatic Astraeum progression and exact Stop restoration | Focused disposable real-runtime/registered-input fixtures passed; native-browser acceptance not established |
 | Connected native-browser acceptance | Still open; recorded startup attempts blocked at **Opening Floor 1...**. Do not relaunch loops or call this passed |
 | Arbitrary source-game ZIP adaptation | Assistant-guided inspection/extraction/porting, not an implemented universal importer |
-| Complete-game export | No Export Game download. Studio can build the kit fixture format internally, but neither Astraeum nor Generic Grid has an Engine campaign adapter. See the [Engine handoff](docs/GAME-EXPORT-HANDOFF.md) |
+| Complete-game export | Export Game is available for a saved Astraeum campaign, using the 0.5.0 package contract. The focused package test passes. A disposable copy of the saved campaign is rejected because active Level2 has no authored exit to Level3; level-list ordering is not the cause. Add the intended explicit rune destination in the Inspector and Save. No saved-campaign ZIP has been produced; see the [Engine handoff](docs/GAME-EXPORT-HANDOFF.md) |
+| Export reports no safe reserved start | Provide a second safe floor cell within the playable boundary. For the campaign's starting level, kit 0.5.0 requires that cell in the same section as Aries; later levels can use another active section. |
+| Export reports an unsupported object collision | Kit 0.5.0 cannot represent the exact small optional collision on barrels, crates, pots or chests. The error identifies the level, section and object; change or disable its collision before exporting. Studio does not silently resize it. |
 | Server upload / deployment | No Studio upload/publish workflow or verified Astraeum server installation; theme-package support in Engine is not evidence this game can upload |
 | Multiplayer / online play | No established Astraeum multiplayer, authoritative-server, online lobby or collaborative editing support. Local preview proves none of these |
 | Configurable match rules | No Studio match-rule authoring or Tower consumption of generic protocol defaults; Player Settings is controls/camera, not rounds, teams, wins or lobby settings |
 | Other gameplay/tooling | Astraeum's source-backed pickups and chest loot are implemented game-specifically; imported animation/AI, player death/respawn, other enemies, spells, crafting/shops, procedural generation, audio authoring, shared gameplay libraries and PixelLab API integration remain unfinished here |
+
+**Engine web-client release (2026-11-18):** Engine
+[PR #8](https://github.com/scottzastrow/multiplayer-game-engine/pull/8)
+updates the production host's session-creation selector; it does not change
+the public SDK or Developer Kit. Studio remains pinned to kit 0.5.0 at Engine
+revision `d0f46931f56b90298b3209010581a0ffd7f79561`; no kit upgrade or Studio
+application change is part of this release. The Engine's authenticated deployed
+browser acceptance is still pending, and this note does not claim Studio or
+multiplayer acceptance.
 
 The [Wednesday checklist](docs/DEVELOPMENT.md#wednesday-delivery-checklist)
 separates demo evidence from delivery promises. **T042 stays open.**

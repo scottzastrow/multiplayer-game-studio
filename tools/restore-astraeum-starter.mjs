@@ -6,6 +6,7 @@ import {
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertStarterKitCompatibility } from "./starter-kit-compatibility.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageDirectory = resolve(root, "starter-data", "astraeum");
@@ -103,9 +104,7 @@ async function main() {
   const lock = JSON.parse(await readFile(resolve(root, "engine", "developer-kit.lock.json"), "utf8"));
   assert.equal(manifest.formatVersion, 1, "Unsupported Astraeum starter format.");
   assert.equal(manifest.game.projectId, projectId, "Starter package is not Astraeum data.");
-  assert.equal(manifest.engine.kitVersion, lock.version, "Starter data and selected kit versions differ.");
-  assert.equal(manifest.engine.archiveSha256, lock.archiveSha256, "Starter data and selected kit checksums differ.");
-  assert.equal(manifest.engine.engineRevision, lock.engineRevision, "Starter data and selected Engine revisions differ.");
+  assertStarterKitCompatibility(manifest, lock);
 
   const databasePath = resolve(root, "studio", "data", "studio.sqlite");
   const databaseFile = join(packageDirectory, manifest.database.file);

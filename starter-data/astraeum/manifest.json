@@ -16,6 +16,11 @@
     "archiveSha256": "62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233",
     "engineRevision": "6cd1d52906da084a8c3bc92ca006cf1e6288b326"
   },
+  "verifiedRestoreKit": {
+    "kitVersion": "0.5.0",
+    "archiveSha256": "e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1",
+    "engineRevision": "d0f46931f56b90298b3209010581a0ffd7f79561"
+  },
   "database": {
     "file": "studio.sqlite",
     "sha256": "f010460fff94961b87be7810a91542a39c4069356f6a1b32f8867a339aa4b1bb",

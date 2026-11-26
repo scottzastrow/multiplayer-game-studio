@@ -2,7 +2,7 @@ import { extname } from "node:path";
 import { zipSync } from "fflate";
 import { MAX_GAME_CAMPAIGN_BYTES, validateGameCampaign } from "@multiplayer-game/theme-sdk";
 import {
-  GAME_PACKAGE_SDK_VERSION,
+  GAME_PACKAGE_SDK_VERSION, AssetProvenanceMapSchema,
   GamePackageManifestSchema, calculateThemeAssetHash, calculateThemePackageDigest,
   MAX_THEME_ARCHIVE_BYTES, MAX_THEME_ARCHIVE_ENTRIES, MAX_THEME_EXTRACTED_BYTES,
   MAX_THEME_MANIFEST_BYTES, MAX_THEME_PATH_BYTES, validateThemePackageAssets
@@ -14,10 +14,34 @@ const registrations = Object.freeze({
     error: "Dots and Squares requires the Engine's registered default module and skin 1.0.0 (state schema 4).",
     module: { id: "default", version: "1.0.0", stateSchemaVersion: 4 },
     skin: { rendererId: "default", version: "1.0.0", acceptedModuleId: "default", stateSchemaVersion: 4 }
+  },
+  "astraeum-floor-v2": {
+    adapterId: "astraeum-tower",
+    error: "Astraeum requires the Engine's registered Astraeum module and skin 1.0.0 (state schema 1).",
+    module: { id: "astraeum-tower", version: "1.0.0", stateSchemaVersion: 1 },
+    skin: {
+      rendererId: "astraeum-tower-skin", version: "1.0.0",
+      acceptedModuleId: "astraeum-tower", stateSchemaVersion: 1
+    }
   }
 });
 const mediaExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".woff2", ".ogg", ".mp3", ".wav"]);
 const encode = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+
+export function packageAssetProvenance(descriptors) {
+  const entries = Object.create(null);
+  for (const descriptor of descriptors) {
+    if (Object.hasOwn(entries, descriptor.mediaId)) {
+      throw new TypeError(`Artwork attribution for ${descriptor.mediaId} is ambiguous.`);
+    }
+    entries[descriptor.mediaId] = descriptor.provenance;
+  }
+  const result = AssetProvenanceMapSchema.safeParse(entries);
+  if (!result.success) {
+    throw new TypeError(`The selected Engine kit cannot represent the required artwork attribution: ${result.error.message}`);
+  }
+  return result.data;
+}
 
 function validateMediaPath(path) {
   if (Buffer.byteLength(path) > MAX_THEME_PATH_BYTES ||

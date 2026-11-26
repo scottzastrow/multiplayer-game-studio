@@ -114,6 +114,7 @@ const state = {
   mapSizeDraft: null,
   identity: { projectId: ASTRAEUM_PROJECT_ID, mapId: ASTRAEUM_FLOOR_1_MAP_ID },
   saving: false,
+  exporting: false,
   saveError: null,
   switching: false,
   creating: false,
@@ -689,6 +690,12 @@ function refreshChrome({ structure = true } = {}) {
   $("#save").disabled = !loaded || (!isDirty && state.persisted) || isPlaying() || Boolean(state.fillPreview);
   $("#save").disabled ||= state.saving;
   const pendingGesture = Boolean(state.fillPreview || state.boundaryDraft || state.pointerMode);
+  $("#export-game").disabled = !loaded || state.model !== ASTRAEUM_MODEL || isPlaying() ||
+    state.saving || state.exporting || state.switching || state.creating || state.levelBusy || pendingGesture;
+  $("#export-game").title = state.model !== ASTRAEUM_MODEL
+    ? "Export Game is available for Astraeum Floor campaigns."
+    : pendingGesture ? "Apply or cancel the current edit before exporting."
+    : "Export the saved Astraeum campaign as a ZIP.";
   $("#open-game").disabled = isPlaying() || state.saving || state.switching || !state.artwork;
   $("#new-game").disabled = isPlaying() || state.saving || state.switching || state.creating || !state.artwork;
   $("#import-assets").disabled = !loaded || isPlaying() || state.saving || state.switching || state.creating;
@@ -2908,6 +2915,182 @@ async function save() {
   }
 }
 
+function refreshExportActions() {
+  const needsSave = !state.persisted || dirty();
+  $("#export-save").hidden = !needsSave;
+  $("#export-save").disabled = !needsSave || state.exporting || state.saving;
+  $("#export-submit").hidden = needsSave;
+  $("#export-submit").disabled = needsSave || state.exporting || state.saving;
+  $("#export-cancel").disabled = state.exporting;
+}
+
+function setExportSuggestions(select, values) {
+  select.replaceChildren(new Option("Choose a suggestion", ""));
+  for (const value of values) select.append(new Option(value, value));
+}
+
+function validateExportCredits() {
+  const project = $("#export-project");
+  const author = $("#export-author");
+  project.setCustomValidity(project.value.trim()
+    ? "" : "Project (project) is required and must be a nonblank string.");
+  author.setCustomValidity(author.value.trim()
+    ? "" : "Author (author) is required and must be a nonblank string.");
+  return $("#export-form").reportValidity();
+}
+
+let exportSuggestionRequest = null;
+
+async function showExportDialog() {
+  if (!state.document || state.model !== ASTRAEUM_MODEL || isPlaying() || state.saving ||
+      state.exporting || state.switching || state.creating || state.levelBusy ||
+      state.fillPreview || state.boundaryDraft || state.pointerMode) return;
+  $("#export-project").value = "";
+  $("#export-author").value = "";
+  $("#export-course").value = "";
+  $("#export-project-suggestion").value = "";
+  $("#export-author-suggestion").value = "";
+  setExportSuggestions($("#export-project-suggestion"), []);
+  setExportSuggestions($("#export-author-suggestion"), []);
+  $("#export-message").textContent = dirty() || !state.persisted
+    ? "Unsaved changes are not included. Choose Save and export or Cancel."
+    : "Confirm the public project and author credits, then export this saved snapshot.";
+  $("#export-dialog").showModal();
+  refreshExportActions();
+  const request = {};
+  exportSuggestionRequest = request;
+  try {
+    const projectId = state.identity.projectId;
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/export-credits`);
+    const payload = await response.json();
+    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
+    if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
+    if (payload.projectId !== projectId || !payload.suggestions) {
+      throw new Error("The saved project credit suggestions did not match the selected game.");
+    }
+    setExportSuggestions($("#export-project-suggestion"), payload.suggestions.project ?? []);
+    setExportSuggestions($("#export-author-suggestion"), payload.suggestions.author ?? []);
+    $("#export-message").textContent = "Choose or enter the public project and author credits you confirm.";
+  } catch (error) {
+    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
+    $("#export-message").textContent = `Could not load saved credit suggestions: ${error.message}`;
+  }
+}
+
+async function downloadSavedGamePackage() {
+  if (!validateExportCredits()) return false;
+  if (dirty() || !state.persisted) {
+    $("#export-message").textContent = "Save the current edits before exporting the saved campaign snapshot.";
+    refreshExportActions();
+    return false;
+  }
+  exportSuggestionRequest = null;
+  state.exporting = true;
+  refreshChrome({ structure: false });
+  refreshExportActions();
+  $("#export-message").textContent = "Building and validating the saved Astraeum campaign ZIP…";
+  try {
+    const response = await fetch(`/api/projects/${encodeURIComponent(state.identity.projectId)}/export-game`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        project: $("#export-project").value,
+        author: $("#export-author").value,
+        course: $("#export-course").value
+      })
+    });
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(payload.error ?? `HTTP ${response.status}`);
+    }
+    if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/zip")) {
+      throw new Error("Studio returned an unexpected export format instead of a ZIP.");
+    }
+    const blob = await response.blob();
+    if (!blob.size) throw new Error("Studio returned an empty game package.");
+    const address = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = address;
+    link.download = "astraeum-game.zip";
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(address), 0);
+    $("#export-dialog").close();
+    setStatus("Exported the saved Astraeum campaign ZIP.");
+    return true;
+  } catch (error) {
+    $("#export-message").textContent = `Export failed: ${error.message}`;
+    setStatus(`Game export failed: ${error.message}`, true);
+    return false;
+  } finally {
+    state.exporting = false;
+    refreshChrome({ structure: false });
+    refreshExportActions();
+  }
+}
+
+async function saveThenExportGame() {
+  if (!validateExportCredits()) return;
+  exportSuggestionRequest = null;
+  state.exporting = true;
+  refreshChrome({ structure: false });
+  refreshExportActions();
+  $("#export-message").textContent = "Saving all active and archived section edits before export…";
+  try {
+    if (!(await save()) || dirty() || !state.persisted) {
+      $("#export-message").textContent = `Save failed or did not confirm the entire draft. ${
+        state.saveError ?? "Retry Save before exporting."
+      }`;
+      return;
+    }
+    refreshExportActions();
+    await downloadSavedGamePackage();
+  } finally {
+    state.exporting = false;
+    refreshChrome({ structure: false });
+    refreshExportActions();
+  }
+}
+
+function configureGameExport() {
+  $("#export-game").addEventListener("click", showExportDialog);
+  $("#export-project-suggestion").addEventListener("change", event => {
+    if (event.target.value) {
+      $("#export-project").value = event.target.value;
+      $("#export-project").setCustomValidity("");
+    }
+  });
+  $("#export-author-suggestion").addEventListener("change", event => {
+    if (event.target.value) {
+      $("#export-author").value = event.target.value;
+      $("#export-author").setCustomValidity("");
+    }
+  });
+  for (const id of ["export-project", "export-author"]) {
+    $(`#${id}`).addEventListener("input", event => event.target.setCustomValidity(""));
+  }
+  $("#export-form").addEventListener("submit", event => {
+    event.preventDefault();
+    void downloadSavedGamePackage();
+  });
+  $("#export-save").addEventListener("click", () => void saveThenExportGame());
+  $("#export-cancel").addEventListener("click", () => {
+    if (!state.exporting) {
+      exportSuggestionRequest = null;
+      $("#export-dialog").close();
+    }
+  });
+  $("#export-dialog").addEventListener("cancel", event => {
+    if (state.exporting) event.preventDefault();
+    else exportSuggestionRequest = null;
+  });
+  $("#export-dialog").addEventListener("close", () => {
+    if (!$("#export-dialog").open) exportSuggestionRequest = null;
+  });
+}
+
 // ---------------------------------------------------------------- play
 
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -3413,6 +3596,7 @@ function configureEvents() {
   configureNewGame();
   configureLevels();
   configureAssetImport();
+  configureGameExport();
   $("#open-cancel").addEventListener("click", () => $("#open-dialog").close());
   $("#switch-cancel").addEventListener("click", () => showSwitchConfirmation(false));
   $("#open-selected").addEventListener("click", () => {

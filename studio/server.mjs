@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { register } from "node:module";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, lstatSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
@@ -18,6 +19,16 @@ import { parseAssetUpload, sha256, validateImportFields } from "./asset-import.j
 import { importedAssetDefinition } from "./project-assets.js";
 import { sectionOrigin } from "./world-coordinates.js";
 import { validatePlayableBoundaryForSections } from "./playable-boundaries.js";
+import {
+  ASTRAEUM_ARTWORK_PROVENANCE,
+  ASTRAEUM_PROJECT_CREDIT,
+  createAstraeumCampaign,
+  createAstraeumPackageTheme,
+  orderAstraeumCampaignLevels
+} from "../games/astraeum-tower/src/package-adapter.js";
+
+register("./scripts/public-runtime-loader.mjs", import.meta.url);
+const { buildGamePackage, packageAssetProvenance } = await import("./extensions/game-package.mjs");
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = resolve(root, "studio", "data");
@@ -442,6 +453,164 @@ function sendPng(response, bytes) {
     "x-content-type-options": "nosniff"
   });
   response.end(bytes);
+}
+
+function requiredExportCredit(value, label, field) {
+  const message = `${label} (${field}) is required and must be a nonblank string.`;
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(message);
+  return value.trim();
+}
+
+function realDirectory(path, label) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    if (error.code === "ENOENT") throw new TypeError(`${label} is missing.`);
+    throw error;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new TypeError(`${label} is not a real directory.`);
+}
+
+function verifiedPackageMedia(projectId, descriptor, importedById) {
+  let file;
+  let expectedHash;
+  if (descriptor.kind === "builtin") {
+    const source = ASTRAEUM_ARTWORK_PROVENANCE[descriptor.file];
+    if (!source) throw new TypeError(`Built-in package artwork ${descriptor.file} has no provenance record.`);
+    const assetsDirectory = resolve(root, "games", "astraeum-tower", "assets");
+    realDirectory(resolve(root, "games"), "Built-in games directory");
+    realDirectory(resolve(root, "games", "astraeum-tower"), "Astraeum source directory");
+    realDirectory(assetsDirectory, "Astraeum artwork directory");
+    file = resolve(assetsDirectory, descriptor.file);
+    if (relative(assetsDirectory, file).startsWith("..")) {
+      throw new TypeError(`Built-in artwork path escaped its source directory: ${descriptor.file}.`);
+    }
+    expectedHash = source.sha256;
+  } else if (descriptor.kind === "imported") {
+    const row = importedById.get(descriptor.assetId);
+    if (!row) throw new TypeError(`Imported package artwork ${descriptor.assetId} is missing from the saved project.`);
+    if (descriptor.provenance.author !== row.author || descriptor.provenance.source !== row.source ||
+        descriptor.provenance.sourceFilename !== row.source_filename) {
+      throw new TypeError(`Imported package artwork ${descriptor.assetId} has inconsistent saved attribution.`);
+    }
+    const projectDirectory = resolve(gamesDirectory, projectId);
+    const assetsDirectory = resolve(projectDirectory, "assets");
+    realDirectory(gamesDirectory, "Project games directory");
+    realDirectory(projectDirectory, "Project directory");
+    realDirectory(assetsDirectory, "Project assets directory");
+    const importDirectory = resolve(assetsDirectory, row.import_id);
+    realDirectory(importDirectory, `Imported artwork directory ${row.import_id}`);
+    file = resolve(importDirectory, `${row.asset_id}.png`);
+    if (relative(assetsDirectory, file).startsWith("..") || relative(importDirectory, file) !== `${row.asset_id}.png`) {
+      throw new TypeError(`Imported artwork path escaped its saved project: ${row.asset_id}.`);
+    }
+    expectedHash = row.sha256;
+  } else {
+    throw new TypeError(`Unsupported package artwork source "${descriptor.kind}".`);
+  }
+
+  let stat;
+  try {
+    stat = lstatSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new TypeError(`Required package artwork ${descriptor.mediaId} is missing (${descriptor.file}).`);
+    }
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new TypeError(`Required package artwork ${descriptor.mediaId} is not a regular file.`);
+  }
+  let bytes;
+  try {
+    bytes = readFileSync(file);
+  } catch (error) {
+    throw new Error(`Could not read required package artwork ${descriptor.mediaId}: ${error.message}`, { cause: error });
+  }
+  if (sha256(bytes) !== expectedHash) {
+    throw new TypeError(`Required package artwork ${descriptor.mediaId} no longer matches its saved SHA-256 hash.`);
+  }
+  return bytes;
+}
+
+function createSavedAstraeumPackage(projectId, input) {
+  const project = requiredExportCredit(input?.project, "Project", "project");
+  const author = requiredExportCredit(input?.author, "Author", "author");
+  if (input.course !== undefined && typeof input.course !== "string") {
+    throw new TypeError("Course (course) must be a string when provided.");
+  }
+  const course = typeof input.course === "string" && input.course.trim() ? input.course.trim() : undefined;
+  let transaction = false;
+  database.exec("BEGIN");
+  transaction = true;
+  try {
+    if (!projectExists(projectId)) levelError("Game not found.", 404);
+    const listing = levelList(projectId);
+    const active = listing.levels.filter(level => !level.deletedAt);
+    if (!active.length) throw new TypeError("The saved campaign has no active levels to export.");
+    for (const level of active) {
+      if (!level.supported) {
+        throw new TypeError(`Level ${level.mapId} cannot be exported: ${level.reason}`);
+      }
+      if (level.model !== ASTRAEUM_MODEL) {
+        throw new TypeError(`Level ${level.mapId} uses ${level.model ?? "an unassigned model"}; all active campaign levels must use Astraeum Floor.`);
+      }
+    }
+    const start = active.find(level => level.mapId === listing.startingMapId);
+    if (!start) throw new TypeError("The designated starting level is missing, deleted, or unsupported.");
+    const levels = active.map(level => {
+      const saved = levelSectionPayload(projectId, level.mapId);
+      return {
+        mapId: level.mapId,
+        model: saved.model,
+        sections: saved.sections,
+        archivedSections: saved.archivedSections
+      };
+    });
+    const snapshot = {
+      model: ASTRAEUM_MODEL,
+      startingMapId: start.mapId,
+      levels: orderAstraeumCampaignLevels({ model: ASTRAEUM_MODEL, startingMapId: start.mapId, levels })
+    };
+    const importedRows = projectAssetRows.all(projectId);
+    const { campaign, media: mediaSources } = createAstraeumCampaign(
+      snapshot, assetCatalogFor(projectId, ASTRAEUM_MODEL), importedRows
+    );
+    const importedById = new Map(importedRows.map(row => [row.asset_id, row]));
+    const media = new Map();
+    const required = {};
+    for (const descriptor of mediaSources.values()) {
+      const bytes = verifiedPackageMedia(projectId, descriptor, importedById);
+      const path = `art/${descriptor.mediaId}.png`;
+      if (media.has(path)) throw new TypeError(`Package artwork path ${path} is declared more than once.`);
+      media.set(path, bytes);
+      required[descriptor.mediaId] = {
+        path,
+        sha256: sha256(bytes)
+      };
+    }
+    const theme = createAstraeumPackageTheme({
+      project, author, course,
+      assets: { required, optional: {} },
+      assetProvenance: packageAssetProvenance(mediaSources.values())
+    });
+    let result;
+    try {
+      result = buildGamePackage({ model: ASTRAEUM_MODEL, theme, campaign, media });
+    } catch (error) {
+      if (error?.name === "ZodError") {
+        throw new TypeError(`The saved Astraeum campaign is not valid for the Engine package contract: ${error.message}`);
+      }
+      throw error;
+    }
+    database.exec("COMMIT");
+    transaction = false;
+    return result;
+  } catch (error) {
+    if (transaction) database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function projectAssetsDirectory(projectId) {
@@ -1142,6 +1311,50 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = new URL(request.url, "http://127.0.0.1").pathname;
+  const packageCreditsMatch = /^\/api\/projects\/([^/]+)\/export-credits$/.exec(path);
+  const gamePackageMatch = /^\/api\/projects\/([^/]+)\/export-game$/.exec(path);
+  if (packageCreditsMatch || gamePackageMatch) {
+    const projectId = (packageCreditsMatch ?? gamePackageMatch)[1];
+    try {
+      if (!isProjectMapId(projectId)) throw new TypeError("Invalid project ID.");
+      if (!projectExists(projectId)) levelError("Game not found.", 404);
+      if (packageCreditsMatch) {
+        if (request.method !== "GET") {
+          send(response, 405, { error: "Method not allowed." });
+          return;
+        }
+        const saved = database.prepare("SELECT name, author FROM projects WHERE project_id = ?").get(projectId);
+        const suggestions = (values) => [...new Set(values.filter(value =>
+          typeof value === "string" && value.trim()).map(value => value.trim()))];
+        send(response, 200, {
+          projectId,
+          suggestions: {
+            project: suggestions([saved?.name, ASTRAEUM_PROJECT_CREDIT]),
+            author: suggestions([saved?.author])
+          }
+        });
+        return;
+      }
+      if (request.method !== "POST") {
+        send(response, 405, { error: "Method not allowed." });
+        return;
+      }
+      const { bytes } = createSavedAstraeumPackage(projectId, await readJson(request, 1_000_000));
+      response.writeHead(200, {
+        "content-type": "application/zip",
+        "content-length": bytes.length,
+        "content-disposition": 'attachment; filename="astraeum-game.zip"',
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff"
+      });
+      response.end(bytes);
+    } catch (error) {
+      console.error(`Game package export failed for ${projectId}:`, error);
+      send(response, error.status ?? (error instanceof TypeError || error instanceof SyntaxError ||
+        error instanceof RangeError || error?.name === "ZodError" ? 400 : 500), { error: error.message });
+    }
+    return;
+  }
   const levelSectionsMatch = /^\/api\/projects\/([^/]+)\/levels\/([^/]+)\/sections$/.exec(path);
   if (levelSectionsMatch) {
     const [, projectId, levelMapId] = levelSectionsMatch;

@@ -7,9 +7,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { assertStarterKitCompatibility } from "../../tools/starter-kit-compatibility.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const manifest = JSON.parse(await readFile(join(root, "starter-data", "astraeum", "manifest.json"), "utf8"));
+const lock = JSON.parse(await readFile(join(root, "engine", "developer-kit.lock.json"), "utf8"));
+assertStarterKitCompatibility(manifest, lock);
 const data = join(root, "studio", "data");
 await mkdir(data, { recursive: true });
 const temporary = await mkdtemp(join(data, "handoff-test-"));
@@ -72,7 +75,8 @@ try {
     await readFile(join(root, "starter-data", "astraeum", "studio.sqlite")),
     "Run the documented bootstrap in a fresh checkout before this test; existing user storage is never used.");
   await copyFile(restored, database);
-  const before = records(database);
+  const before = records(join(root, "starter-data", "astraeum", "studio.sqlite"));
+  assert.deepEqual(records(database), before, "Restored database rows differ from the starter.");
   const apiPort = await freePort();
   let webPort = await freePort();
   while (webPort === apiPort) webPort = await freePort();
@@ -108,7 +112,7 @@ try {
   assert.equal(sections, manifest.database.activeSections);
   const html = await fetch(web).then(response => response.text());
   assert.match(html, /Open Game/);
-  assert.doesNotMatch(html, /id="export-game"/);
+  assert.match(html, /id="export-game"/);
   const module = await fetch(`${web}/src/main.js`);
   assert.equal(module.status, 200);
   assert.doesNotMatch(await module.text(), /does not exist|Internal Server Error/);

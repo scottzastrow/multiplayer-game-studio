@@ -11,7 +11,7 @@ import { drawPlayer, towerSkinFactory } from "../../games/astraeum-tower/src/ski
 import { ASTRAEUM_MODEL } from "../project-identity.js";
 import { sectionOrigin, worldToSection } from "../world-coordinates.js";
 import {
-  appendCollisionRectangles, cellRectangles, defaultBoundaryCells, playableBoundaryCells
+  appendCollisionRectangles, blockedSectionCells, cellRectangles, defaultBoundaryCells, playableBoundaryCells
 } from "../playable-boundaries.js";
 
 const CELL = MAP_CELL_SIZE;
@@ -48,15 +48,8 @@ export function createConnectedPreview(sourceSections, { mapId, model, assetCata
   const maps = sections.map(section => {
     const { document, origin } = section;
     const { bounds, cellSize, objects, collisions, spawns } = project.createFloorSection(document, assetCatalog);
-    const blocked = new Set();
     const grid = isTower ? tower.floorDocumentGrid(document, assetCatalog) : null;
-    for (let y = 0; y < bounds.height / CELL; y++) {
-      for (let x = 0; x < bounds.width / CELL; x++) {
-        if (!playable.has(`${origin.x / CELL + x},${origin.y / CELL + y}`) || grid?.[y][x] === "#") {
-          blocked.add(`${x},${y}`);
-        }
-      }
-    }
+    const blocked = blockedSectionCells(bounds, origin, playable, grid);
     if (isTower) {
       occupancies.set(`${section.gridX},${section.gridY}`, tower.cellOccupancy(document));
       blockers.push(...tower.collisionRects(document).map(rect => ({

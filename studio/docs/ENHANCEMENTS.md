@@ -14,7 +14,7 @@ The progression, pickups/chests (including cached opened-chest rendering) and
 Inspector work originally marked **uncommitted** in the historical rows below
 is now in Studio commit `10cc7d5e8b15108338196483efcc4ea56a4e7eac`.
 Those rows retain the Engine revision that originally supplied the API;
-the selected 0.4.0 kit was verified separately in the
+the earlier 0.4.0 baseline was verified separately in the
 [developer handoff](DEVELOPER-HANDOFF-2026-11-18.md).
 
 | Feature | API gap / available capability | Implementation path | Focused tests | Kit dependency | Status | Studio commit | Engine commit/revision |
@@ -33,22 +33,53 @@ not an assumed Engine repository commit. This checkout has no Engine source
 history. Update status and commit references only after the work is actually
 reviewed, versioned, migrated, or committed.
 
-## Complete-game ZIP: internal package builder; no Studio download
+## Complete-game ZIP: Astraeum export available; saved campaign needs an exit
 
-The [scoped Engine handoff](GAME-EXPORT-HANDOFF.md#kit-040-contract-and-upgrade-preflight)
-records the 0.4.0 upgrade and contract inspection. The kit supplies a public campaign
-schema and an import fixture for the registered Dots and Squares adapter;
-it does not support uploaded game code, an Astraeum adapter, browser
-resolution of package media, or authoritative campaign transitions.
-Studio selects 0.4.0. The internal `studio\extensions\game-package.mjs`
-builder composes the public SDK and tests against the kit's registered fixture
-(`npm run studio:game-package:test`). It does not expose a Studio action or
-snapshot saved projects: neither Astraeum nor Generic Grid has a compatible
-registered adapter. The internal builder is committed in
-`701a4a11e16b5bc0a0eb190cf05a74136dff25bd`; it is not an Engine release.
-The unsupported Astraeum export action/adapter draft was excluded from the
-[developer handoff](DEVELOPER-HANDOFF-2026-11-18.md), not represented as a
-completed or downloadable game.
+The selected kit is 0.5.0, Engine revision
+`d0f46931f56b90298b3209010581a0ffd7f79561`, archive SHA-256
+`e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
+Its public package contract includes the registered Astraeum adapter and
+campaign validation. Studio's **Export Game** action is implemented for
+Astraeum Floor only. It exports a saved snapshot, requests confirmed project
+and author credits, offers Save then export or Cancel for a dirty draft, reads
+the database snapshot transactionally, validates explicit exits and safe
+starts, verifies declared artwork hashes, and emits the public package ZIP.
+It does not package JavaScript or publish to a server. Generic Grid remains
+unsupported.
+
+The 0.5.0 manifest carries author, source and original filename for each
+declared artwork; invalid or conflicting attribution blocks export. Export
+uses the same floor-grid and boundary blockers as connected Play and searches
+active sections for a reserved start. The public validator still requires
+two starts in the initial section: a safe neighbor-only start works for later
+levels, not the campaign's initial section. The
+[Engine capability request](GAME-EXPORT-HANDOFF.md) records that limitation.
+The same kit requires collision dimensions to be multiples of 32 pixels.
+Export explicitly identifies collision-enabled props/chests whose exact smaller
+geometry cannot be represented, rather than dropping or enlarging blockers.
+An Engine-owned, versioned contract for exact subcell campaign colliders is
+needed before those authored collisions can be exported.
+
+`npm run studio:game-package:test` passes against the selected kit, including
+Dots and Squares fixture round-trip, Astraeum sections/archived root/credits/
+artwork hashes, explicit-exit ordering independent of input list order, and
+missing/incomplete/unreachable exit diagnostics.
+`npm run studio:game-export-endpoint:test` exercises the real HTTP ZIP endpoint
+with a synthetic SQLite campaign and imported artwork in disposable storage. It
+checks the manifest, exact media, unchanged database records, missing artwork,
+hash mismatch and recovery. This is not an Engine import or multiplayer test.
+
+A disposable copy of the saved Astraeum database reached the actual export
+endpoint and returned HTTP 400: active Level2
+(`map-d8039084-4bab-4c2a-a320-d9083f4d8ed1`) has no stairs rune, while Level3
+(`map-e6445ddd-518f-4399-874b-12064efce066`) remains active. Level1's rune
+already targets Level2; the rejection is an incomplete authored connection,
+not an ordering assumption. The required authoring choice is whether Level2
+should connect to Level3's existing Aries start (`spawn-aries-1` in
+`section-map-e6445ddd-518f-4399-874b-12064efce066`). No level or live data was
+changed, and no saved-campaign ZIP/hash or Engine import/server verification
+exists. See the [current export handoff](GAME-EXPORT-HANDOFF.md) for limits
+and provenance.
 
 The **original Engine handoff** used kit 0.3.0/public packages 0.1.0, Engine
 `dca3ffc4561c14e0e83968afceabf0e85cddc565`; Studio handoff uncommitted on

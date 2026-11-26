@@ -10,6 +10,17 @@ const MAX_BOUNDARY_CELLS = MAX_SECTIONS * CELLS_PER_SECTION_MASK;
 const MAX_POLYGON_POINTS = 512;
 const MAX_CELL_COORDINATE = Math.floor(Number.MAX_SAFE_INTEGER / PLAYABLE_BOUNDARY_CELL_SIZE);
 
+export function blockedSectionCells(bounds, origin, playable, grid = null) {
+  const blocked = new Set();
+  for (let y = 0; y < bounds.height / PLAYABLE_BOUNDARY_CELL_SIZE; y++) {
+    for (let x = 0; x < bounds.width / PLAYABLE_BOUNDARY_CELL_SIZE; x++) {
+      if (!playable.has(`${origin.x / PLAYABLE_BOUNDARY_CELL_SIZE + x},${origin.y / PLAYABLE_BOUNDARY_CELL_SIZE + y}`) ||
+          grid?.[y][x] === "#") blocked.add(`${x},${y}`);
+    }
+  }
+  return blocked;
+}
+
 function fail(message) {
   throw new TypeError(message);
 }

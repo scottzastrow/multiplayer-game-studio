@@ -1,9 +1,10 @@
 # Astraeum developer starter data
 
 This is a curated editor-data snapshot, not a live database, source template,
-complete-game ZIP or server import. Restore it with the root
-[bootstrap instructions](../../README.md#prerequisites-and-setup), then choose
-**Open Game > Astraeum Tower**. Do not recreate or re-import the game.
+complete-game ZIP or server import. Its capture used kit 0.4.0; the manifest
+separately identifies the verified 0.5.0 restore kit. Follow the root
+[setup instructions](../../README.md#prerequisites-and-setup), then choose
+**Open Game > Astraeum Tower**; do not recreate or re-import the game.
 
 `manifest.json` records the actual capture: source HEAD
 `83d9c92efe235d0ecc9d17761212f4401a83359a`, branch
@@ -31,7 +32,10 @@ Other projects, deleted levels, section archives, World workspace records,
 save receipts, migrations, diagnostics and recovery backups are excluded.
 The filtered copy was vacuumed before hashing.
 
-`npm run starter:test` covers a fresh restore, exact checksums, refusal to
+`npm run starter:test` uses an isolated temporary copy and a matching test
+receipt to cover a fresh restore, exact checksums, refusal to
 overwrite existing data/sidecars, explicit replacement with a consistent
-backup, and rejection of corruption before touching existing storage.
+backup, rejection of mismatched restore-kit pins, and corruption before
+touching existing storage. The SQLite payload and capture provenance are
+unchanged; the separate 0.5.0 restore receipt does not change their history.
 Replacement is only supported after saving and stopping Studio.

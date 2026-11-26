@@ -1,20 +1,102 @@
-# Complete-game export: Engine contract handoff
+# Complete-game export: Engine contract and Studio integration
 
-**Status, 2026-11-17: Studio selects Engine kit 0.4.0 and has an internal
-package builder; saved-project export is not available.** Do not
-substitute an editor backup, a Vite/local-preview bundle, or the existing
-media-only theme ZIP. T042 remains open.
+**Current status:** the selected public kit is 0.5.0, Engine revision
+`d0f46931f56b90298b3209010581a0ffd7f79561`, Theme SDK 0.3.0, Protocol/Local
+Preview 0.1.0, archive SHA-256
+`e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
+The archive hash and all 63 installed-kit file checksums were verified. The
+kit was already selected; no upgrade or Engine edit was made. Its complete-game
+contract documents registered Astraeum package support, campaign validation,
+and server import behavior in
+`engine\kits\0.5.0-d0f46931f56b\GAME-PACKAGE.md`.
 
-The [developer handoff](DEVELOPER-HANDOFF-2026-11-18.md) versions the selected
-kit and tested internal Dots builder. The unfinished Astraeum package adapter,
-export API and Export Game dialog were deliberately excluded: declaring an
-adapter locally does not register it in the pinned Engine. The historical
-uncommitted status below describes the original investigation, not the
-published developer-handoff branch.
+Studio now has an **Export Game** action for saved Astraeum campaigns. It
+confirms project/author credits, offers Save then export or Cancel when the
+draft is dirty, and rejects exporting until the draft is saved. The server
+builds from a SQLite read transaction containing active levels/sections and
+saved metadata, preserves archived-root boundary/camera values, follows
+authored rune destinations, validates campaign/start/exit/media contracts,
+and returns the public ZIP. The exporter includes no executable game code.
 
-## Kit 0.4.0 contract and upgrade preflight
+Export and connected Play derive blocked cells from the same boundary and
+Astraeum floor grid. The exporter searches all active sections for a safe
+reserved compatibility start on later levels. Kit 0.5.0's public campaign
+validator requires both player starts in the campaign's starting section, so
+an otherwise safe start in a neighboring section cannot satisfy that initial
+level requirement; export reports the constraint rather than moving Aries or
+producing an invalid ZIP. The `assetProvenance` manifest map carries each
+declared artwork's author, source and original filename. Unrepresentable or
+conflicting attribution blocks export.
 
-The verified local kit is 0.4.0, Engine revision
+Kit 0.5.0's public map contract accepts rectangular collision dimensions only
+in multiples of its 32-pixel navigation cell size. Astraeum's optional barrel,
+crate, pots and chest collision rectangles are smaller; the exporter reports
+the level, section and object rather than silently enlarging or omitting them.
+In-bounds, cell-multiple rectangles retain their exact position and dimensions.
+Supporting exact smaller colliders in a validated campaign requires a reviewed
+Engine contract and versioned public kit, not a local preview workaround.
+**Engine capability request:** define public campaign/map validation and
+runtime geometry semantics for exact, in-bounds subcell rectangles without
+changing their dimensions or positions. Navigation and continuous collision
+must agree, respect existing capacity and section limits, and behave consistently
+for multiple players. Engine tests should cover the 18 x 8 barrel and 32 x 10
+chest shapes, off-grid placement, boundaries, and consumer package round-trip;
+Studio adoption follows only after a reviewed versioned kit is available.
+
+The exact kit 0.5.0 Theme SDK 0.3.0 rule is in the public installed
+`@multiplayer-game\theme-sdk\dist\campaign.js:216-224`: the section named by
+`startingSectionId` must have at least two `kind === "player"` spawns. The
+SDK's `campaignStartingMap` at lines 230-245 uses that section's map.
+Connected-map validation additionally requires distinct world positions and
+navigation-cell-centered spawns (`dist\maps.js:170-182,351-368`). A second
+safe, distinct cell **in the Aries section** satisfies this requirement; the
+existing package test validates that case. Choosing the neighboring section
+does not make the reported one-start-per-section case valid, and moving or
+duplicating the authored Aries start would alter the initial game. The focused
+test checks both candidate section IDs against `validateGameCampaign` and
+also verifies a neighboring reserved start on a later level.
+
+**Engine capability request:** review and version a public campaign/start
+contract that permits the initial compatibility start in another active
+connected section while preserving authored Aries placement and validating
+both starts against world collision geometry. Until an Engine release and
+authoritative startup tests support that contract, Studio must retain the
+0.5.0 starting-section restriction; local Play alone is not proof of server
+support.
+
+`npm run studio:game-package:test` passes against the selected kit, covering
+the public fixture round-trip, Astraeum multi-section and archived-root
+adaptation, provenance/hash checks, and exit validation. An actual endpoint
+reproduction against a disposable SQLite copy returned HTTP 400:
+
+> Level Level2 (`map-d8039084-4bab-4c2a-a320-d9083f4d8ed1`) has no active
+> stairs rune, but 1 other active level remains to connect. Remaining active
+> levels: Level3 (`map-e6445ddd-518f-4399-874b-12064efce066`).
+
+This is incomplete authored connectivity, not a level-list ordering
+assumption: the export test permutes input order and follows explicit exits.
+The first level already targets this active Level2. The remaining authoring
+decision is whether to add a rune in Level2 targeting Level3's active Aries
+start, `spawn-aries-1` in
+`section-map-e6445ddd-518f-4399-874b-12064efce066`. Studio will not invent
+the exit or change saved levels automatically. The live database was opened
+read-only and only an isolated snapshot was sent to the endpoint.
+
+Because the saved campaign is rejected, no saved-game ZIP or SHA-256 exists.
+No Engine import, authoritative startup, multiplayer or browser acceptance
+was verified for this saved campaign. T042 remains open.
+
+The supplied starter-data manifest records capture with kit 0.4.0, archive SHA-256
+`62b4b582eee4913277ac9729349f6620e316539ce9056a73bfb98f48aa0cb233` and
+Engine revision `6cd1d52906da084a8c3bc92ca006cf1e6288b326`. A separate
+verified restore-kit receipt selects the current 0.5.0 kit; restore checks its
+version, archive hash and revision. Existing data still requires an explicit
+replacement choice and backup. The separate prior local
+0.5.0 snapshot described in the root README is not this supplied payload.
+
+## Historical kit 0.4.0 contract and upgrade preflight
+
+The earlier audit's kit was 0.4.0, Engine revision
 `6cd1d52906da084a8c3bc92ca006cf1e6288b326` (manifest source state `committed`),
 with Theme SDK 0.2.0 and Protocol/Local Preview 0.1.0. The archive and its
 sidecar are retained under `engine\archives\`; the ZIP SHA-256 is
@@ -62,11 +144,11 @@ Dots and Squares fixture in memory and checks the round-trip and rejection
 cases. This is not Engine import evidence, does not read Studio's database,
 and deliberately exposes no Export Game download.
 
-The pinned v1 manifest has Project/Author credits but no per-asset provenance
-field. Keep Astraeum artwork attribution and source hashes in
+The historical 0.4.0 v1 manifest had Project/Author credits but no per-asset
+provenance field. The selected 0.5.0 manifest supports `assetProvenance`;
+the original source records and hashes remain in
 `games\astraeum-tower\assets\provenance.json`; do not add unsupported manifest
-keys. A future complete-game contract still needs a reviewed way to carry that
-asset-level provenance.
+keys.
 
 ## Historical kit 0.3.0 baseline and ownership
 
@@ -84,7 +166,7 @@ progression, recovery and other working-tree edits were retained. No Engine
 change, kit rebuild, deployment, commit, push or regular-service restart was
 performed. No browser was started and no saved game/database was exported.
 
-## Actual import boundary and reusable pieces
+## Historical kit 0.3.0 import boundary and reusable pieces
 
 Paths in the Engine column are relative to the **Engine repository**, not
 private modules Studio may import.
@@ -126,7 +208,7 @@ controller and `connected-play.js`, not by a portable campaign module.
 to the approved server contract; do not change its chest fixes, rules,
 inventory semantics or source/artist credits as a side effect of export.
 
-## Original scoped Engine handoff
+## Original scoped Engine handoff (historical proposal)
 
 Extend/version the **existing theme package family** and public SDK in Engine.
 Do not implement a competing Studio-only ZIP format. Engine owns the exact
@@ -167,7 +249,7 @@ handoff acceptance is:
    declarations and an executable external-consumer fixture in a separately
    authorized versioned kit; Studio must not patch installed packages.
 
-## Studio integration after that contract ships
+## Studio integration specification from the original handoff
 
 Extend the existing service/controllers/model adapters, not a parallel backup
 exporter. This is a work specification, **not implemented behavior**:
@@ -251,30 +333,7 @@ origins, boundary, exits, destination starts, settings, chest tier, asset byte/
 credit/hash and code version; inject incompatible versions, dangling exits,
 missing assets and post-promotion failures; assert no old state changes.
 
-See the kit 0.4.0 preflight above for which parts of this original handoff
-are now available. No local preview, theme-import pass or handoff closes T042.
-
-## Package contract summary and promotion process (Week 11 update)
-
-**Package structure.** A versioned campaign package contains a manifest,
-campaign JSON (levels and exits), declared media with SHA-256 hashes, and
-credits. It never contains executable code.
-
-**Validation and compatibility.** Packages are checked with the kit's public
-schema (`GamePackageManifestSchema`, `validateGameCampaign`): strict schema,
-media and canonical hashes, resolvable starting map, no dangling exits, and a
-compatible kit version.
-
-**Registered adapters.** A game runs online only through an adapter that is
-registered in the Engine by its owner. Declaring an adapter locally does not
-register it. Astraeum's adapter and matching client skin are not registered
-yet, so saved-project export stays unavailable.
-
-**Enhancement → promotion → release → migration.**
-1. Record the need in `studio/docs/ENHANCEMENTS.md` (contract, tests,
-   limitations).
-2. Prototype in `studio/extensions/` or the game project.
-3. Scott reviews it for promotion into the Engine.
-4. Scott releases a new versioned kit.
-5. Studio and games migrate to that kit through an explicit, reviewed
-   `--upgrade`.
+See the current status above and the kit 0.5.0
+`GAME-PACKAGE.md` for the published contract now available. The historical
+kit 0.3.0/0.4.0 findings below are retained as provenance, not current
+blockers. No local preview, focused package test, or handoff closes T042.

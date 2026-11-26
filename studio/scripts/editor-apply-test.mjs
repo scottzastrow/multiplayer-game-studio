@@ -33,10 +33,9 @@ const main = (await readFile(new URL("../src/main.js", import.meta.url), "utf8")
   .replaceAll("import.meta.env", "({ DEV: false })")
   .replaceAll("import.meta.url", JSON.stringify(new URL("../src/main.js", import.meta.url).href))
   .split("\nopenFloor().catch(")[0];
-assert.doesNotMatch(html, /id="export-game"|id="export-dialog"/,
-  "Studio does not offer an unsupported complete-game export action");
-assert.doesNotMatch(main, /export-game|export-credits|exporting/,
-  "the editor controller has no complete-game export flow");
+assert.match(html, /id="export-game"/, "Studio offers the Astraeum export action");
+assert.match(html, /id="export-dialog"/, "Studio has an export credits dialog");
+assert.match(main, /export-credits/, "the export controller loads saved credit suggestions");
 assert.match(html, /nearby runes enter automatically/);
 assert.match(html, /When all authored slimes are defeated, entering the rune's activation area starts the exit automatically/);
 assert.match(html, /Chests open automatically once when you approach within 46 px/);
@@ -146,7 +145,16 @@ function browserFixture() {
       for (const handler of this.listeners.get(event.type) ?? []) handler(event);
       return true;
     }
+    setCustomValidity(message) { this.validationMessage = message; }
+    reportValidity() {
+      return this.querySelectorAll("input").every(input =>
+        !input.validationMessage && (!Object.hasOwn(input.attributes, "required") || Boolean(input.value)));
+    }
+    requestSubmit() {
+      if (Object.hasOwn(this.attributes, "novalidate") || this.reportValidity()) this.dispatch("submit");
+    }
     click() {
+      if (this.tagName === "a") return;
       assert.ok(!this.disabled && !this.closest("[inert]") && !this.closest("[hidden]"),
         `${this.id} must be enabled, visible and non-inert`);
       this.dispatch("click");
@@ -211,6 +219,7 @@ function editor(model) {
     RUNTIME_MAP_CELL_SIZE: 32, RUNTIME_MAX_MAP_DIMENSION: 2048,
     CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
     ARTWORK_CREDIT: "", structuredClone, TextEncoder, console,
+    URL: { createObjectURL: () => "blob:fixture", revokeObjectURL() {} }, setTimeout,
     crypto: { randomUUID: () => "fixture-save-id" },
     localStorage: { getItem() { return null; }, setItem() {} },
     ResizeObserver: class { observe() {} }
@@ -270,6 +279,113 @@ function editor(model) {
   const resetFrame = () => { $("#map-canvas").getContext().calls.length = 0; };
   return { ...api, $, tool, asset, drag, key, activate, documents, outline, resetFrame, sandbox,
     setFetch(handler) { fetchHandler = handler; } };
+}
+
+{
+  const e = editor(towerProject);
+  const { $ } = e;
+  assert.ok(Object.hasOwn($("#export-form").attributes, "novalidate"));
+  let submitted;
+  e.setFetch(async (url, options) => {
+    assert.match(url, /export-game$/);
+    submitted = JSON.parse(options.body);
+    return { ok: true, headers: { get: () => "application/zip" }, blob: async () => ({ size: 1 }) };
+  });
+  $("#export-project").value = "  ";
+  $("#export-author").value = "  ";
+  $("#export-form").requestSubmit();
+  assert.match($("#export-project").validationMessage, /nonblank/);
+  assert.match($("#export-author").validationMessage, /nonblank/);
+  $("#export-project-suggestion").value = "Project";
+  $("#export-author-suggestion").value = "Artist";
+  $("#export-project-suggestion").dispatch("change");
+  $("#export-author-suggestion").dispatch("change");
+  assert.equal($("#export-project").validationMessage, "");
+  assert.equal($("#export-author").validationMessage, "");
+  $("#export-form").requestSubmit();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(submitted, { project: "Project", author: "Artist", course: "" });
+  assert.equal($("#export-dialog").open, false);
+}
+
+{
+  const e = editor(towerProject);
+  const { $, state } = e;
+  state.document.objects.push(towerProject.createDesignObject("dirty-barrel", "prop-barrel",
+    { x: 320, y: 320 }, 1));
+  const draft = JSON.stringify(state.document);
+  const saved = state.sections[0].savedJson;
+  const pending = [];
+  e.setFetch(url => {
+    assert.match(url, /export-credits$/);
+    return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  });
+  $("#export-game").click();
+  assert.equal($("#export-dialog").open, true);
+  assert.equal(state.exporting, false, "optional suggestions are not an export operation");
+  assert.equal($("#export-cancel").disabled, false);
+  $("#export-cancel").click();
+  assert.equal($("#export-dialog").open, false);
+  assert.equal(JSON.stringify(state.document), draft);
+  assert.equal(state.sections[0].savedJson, saved, "dismissal preserves the unsaved draft and baseline");
+  $("#export-game").click();
+  assert.equal(pending.length, 2);
+  const message = $("#export-message").textContent;
+  pending[0].resolve({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Stale"], author: ["Stale"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message);
+  assert.equal($("#export-project-suggestion").children.length, 1);
+  const escape = $("#export-dialog").dispatch("cancel");
+  assert.ok(!escape.defaultPrevented, "Escape is allowed while suggestions are pending");
+  $("#export-dialog").close();
+  pending[1].reject(new Error("late failure"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message, "late failure after dismissal is ignored");
+  assert.equal(state.exporting, false);
+
+  $("#export-game").click();
+  pending[2].resolve({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Current"], author: ["Author"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-project-suggestion").children[1].value, "Current");
+  assert.match($("#export-message").textContent, /Choose or enter/);
+  $("#export-cancel").click();
+  $("#export-game").click();
+  pending[3].reject(new Error("network unavailable"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match($("#export-message").textContent, /network unavailable/);
+  assert.equal($("#export-cancel").disabled, false);
+  $("#export-cancel").click();
+}
+
+{
+  const e = editor(towerProject);
+  const { $, state } = e;
+  let resolveSuggestions;
+  let resolveExport;
+  e.setFetch(url => {
+    if (url.endsWith("/export-credits")) return new Promise(resolve => { resolveSuggestions = resolve; });
+    assert.match(url, /export-game$/);
+    return new Promise(resolve => { resolveExport = resolve; });
+  });
+  $("#export-game").click();
+  $("#export-project").value = "Project";
+  $("#export-author").value = "Author";
+  $("#export-form").requestSubmit();
+  assert.equal(state.exporting, true);
+  assert.equal($("#export-cancel").disabled, true, "an actual export still protects the operation");
+  assert.ok($("#export-dialog").dispatch("cancel").defaultPrevented);
+  const message = $("#export-message").textContent;
+  resolveSuggestions({ ok: true, json: async () => ({ projectId: "apply-project",
+    suggestions: { project: ["Late"], author: ["Late"] } }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal($("#export-message").textContent, message, "suggestions cannot overwrite export progress");
+  assert.equal($("#export-project-suggestion").children.length, 1);
+  resolveExport({ ok: false, json: async () => ({ error: "fixture export failed" }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match($("#export-message").textContent, /fixture export failed/);
+  assert.equal($("#export-cancel").disabled, false);
 }
 
 {

@@ -521,7 +521,8 @@ proposed for Engine promotion through `studio/docs/ENHANCEMENTS.md`.
    compatibility.
 2. **Package validation (partly implemented):** an exported package passes
    strict validation (media hashes, credits, registered adapter). Verified so
-   far only for the Dots and Squares fixture.
+   for the Dots and Squares fixture and synthetic Astraeum campaigns using kit
+   0.5.0. The saved campaign remains blocked by its missing Level 2 exit.
 3. **Multiplayer acceptance (not yet claimed):** the exported Astraeum package
    imports into the Engine and runs a gameplay scenario with two independent
    clients.

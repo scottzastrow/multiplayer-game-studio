@@ -15,6 +15,22 @@ jobs:
           node-version: 24
       - run: npm run starter:test
 
+  fresh-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fresh-bootstrap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Bootstrap and verify saved starter
+        working-directory: fresh-bootstrap
+        run: |
+          npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
+          npm run studio:handoff:test
+          node studio/scripts/starter-runtime-test.mjs
+
   runtime-contract:
     runs-on: ubuntu-latest
     steps:
@@ -22,5 +38,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm run bootstrap -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.4.0-6cd1d52906da.zip
+      - run: |
+          npm run setup -- --archive ./engine/artifacts/multiplayer-game-developer-kit-0.5.0-d0f46931f56b.zip
       - run: npm run studio:runtime-sections:test
+      - run: npm run studio:game-export-endpoint:test
+
+  kit-upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run kit:upgrade:test

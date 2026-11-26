@@ -7,13 +7,17 @@ directories, and retained earlier installations. The legacy 0.1.0 distribution
 and its potentially edited sample remain directly under `kits\`; do not discard
 them as cache. Ignored `archives\` holds original ZIPs and adjacent checksums.
 
-`games\sample\node_modules` is a Windows junction to the selected dependency
+`games\sample\node_modules` is a Windows junction or Unix symlink to the selected dependency
 directory. Setup refuses unexpected targets or ordinary dependency directories;
 an explicit upgrade can switch only from the previously receipted target.
 
-The handoff versions the immutable 0.4.0 kit ZIP (1,757,632 bytes) and its
-SHA-256 sidecar in `artifacts\`, so a clone of the handoff branch needs no
-access to a developer's ignored archives or an Engine checkout. The root
-[bootstrap instructions](../README.md#prerequisites-and-setup) verify the
-receipt and all 50 distributed checksums. Registry access is still required
-for Vite tooling. This is a developer kit, not an Astraeum server release.
+The shared baseline versions the immutable 0.4.0 kit ZIP (1,757,632 bytes)
+and SHA-256 sidecar in `artifacts\`. This export branch selects the 0.5.0
+ZIP (1,765,105 bytes) and sidecar in the same directory. Setup checks the
+archive against its sidecar, checks the kit inventory and compares the
+resulting receipt with the selected lock.
+The starter was captured with 0.4.0 and separately records 0.5.0 as its
+verified restore kit. See the root
+[setup instructions](../README.md#prerequisites-and-setup) before setup or
+restore. Registry access is required for Vite tooling. Neither kit is an
+Astraeum server release.
