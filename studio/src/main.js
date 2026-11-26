@@ -2924,57 +2924,31 @@ function refreshExportActions() {
   $("#export-cancel").disabled = state.exporting;
 }
 
-function setExportSuggestions(select, values) {
-  select.replaceChildren(new Option("Choose a suggestion", ""));
-  for (const value of values) select.append(new Option(value, value));
-}
-
 function validateExportCredits() {
   const project = $("#export-project");
+  const version = $("#export-version");
   const author = $("#export-author");
   project.setCustomValidity(project.value.trim()
-    ? "" : "Project (project) is required and must be a nonblank string.");
+    ? "" : "Game Name is required and must be a nonblank string.");
+  version.setCustomValidity(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version.value.trim())
+    ? "" : "Version must use the format 1.0.0 or 1.0.0-prerelease.");
   author.setCustomValidity(author.value.trim()
     ? "" : "Author (author) is required and must be a nonblank string.");
   return $("#export-form").reportValidity();
 }
 
-let exportSuggestionRequest = null;
-
-async function showExportDialog() {
+function showExportDialog() {
   if (!state.document || state.model !== ASTRAEUM_MODEL || isPlaying() || state.saving ||
       state.exporting || state.switching || state.creating || state.levelBusy ||
       state.fillPreview || state.boundaryDraft || state.pointerMode) return;
   $("#export-project").value = "";
+  $("#export-version").value = "1.0.0";
   $("#export-author").value = "";
-  $("#export-course").value = "";
-  $("#export-project-suggestion").value = "";
-  $("#export-author-suggestion").value = "";
-  setExportSuggestions($("#export-project-suggestion"), []);
-  setExportSuggestions($("#export-author-suggestion"), []);
   $("#export-message").textContent = dirty() || !state.persisted
     ? "Unsaved changes are not included. Choose Save and export or Cancel."
-    : "Confirm the public project and author credits, then export this saved snapshot.";
+    : "Confirm the game name, version and author, then export this saved snapshot.";
   $("#export-dialog").showModal();
   refreshExportActions();
-  const request = {};
-  exportSuggestionRequest = request;
-  try {
-    const projectId = state.identity.projectId;
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/export-credits`);
-    const payload = await response.json();
-    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
-    if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
-    if (payload.projectId !== projectId || !payload.suggestions) {
-      throw new Error("The saved project credit suggestions did not match the selected game.");
-    }
-    setExportSuggestions($("#export-project-suggestion"), payload.suggestions.project ?? []);
-    setExportSuggestions($("#export-author-suggestion"), payload.suggestions.author ?? []);
-    $("#export-message").textContent = "Choose or enter the public project and author credits you confirm.";
-  } catch (error) {
-    if (exportSuggestionRequest !== request || !$("#export-dialog").open) return;
-    $("#export-message").textContent = `Could not load saved credit suggestions: ${error.message}`;
-  }
 }
 
 async function downloadSavedGamePackage() {
@@ -2984,7 +2958,6 @@ async function downloadSavedGamePackage() {
     refreshExportActions();
     return false;
   }
-  exportSuggestionRequest = null;
   state.exporting = true;
   refreshChrome({ structure: false });
   refreshExportActions();
@@ -2995,8 +2968,8 @@ async function downloadSavedGamePackage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         project: $("#export-project").value,
+        version: $("#export-version").value,
         author: $("#export-author").value,
-        course: $("#export-course").value
       })
     });
     if (!response.ok) {
@@ -3033,7 +3006,6 @@ async function downloadSavedGamePackage() {
 
 async function saveThenExportGame() {
   if (!validateExportCredits()) return;
-  exportSuggestionRequest = null;
   state.exporting = true;
   refreshChrome({ structure: false });
   refreshExportActions();
@@ -3056,19 +3028,7 @@ async function saveThenExportGame() {
 
 function configureGameExport() {
   $("#export-game").addEventListener("click", showExportDialog);
-  $("#export-project-suggestion").addEventListener("change", event => {
-    if (event.target.value) {
-      $("#export-project").value = event.target.value;
-      $("#export-project").setCustomValidity("");
-    }
-  });
-  $("#export-author-suggestion").addEventListener("change", event => {
-    if (event.target.value) {
-      $("#export-author").value = event.target.value;
-      $("#export-author").setCustomValidity("");
-    }
-  });
-  for (const id of ["export-project", "export-author"]) {
+  for (const id of ["export-project", "export-version", "export-author"]) {
     $(`#${id}`).addEventListener("input", event => event.target.setCustomValidity(""));
   }
   $("#export-form").addEventListener("submit", event => {
@@ -3077,17 +3037,10 @@ function configureGameExport() {
   });
   $("#export-save").addEventListener("click", () => void saveThenExportGame());
   $("#export-cancel").addEventListener("click", () => {
-    if (!state.exporting) {
-      exportSuggestionRequest = null;
-      $("#export-dialog").close();
-    }
+    if (!state.exporting) $("#export-dialog").close();
   });
   $("#export-dialog").addEventListener("cancel", event => {
     if (state.exporting) event.preventDefault();
-    else exportSuggestionRequest = null;
-  });
-  $("#export-dialog").addEventListener("close", () => {
-    if (!$("#export-dialog").open) exportSuggestionRequest = null;
   });
 }
 

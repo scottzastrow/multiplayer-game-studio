@@ -11,8 +11,12 @@ and server import behavior in
 `engine\kits\0.5.0-d0f46931f56b\GAME-PACKAGE.md`.
 
 Studio now has an **Export Game** action for saved Astraeum campaigns. It
-confirms project/author credits, offers Save then export or Cancel when the
-draft is dirty, and rejects exporting until the draft is saved. The server
+confirms Game Name, Version and Author, offers Save then export or Cancel when
+the draft is dirty, and rejects exporting until the draft is saved. Game Name
+sets the display name and project credit but never changes package ID `astraeum`.
+The entered version selects the manifest revision and its settings references;
+the registered adapter, module and skin remain at their required 1.0.0 versions.
+The server
 builds from a SQLite read transaction containing active levels/sections and
 saved metadata, preserves archived-root boundary/camera values, follows
 authored rune destinations, validates campaign/start/exit/media contracts,

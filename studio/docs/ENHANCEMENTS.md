@@ -40,12 +40,14 @@ The selected kit is 0.5.0, Engine revision
 `e8ce6ecea7da50db34610ee4c54e7a56480c57a1b2ac505dc5c73afb9370d2d1`.
 Its public package contract includes the registered Astraeum adapter and
 campaign validation. Studio's **Export Game** action is implemented for
-Astraeum Floor only. It exports a saved snapshot, requests confirmed project
-and author credits, offers Save then export or Cancel for a dirty draft, reads
+Astraeum Floor only. It exports a saved snapshot, requests a confirmed game
+name, package version and author, offers Save then export or Cancel for a dirty draft, reads
 the database snapshot transactionally, validates explicit exits and safe
 starts, verifies declared artwork hashes, and emits the public package ZIP.
-It does not package JavaScript or publish to a server. Generic Grid remains
-unsupported.
+The name does not change the stable `astraeum` package ID. The version updates
+the manifest revision and its settings references, not the registered adapter,
+module or skin versions. It does not package JavaScript or publish to a server.
+Generic Grid remains unsupported.
 
 The 0.5.0 manifest carries author, source and original filename for each
 declared artwork; invalid or conflicting attribution blocks export. Export

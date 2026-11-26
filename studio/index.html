@@ -88,26 +88,22 @@
           <form id="export-form" novalidate>
             <h2 id="export-dialog-title">Export saved game as ZIP</h2>
             <p>This exports all active Astraeum levels and sections from the saved project snapshot. Unsaved edits are never included.</p>
-            <label for="export-project">Project
-              <input id="export-project" name="project" required maxlength="256" autocomplete="off">
-            </label>
-            <label for="export-project-suggestion">Project suggestions from saved metadata
-              <select id="export-project-suggestion"><option value="">Choose a suggestion</option></select>
-            </label>
-            <label for="export-author">Public Author (person or team)
-              <input id="export-author" name="author" required maxlength="256" autocomplete="off">
-            </label>
-            <label for="export-author-suggestion">Author suggestions from saved project metadata
-              <select id="export-author-suggestion"><option value="">Choose a suggestion</option></select>
-            </label>
-            <label for="export-course">Course (optional)
-              <input id="export-course" name="course" maxlength="256" autocomplete="off">
-            </label>
-            <p>Choose or enter the public credits you confirm for this package. Artwork attribution remains separate and is preserved.</p>
+            <div class="export-fields">
+              <label for="export-project">Game Name
+                <input id="export-project" name="project" required maxlength="64" autocomplete="off">
+              </label>
+              <label for="export-version">Version
+                <input id="export-version" name="version" required value="1.0.0" autocomplete="off">
+              </label>
+              <label for="export-author">Author
+                <input id="export-author" name="author" required maxlength="256" autocomplete="off">
+              </label>
+            </div>
+            <p>Confirm the public game name and author. Artwork attribution remains separate and is preserved.</p>
             <p id="export-message" role="status" aria-live="polite"></p>
             <div class="dialog-actions">
               <button id="export-save" class="button primary" type="button" hidden>Save and export</button>
-              <button id="export-submit" class="button primary" type="submit">Export saved snapshot</button>
+              <button id="export-submit" class="button primary" type="submit">Export</button>
               <button id="export-cancel" class="button secondary" type="button">Cancel</button>
             </div>
           </form>

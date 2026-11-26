@@ -109,11 +109,13 @@ export function orderAstraeumCampaignLevels(snapshot) {
   return ordered;
 }
 
-export function createAstraeumPackageTheme({ project, author, course, assets, assetProvenance }) {
+export function createAstraeumPackageTheme({ project, author, course, version = ASTRAEUM_PACKAGE_VERSION, assets, assetProvenance }) {
+  const id = "astraeum";
+  const revision = `${id}@${version}`;
   return {
-    id: "astraeum",
-    name: "Astraeum Tower",
-    version: "1.0.0",
+    id,
+    name: project,
+    version,
     engineApiMajor: 1,
     module: { ...ASTRAEUM_MODULE },
     skin: {
@@ -131,7 +133,7 @@ export function createAstraeumPackageTheme({ project, author, course, assets, as
       npcHealthGrowthPercent: { type: "number", minimum: 0, maximum: 100 },
       respawnDelaySeconds: { type: "number", minimum: 0, maximum: 60 },
       maxLevels: { type: "integer", minimum: 1, maximum: 100 },
-      themeRevision: { type: "string", const: "astraeum@1.0.0" }
+      themeRevision: { type: "string", const: revision }
     },
     settingsDefaults: {
       maxPlayers: 4,
@@ -142,7 +144,7 @@ export function createAstraeumPackageTheme({ project, author, course, assets, as
       npcHealthGrowthPercent: 10,
       respawnDelaySeconds: 5,
       maxLevels: 5,
-      themeRevision: "astraeum@1.0.0"
+      themeRevision: revision
     },
     project,
     author,
