@@ -220,6 +220,16 @@ button:disabled { opacity: .48; cursor: default; }
 #open-dialog::backdrop { background: #000a; }
 #open-dialog h2 { margin: 0 0 8px; }
 #open-dialog p { color: #c3cad4; }
+#export-dialog { width: min(700px, 90vw); max-height: 85vh; overflow: auto; padding: 20px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
+#export-dialog::backdrop { background: #000a; }
+#export-dialog h2 { margin: 0 0 8px; }
+#export-dialog p { color: #c3cad4; }
+.export-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.export-fields label { display: grid; gap: 4px; min-width: 0; }
+.export-fields input { box-sizing: border-box; width: 100%; padding: 6px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 4px; background: #21242a; }
+@media (max-width: 600px) {
+  .export-fields { grid-template-columns: 1fr; }
+}
 #new-dialog { width: min(540px, 90vw); max-height: 85vh; overflow: auto; padding: 20px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
 #asset-import-dialog { width: min(680px, 92vw); max-height: 86vh; overflow: auto; padding: 20px; color: #e7eaf0; border: 1px solid #59616e; border-radius: 7px; background: #292d34; }
 #asset-import-dialog::backdrop { background: #000a; }

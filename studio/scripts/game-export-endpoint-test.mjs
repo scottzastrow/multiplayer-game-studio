@@ -112,9 +112,9 @@ try {
     db.close();
   }
   const before = records();
-  const exportGame = () => fetch(`${origin}/api/projects/${projectId}/export-game`, {
+  const exportGame = (overrides = {}) => fetch(`${origin}/api/projects/${projectId}/export-game`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ project: "Fixture project", author: "Fixture author", course: "Fixture course" })
+    body: JSON.stringify({ project: "Fixture project", version: "1.0.1", author: "Fixture author", ...overrides })
   });
   const response = await exportGame();
   assert.equal(response.status, 200, await response.clone().text());
@@ -125,9 +125,18 @@ try {
   const manifest = GamePackageManifestSchema.parse(JSON.parse(Buffer.from(entries["theme.json"]).toString("utf8")));
   const campaign = validateGameCampaign(JSON.parse(Buffer.from(entries["campaign.json"]).toString("utf8")));
   assert.equal(manifest.project, "Fixture project");
+  assert.equal(manifest.name, "Fixture project");
+  assert.equal(manifest.id, "astraeum");
+  assert.equal(manifest.version, "1.0.1");
+  assert.equal(`${manifest.id}@${manifest.version}`, "astraeum@1.0.1");
+  assert.equal(manifest.settingsSchema.themeRevision.const, "astraeum@1.0.1");
+  assert.equal(manifest.settingsDefaults.themeRevision, "astraeum@1.0.1");
   assert.equal(manifest.author, "Fixture author");
-  assert.equal(manifest.course, "Fixture course");
+  assert.equal(manifest.course, undefined);
   assert.equal(manifest.gamePackage.adapter.id, "astraeum-tower");
+  assert.equal(manifest.gamePackage.adapter.version, "1.0.0");
+  assert.equal(manifest.module.version, "1.0.0");
+  assert.equal(manifest.skin.version, "1.0.0");
   assert.equal(manifest.gamePackage.campaign.sha256, sha256(entries["campaign.json"]));
   const { assetsDigest, ...unsigned } = manifest;
   assert.equal(assetsDigest, calculateThemePackageDigest(unsigned));
@@ -154,6 +163,29 @@ try {
   assert.equal(manifest.assets.required[mediaId].sha256, hash);
   assert.equal(manifest.assets.required["aries-idle"].sha256, ASTRAEUM_ARTWORK_PROVENANCE["aries-idle.png"].sha256);
   assert.deepEqual(records(), before, "successful export must not change database records");
+
+  const renamed = await exportGame({ project: "Renamed game" });
+  assert.equal(renamed.status, 200, await renamed.clone().text());
+  const renamedEntries = unzipSync(new Uint8Array(await renamed.arrayBuffer()));
+  const renamedManifest = GamePackageManifestSchema.parse(JSON.parse(Buffer.from(renamedEntries["theme.json"]).toString("utf8")));
+  assert.equal(renamedManifest.name, "Renamed game");
+  assert.equal(renamedManifest.project, "Renamed game");
+  assert.equal(renamedManifest.id, manifest.id);
+  assert.equal(renamedManifest.settingsDefaults.themeRevision, "astraeum@1.0.1");
+  assert.deepEqual(renamedManifest.assetProvenance, manifest.assetProvenance);
+  for (const version of ["", "1.0", "1.0.1+build", 101]) {
+    const invalid = await exportGame({ version });
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /Version must use/);
+  }
+  const legacy = await exportGame({ version: undefined, course: "Fixture course" });
+  assert.equal(legacy.status, 200, await legacy.clone().text());
+  const legacyEntries = unzipSync(new Uint8Array(await legacy.arrayBuffer()));
+  const legacyManifest = GamePackageManifestSchema.parse(JSON.parse(Buffer.from(legacyEntries["theme.json"]).toString("utf8")));
+  assert.equal(legacyManifest.version, "1.0.0");
+  assert.equal(legacyManifest.settingsDefaults.themeRevision, "astraeum@1.0.0");
+  assert.equal(legacyManifest.course, "Fixture course");
+  assert.deepEqual(records(), before, "renamed and invalid exports must not change database records");
 
   await rm(mediaFile);
   const missing = await exportGame();

@@ -21,6 +21,7 @@ import { sectionOrigin } from "./world-coordinates.js";
 import { validatePlayableBoundaryForSections } from "./playable-boundaries.js";
 import {
   ASTRAEUM_ARTWORK_PROVENANCE,
+  ASTRAEUM_PACKAGE_VERSION,
   ASTRAEUM_PROJECT_CREDIT,
   createAstraeumCampaign,
   createAstraeumPackageTheme,
@@ -29,6 +30,7 @@ import {
 
 register("./scripts/public-runtime-loader.mjs", import.meta.url);
 const { buildGamePackage, packageAssetProvenance } = await import("./extensions/game-package.mjs");
+const { GamePackageManifestSchema } = await import("@multiplayer-game/theme-sdk/package");
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = resolve(root, "studio", "data");
@@ -537,6 +539,11 @@ function verifiedPackageMedia(projectId, descriptor, importedById) {
 function createSavedAstraeumPackage(projectId, input) {
   const project = requiredExportCredit(input?.project, "Project", "project");
   const author = requiredExportCredit(input?.author, "Author", "author");
+  if (project.length > 64) throw new TypeError("Game Name must be at most 64 characters.");
+  const version = input?.version === undefined ? ASTRAEUM_PACKAGE_VERSION : input.version;
+  if (typeof version !== "string" || !GamePackageManifestSchema.shape.version.safeParse(version.trim()).success) {
+    throw new TypeError("Version must use the format 1.0.0 or 1.0.0-prerelease.");
+  }
   if (input.course !== undefined && typeof input.course !== "string") {
     throw new TypeError("Course (course) must be a string when provided.");
   }
@@ -591,7 +598,7 @@ function createSavedAstraeumPackage(projectId, input) {
       };
     }
     const theme = createAstraeumPackageTheme({
-      project, author, course,
+      project, author, course, version: version.trim(),
       assets: { required, optional: {} },
       assetProvenance: packageAssetProvenance(mediaSources.values())
     });
